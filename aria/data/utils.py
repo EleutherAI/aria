@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from copy import deepcopy
 
-import tests
+from aria.data import tests
 
 
 class MidiDict:

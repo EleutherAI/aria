@@ -1,9 +1,7 @@
 """Includes tests for filtering MidiDict objects."""
 
-from utils import MidiDict
 
-
-def max_programs(mid_dict: MidiDict, **config):
+def max_programs(mid_dict, **config):
     present_programs = []
     for msg in mid_dict.instrument_msgs:
         msg_program = msg["data"]
@@ -16,7 +14,7 @@ def max_programs(mid_dict: MidiDict, **config):
         return False
 
 
-def max_instruments(mid_dict: MidiDict, **config):
+def max_instruments(mid_dict, **config):
     present_instruments = []
     for msg in mid_dict.instrument_msgs:
         msg_instrument = mid_dict.program_to_instrument[msg["data"]]
