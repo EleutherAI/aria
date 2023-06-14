@@ -1,0 +1,85 @@
+{
+    "tests": {
+        "max_programs":{
+            "run": true,
+            "config": {
+                "max": 20
+            }
+        },
+        "max_instruments":{
+            "run": true,
+            "config": {
+                "max": 3
+            }
+        }
+    },
+
+    "pre_processing": {
+        "remove_instruments": {
+            "run": true,
+            "config": {
+                "piano": false,
+                "chromatic": true,
+                "organ": false,
+                "guitar": false,
+                "bass": false,
+                "strings": false,
+                "ensemble": true,
+                "brass": true,
+                "reed": true,
+                "pipe": true,
+                "synth_lead": false,
+                "synth_pad": true,
+                "synth_effect": true,
+                "ethnic": true,
+                "percussive": true,
+                "sfx": true
+            }
+        }
+    },
+
+    "tokenizer": {
+        "ignore_instruments": {
+            "piano": false,
+            "chromatic": true,
+            "organ": false,
+            "guitar": false,
+            "bass": false,
+            "strings": false,
+            "ensemble": false,
+            "brass": false,
+            "reed": false,
+            "pipe": false,
+            "synth_lead": false,
+            "synth_pad": true,
+            "synth_effect": true,
+            "ethnic": true,
+            "percussive": true,
+            "sfx": true
+        },
+        "instrument_programs": {
+            "piano": 0,
+            "chromatic": 13,
+            "organ": 16,
+            "guitar": 24,
+            "bass": 32,
+            "strings": 40,
+            "ensemble": 48,
+            "brass": 56,
+            "reed": 64,
+            "pipe": 73,
+            "synth_lead": 80,
+            "synth_pad": 88,
+            "synth_effect": 96,
+            "ethnic": 104,
+            "percussive": 112,
+            "sfx": 120
+        },
+        "drum_velocity": 60,
+        "velocity_quantization": 20,
+        "time_quantization": {
+            "num_steps": 500,
+            "min_step": 10
+        }
+    }
+}

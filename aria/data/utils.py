@@ -8,6 +8,11 @@ from pathlib import Path
 from copy import deepcopy
 
 from aria.data import tests
+from aria.config import load_config
+
+# TODO:
+# - Possibly refactor names 'mid' to 'midi'
+# - Write proper tests
 
 
 class MidiDict:
@@ -76,12 +81,14 @@ class MidiDict:
         pedal_msgs: list,
         instrument_msgs: list,
         note_msgs: list,
+        ticks_per_beat: int,
     ):
         self.meta_msgs = meta_msgs
         self.tempo_msgs = tempo_msgs
         self.pedal_msgs = pedal_msgs
         self.instrument_msgs = instrument_msgs
         self.note_msgs = note_msgs
+        self.ticks_per_beat = ticks_per_beat  # Possibly refactor
 
         # This combines the individual dictionaries into one
         self.program_to_instrument = (
@@ -114,30 +121,32 @@ class MidiDict:
 
     def to_midi(self):
         """Inplace version of dict_to_midi."""
-        return dict_to_midi(self._get_msg_dict())
+        return dict_to_midi(self._get_msg_dict(), self.ticks_per_beat)
 
     @classmethod
     def from_midi(cls, mid: mido.MidiFile):
         """Inplace version of midi_to_dict."""
         return cls(**midi_to_dict(mid))
 
-    def merge_instruments(self, **config):
-        """Merges instruments according to classes specified in config."""
-        for msg in self.instrument_msgs:
-            msg["data"] = config[self.program_to_instrument[msg["data"]]]
-
+    # TODO:
+    # - Add remove drums (aka remove channel 9&16) pre-processing
+    # - Add similar method for removing specific programs
+    # - Decide whether this is necessary to have here in pre-precessing
     def remove_instruments(self, **config):
         """Removes all channels with instruments specified in config."""
         programs_to_remove = [
             i
             for i in range(1, 127 + 1)
-            if config[self.program_to_instrument[i]] is False
+            if config[self.program_to_instrument[i]] is True
         ]
         channels_to_remove = [
             msg["channel"]
             for msg in self.instrument_msgs
             if msg["data"] in programs_to_remove
         ]
+
+        # Remove drums (channel 9/16) from channels to remove
+        channels_to_remove = [i for i in channels_to_remove if i not in {9, 16}]
 
         # Remove unwanted messages all type by looping over msgs types
         for msgs_name, msgs_list in self._get_msg_dict().items():
@@ -192,10 +201,10 @@ def _extract_track_data(track: mido.MidiTrack):
             )
         # Pedal messages
         elif message.type == "control_change" and message.control == 64:
-            if message.value == 127:
-                val = 1
-            elif message.value == 0:
+            if message.value == 0:
                 val = 0
+            else:
+                val = 1
             pedal_msgs.append(
                 {
                     "type": "pedal",
@@ -288,10 +297,13 @@ def midi_to_dict(mid: mido.MidiFile):
     for k, v in data.items():
         data[k] = sorted(v, key=lambda x: x.get("tick", 0))
 
+    # Add ticks per beat
+    data["ticks_per_beat"] = mid.ticks_per_beat
+
     return data
 
 
-def dict_to_midi(mid_data: dict):
+def dict_to_midi(mid_data: dict, ticks_per_beat: int):
     """Converts MIDI information from dictionary form into a mido.MidiFile.
 
     This function performs midi_to_dict in reverse. For a complete
@@ -378,12 +390,13 @@ def dict_to_midi(mid_data: dict):
 
     track.append(mido.MetaMessage("end_of_track", time=0))
     mid = mido.MidiFile(type=0)
+    mid.ticks_per_beat = ticks_per_beat
     mid.tracks.append(track)
 
     return mid
 
 
-class Dataset:
+class MidiDataset:
     """Container for datasets of MidiDict objects.
 
     Can be used to save, load, and build, datasets of MidiDict objects.
@@ -422,20 +435,17 @@ class Dataset:
         cls,
         dir: str,
         recur: bool = False,
-        config_path="config.json",
     ):
         """Inplace version of build_dataset."""
         return build_dataset(
             dir=dir,
             recur=recur,
-            config_path=config_path,
         )
 
 
 def build_dataset(
     dir: str,
     recur: bool = False,
-    config_path: str = "config.json",
 ):
     """Builds dataset of MidiDicts.
 
@@ -446,8 +456,6 @@ def build_dataset(
         dir (str): Directory to index from.
         recur (bool): If True, recursively search directories for MIDI files.
             Defaults to False.
-        config_path: Alternative path for config.json file. Defaults to
-            "config.json".
 
     Returns:
         Dataset: Dataset of parsed, filtered, and preprocessed MidiDicts.
@@ -469,14 +477,13 @@ def build_dataset(
         return failed_tests
 
     def _process_midi(_mid_dict: MidiDict):
-        for fn_name, fn_config in config["processing"].items():
+        for fn_name, fn_config in config["pre_processing"].items():
             if fn_config["run"] is True:
                 getattr(_mid_dict, fn_name)(**fn_config["config"])
 
         return _mid_dict
 
-    with open(config_path) as f:
-        config = json.load(f)
+    config = load_config()
 
     paths = []
     if recur is True:
@@ -503,4 +510,4 @@ def build_dataset(
         else:
             entries.append(_process_midi(mid_dict))
 
-    return Dataset(entries)
+    return MidiDataset(entries)
