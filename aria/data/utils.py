@@ -483,7 +483,7 @@ def build_dataset(
 
         return _mid_dict
 
-    config = load_config()
+    config = load_config()["data"]
 
     paths = []
     if recur is True:

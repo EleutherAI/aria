@@ -1,39 +1,40 @@
 {
-    "tests": {
-        "max_programs":{
-            "run": true,
-            "config": {
-                "max": 20
+    "data": {
+        "tests": {
+            "max_programs":{
+                "run": true,
+                "config": {
+                    "max": 20
+                }
+            },
+            "max_instruments":{
+                "run": true,
+                "config": {
+                    "max": 3
+                }
             }
         },
-        "max_instruments":{
-            "run": true,
-            "config": {
-                "max": 3
-            }
-        }
-    },
-
-    "pre_processing": {
-        "remove_instruments": {
-            "run": true,
-            "config": {
-                "piano": false,
-                "chromatic": true,
-                "organ": false,
-                "guitar": false,
-                "bass": false,
-                "strings": false,
-                "ensemble": true,
-                "brass": true,
-                "reed": true,
-                "pipe": true,
-                "synth_lead": false,
-                "synth_pad": true,
-                "synth_effect": true,
-                "ethnic": true,
-                "percussive": true,
-                "sfx": true
+        "pre_processing": {
+            "remove_instruments": {
+                "run": true,
+                "config": {
+                    "piano": false,
+                    "chromatic": true,
+                    "organ": false,
+                    "guitar": false,
+                    "bass": false,
+                    "strings": false,
+                    "ensemble": true,
+                    "brass": true,
+                    "reed": true,
+                    "pipe": true,
+                    "synth_lead": false,
+                    "synth_pad": true,
+                    "synth_effect": true,
+                    "ethnic": true,
+                    "percussive": true,
+                    "sfx": true
+                }
             }
         }
     },
