@@ -1,7 +1,8 @@
-"""Contains """
+"""Contains classes and utilities for building and processing datasets."""
 
 import json
 import logging
+import copy
 import torch
 import mido
 
@@ -55,13 +56,13 @@ class MidiDataset:
         recur: bool = False,
     ):
         """Inplace version of build_dataset."""
-        return build_dataset(
+        return build_mididict_dataset(
             dir=dir,
             recur=recur,
         )
 
 
-def build_dataset(
+def build_mididict_dataset(
     dir: str,
     recur: bool = False,
 ):
@@ -131,8 +132,6 @@ def build_dataset(
     return MidiDataset(entries)
 
 
-# TODO: Finish implementing
-# TODO: Finish implementing
 class TokenizedDataset(torch.utils.data.Dataset):
     """Container for datasets of pre-processed (tokenized) MidiDict objects.
 
@@ -141,19 +140,44 @@ class TokenizedDataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, entries: list = []):
-        raise NotImplementedError
         self.entries = entries
-        self.transform = lambda x: x
 
     def __len__(self):
         return len(self.entries)
 
-    def __getitem__(self, ind: int):
-        return self.transform(self.entries[ind])
+    def __getitem__(self, idx: int):
+        # We use create a copy so that self._transform does not permanently
+        # mutate the entries.
+        return self._transform(copy.deepcopy(self.entries[idx]))
 
-    # TODO: Implement
-    def set_transform(self, transforms: Callable):
-        self.transform = transforms
+    def _transform(self, entry: list):
+        # Default behaviour is to act as the identity function
+        return entry
+
+    def set_transform(self, transform: Callable | list[Callable]):
+        """Sets data augmentation transformation functions.
+
+        Args:
+            transform (Callable | list[Callable]): Transformation function(s).
+                Provided functions are expected to be list[str | tuple] ->
+                list[str | tuple].
+        """
+        if isinstance(transform, Callable):
+            self._transform = transform
+        elif isinstance(transform, list):
+            # Check validity
+            for fn in transform:
+                assert isinstance(fn, Callable), "Invalid function"
+
+            # Define new transformation function (apply fn in order)
+            def _new_transform(x):
+                for fn in transform:
+                    res = fn(x)
+                return res
+
+            self._transform = _new_transform
+        else:
+            raise ValueError("Must provide function or list of functions.")
 
     def save(self, save_path: str):
         """Saves dataset to JSON file."""
@@ -187,8 +211,6 @@ def build_tokenized_dataset(
     midi_dataset: MidiDataset,
     tokenizer: Tokenizer,
 ):
-    raise NotImplementedError
-
     entries = []
     for midi_dict in midi_dataset:
         entries += tokenizer.tokenize(midi_dict)["tokens"]
