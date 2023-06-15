@@ -1,16 +1,13 @@
 """Includes Tokenizers and pre-processing utilities."""
 
-import json
 import torch
-import logging
 import itertools
 import copy
 
-from typing import Callable
 from collections import defaultdict
 from mido.midifiles.units import second2tick, tick2second
 
-from aria.data.utils import MidiDict, MidiDataset
+from aria.data.midi import MidiDict
 from aria.config import load_config
 
 # TODO:
@@ -621,67 +618,3 @@ def _get_duration_ms(
     duration = round(duration)
 
     return duration
-
-
-# TODO: Finish implementing
-class TokenizedDataset(torch.utils.data.Dataset):
-    """Container for datasets of pre-processed (tokenized) MidiDict objects.
-
-    Args:
-        entries (list): MidiDict objects to be stored.
-    """
-
-    def __init__(self, entries: list = []):
-        raise NotImplementedError
-        self.entries = entries
-        self.transform = lambda x: x
-
-    def __len__(self):
-        return len(self.entries)
-
-    def __getitem__(self, ind: int):
-        return self.transform(self.entries[ind])
-
-    # TODO: Implement
-    def set_transform(self, transforms: Callable):
-        self.transform = transforms
-
-    def save(self, save_path: str):
-        """Saves dataset to JSON file."""
-        with open(save_path, "w", encoding="utf-8") as f:
-            json.dump(self.entries)
-
-    @classmethod
-    def load(cls, load_path: str):
-        """Loads dataset from JSON file."""
-        with open(load_path) as f:
-            entries = json.load(f)
-
-        return cls(entries)
-
-    @classmethod
-    def build(
-        cls,
-        midi_dataset: MidiDataset,
-        tokenizer: Tokenizer,
-    ):
-        if tokenizer.truncate_type != "strided":
-            logging.warn(
-                "Tokenizer striding not being used when building dataset."
-            )
-
-        return build_tokenized_dataset(midi_dataset, tokenizer)
-
-
-# TODO: Implement
-def build_tokenized_dataset(
-    midi_dataset: MidiDataset,
-    tokenizer: Tokenizer,
-):
-    raise NotImplementedError
-
-    entries = []
-    for midi_dict in midi_dataset:
-        entries += tokenizer.tokenize(midi_dict)["tokens"]
-
-    return TokenizedDataset(entries)
