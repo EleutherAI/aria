@@ -57,6 +57,7 @@ class Tokenizer:
         self.tok_to_id = {}
         self.id_to_tok = {}
         self.vocab_size = -1
+        self.pad_tok = ""
 
         self.unk_tok = "<U>"
 
@@ -367,8 +368,10 @@ class TokenizerLazy(Tokenizer):
                     tokenized_seq.append("wait", self.max_time_step)
                     _wait_duration -= self.max_time_step
 
+                # Only append wait tok if it is non-zero
                 _wait_duration = _quantize_time(_wait_duration)
-                tokenized_seq.append(("wait", _wait_duration))
+                if _wait_duration != 0:
+                    tokenized_seq.append(("wait", _wait_duration))
 
         # Return according to truncation setting
         if self.truncate_type == "none":
