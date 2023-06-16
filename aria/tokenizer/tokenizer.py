@@ -365,7 +365,7 @@ class TokenizerLazy(Tokenizer):
                 # If wait duration is longer than maximum quantized time step
                 # append max_time_step tokens repeatedly
                 while _wait_duration > self.max_time_step:
-                    tokenized_seq.append("wait", self.max_time_step)
+                    tokenized_seq.append(("wait", self.max_time_step))
                     _wait_duration -= self.max_time_step
 
                 # Only append wait tok if it is non-zero
