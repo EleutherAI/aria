@@ -57,7 +57,9 @@ class Tokenizer:
         self.tok_to_id = {}
         self.id_to_tok = {}
         self.vocab_size = -1
+        self.pad_id = -1
 
+        self.pad_tok = "<P>"
         self.unk_tok = "<U>"
 
     def tokenize_midi_dict(self, midi_dict: MidiDict):
@@ -166,6 +168,7 @@ class TokenizerLazy(Tokenizer):
         self.tok_to_id = {tok: idx for idx, tok in enumerate(self.vocab)}
         self.id_to_tok = {v: k for k, v in self.tok_to_id.items()}
         self.vocab_size = len(self.vocab)
+        self.pad_id = self.tok_to_id[self.pad_tok]
 
         self.program_to_instrument = (
             {i: "piano" for i in range(0, 7 + 1)}
@@ -250,6 +253,7 @@ class TokenizerLazy(Tokenizer):
 
     def tokenize_midi_dict(self, midi_dict: MidiDict):
         def _quantize_time(time: int):
+            # This function will return values res >= 0 (inc. 0)
             def _find_closest_int(n: int, sorted_list: list):
                 # Selects closest integer to n from sorted_list
                 # Time ~ Log(n)
@@ -274,13 +278,16 @@ class TokenizerLazy(Tokenizer):
             return _find_closest_int(time, self.time_step_quantizations)
 
         def _quantize_velocity(velocity: int):
+            # This function will return values in the range 0 < res < 127
             def _round(x, base):
                 return int(base * round(float(x) / base))
 
             quant_step = self.config["velocity_quantization"]
             res = _round(velocity, quant_step)
 
-            if res > 127:  # Rounded up above valid velocity range
+            if res == 0:
+                res = quant_step
+            elif res > 127:  # Rounded up above valid velocity range
                 res -= quant_step
 
             return res
@@ -347,8 +354,12 @@ class TokenizerLazy(Tokenizer):
                     ticks_per_beat=ticks_per_beat,
                 )
 
+                # Quantize
                 _velocity = _quantize_velocity(_velocity)
                 _note_duration = _quantize_time(_note_duration)
+                if _note_duration == 0:
+                    _note_duration = self.min_time_step
+
                 tokenized_seq.append((_instrument, _pitch, _velocity))
                 tokenized_seq.append(("dur", _note_duration))
 
@@ -364,11 +375,13 @@ class TokenizerLazy(Tokenizer):
                 # If wait duration is longer than maximum quantized time step
                 # append max_time_step tokens repeatedly
                 while _wait_duration > self.max_time_step:
-                    tokenized_seq.append("wait", self.max_time_step)
+                    tokenized_seq.append(("wait", self.max_time_step))
                     _wait_duration -= self.max_time_step
 
+                # Only append wait tok if it is non-zero
                 _wait_duration = _quantize_time(_wait_duration)
-                tokenized_seq.append(("wait", _wait_duration))
+                if _wait_duration != 0:
+                    tokenized_seq.append(("wait", _wait_duration))
 
         # Return according to truncation setting
         if self.truncate_type == "none":
@@ -546,19 +559,28 @@ class TokenizerLazy(Tokenizer):
 
     # TODO: Implement
     @classmethod
-    def _pitch_aug(cls, src: list, aug_range: float):
-        pass
+    def export_pitch_aug(cls):
+        def pitch_aug(src: list, aug_range: float):
+            pass
+
+        return pitch_aug
 
     # TODO: Implement
     @classmethod
-    def _velocity_aug(cls, src: list, aug_range: int):
-        pass
+    def export_velocity_aug(cls):
+        def velocity_aug(src: list, aug_range: float):
+            pass
+
+        return velocity_aug
 
     # TODO: Implement
     @classmethod
-    def _time_aug(cls, src: list, aug_range: float):
+    def export_time_aug(cls):
         # Remember special case where we have max_time_step
-        pass
+        def time_aug(src: list, aug_range: float):
+            pass
+
+        return time_aug
 
 
 def _get_duration_ms(

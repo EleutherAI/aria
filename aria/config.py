@@ -3,7 +3,8 @@
 import os
 import json
 
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), "../config/")
+
+CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
 
 
 def load_config():

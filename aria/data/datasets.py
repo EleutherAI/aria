@@ -132,23 +132,42 @@ def build_mididict_dataset(
     return MidiDataset(entries)
 
 
+# TODO:
+# - Perhaps add a record of which tokenizer/config was used to build a dataset,
+#   if this is not the same as the tokenizer used during training, throw err?
 class TokenizedDataset(torch.utils.data.Dataset):
     """Container for datasets of pre-processed (tokenized) MidiDict objects.
 
+    Note that the __getitem__ method of this class returns src, tgt pairs
+
     Args:
         entries (list): MidiDict objects to be stored.
+        tokenizer (Tokenizer): Tokenizer for converting tokens to ids. Note: in
+            the case that TokenizedDataset is provided as input to a DataLoader,
+            tokenizer is expected to have return_tensors == True.
     """
 
-    def __init__(self, entries: list = []):
+    def __init__(self, entries: list, tokenizer: Tokenizer):
         self.entries = entries
+        self.tokenizer = tokenizer
 
     def __len__(self):
         return len(self.entries)
 
     def __getitem__(self, idx: int):
+        if self.tokenizer.return_tensors is False:
+            raise ValueError("Tokenizer must have return_tensors == True.")
+
         # We use create a copy so that self._transform does not permanently
         # mutate the entries.
-        return self._transform(copy.deepcopy(self.entries[idx]))
+        entry = copy.deepcopy(self.entries[idx])
+        entry_aug = self._transform(entry)
+
+        # Using '+' implicitly creates a copy
+        src = entry_aug
+        tgt = entry_aug[1:] + [self.tokenizer.pad_tok]
+
+        return self.tokenizer.encode(src), self.tokenizer.encode(tgt)
 
     def _transform(self, entry: list):
         # Default behaviour is to act as the identity function
@@ -182,15 +201,37 @@ class TokenizedDataset(torch.utils.data.Dataset):
     def save(self, save_path: str):
         """Saves dataset to JSON file."""
         with open(save_path, "w", encoding="utf-8") as f:
-            json.dump(self.entries)
+            json.dump(self.entries, f)
+
+    def save_train_val(self, save_path: str, tt_split: float = 0.9):
+        """Saves test, train split to JSON file. Note that this can be reloaded
+        using TokenizedDataset.load_train_val."""
+        split_idx = round(tt_split * len(self))
+        train_entries = self.entries[:split_idx]
+        val_entries = self.entries[split_idx:]
+
+        with open(save_path, "w", encoding="utf-8") as f:
+            json.dump({"train": train_entries, "val": val_entries}, f)
 
     @classmethod
-    def load(cls, load_path: str):
+    def load(cls, load_path: str, tokenizer: Tokenizer):
         """Loads dataset from JSON file."""
         with open(load_path) as f:
             entries = json.load(f)
 
-        return cls(entries)
+        assert isinstance(entries, list), "Invalid dataset"
+
+        return cls(entries, tokenizer)
+
+    @classmethod
+    def load_train_val(cls, load_path: str, tokenizer: Tokenizer):
+        """Loads train/val datasets from JSON file."""
+        with open(load_path) as f:
+            entries = json.load(f)
+
+        assert "train" in entries and "val" in entries, "Invalid dataset"
+
+        return cls(entries["train"], tokenizer), cls(entries["val"], tokenizer)
 
     @classmethod
     def build(
@@ -206,7 +247,6 @@ class TokenizedDataset(torch.utils.data.Dataset):
         return build_tokenized_dataset(midi_dataset, tokenizer)
 
 
-# TODO: Implement
 def build_tokenized_dataset(
     midi_dataset: MidiDataset,
     tokenizer: Tokenizer,
@@ -215,4 +255,4 @@ def build_tokenized_dataset(
     for midi_dict in midi_dataset:
         entries += tokenizer.tokenize(midi_dict)["tokens"]
 
-    return TokenizedDataset(entries)
+    return TokenizedDataset(entries, tokenizer)
