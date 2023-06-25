@@ -77,7 +77,7 @@
             "sfx": 120
         },
         "drum_velocity": 60,
-        "velocity_quantization": 20,
+        "velocity_quantization": 15,
         "time_quantization": {
             "num_steps": 500,
             "min_step": 10

@@ -8,20 +8,30 @@ from torch.nn import functional as F
 from typing import Tuple
 from dataclasses import dataclass
 
+from aria.tokenizer import Tokenizer
 
-@dataclass
+
 class ModelConfig:
-    d_model: int = 512
-    n_heads: int = 16
-    n_layers: int = 96
-    ff_mult: int = 4
-    drop_p = 0.1
-    max_seq_len: int = 2048
-    grad_checkpoint: bool = True
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        n_layers: int,
+        ff_mult: int,
+        drop_p: float,
+        max_seq_len: int,
+        grad_checkpoint: bool,
+    ):
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.n_layers = n_layers
+        self.ff_mult = ff_mult
+        self.drop_p = drop_p
+        self.max_seq_len = max_seq_len
+        self.grad_checkpoint = grad_checkpoint
 
-    # Set according to tokenizer
-    vocab_size: int = -1
-    pad_id: int = -1
+    def set_vocab_size(self, vocab_size: int):
+        self.vocab_size = vocab_size
 
 
 # Taken from facebookresearch/llama/model.py
