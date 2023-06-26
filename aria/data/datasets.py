@@ -155,8 +155,9 @@ class TokenizedDataset(torch.utils.data.Dataset):
         return len(self.entries)
 
     def __getitem__(self, idx: int):
-        if self.tokenizer.return_tensors is False:
-            raise ValueError("Tokenizer must have return_tensors == True.")
+        assert (
+            self.tokenizer.return_tensors is True
+        ), "tokenizer must have return_tensors == True"
 
         # We use create a copy so that self._transform does not permanently
         # mutate the entries.

@@ -57,8 +57,9 @@ class Tokenizer:
         self.tok_to_id = {}
         self.id_to_tok = {}
         self.vocab_size = -1
-        self.pad_id = -1
 
+        self.bos_tok = "<S>"
+        self.eos_tok = "<E>"
         self.pad_tok = "<P>"
         self.unk_tok = "<U>"
 
@@ -133,10 +134,6 @@ class TokenizerLazy(Tokenizer):
             for k, v in self.config["ignore_instruments"].items()
             if v is False
         ] + ["drums"]
-
-        self.bos_tok = "<S>"
-        self.eos_tok = "<E>"
-        self.pad_tok = "<P>"
 
         # Build vocab
         self.special_tokens = [
@@ -558,6 +555,7 @@ class TokenizerLazy(Tokenizer):
         )
 
     # TODO: Implement
+    # TODO: These must have their range set first
     @classmethod
     def export_pitch_aug(cls):
         def pitch_aug(src: list, aug_range: float):
@@ -566,6 +564,7 @@ class TokenizerLazy(Tokenizer):
         return pitch_aug
 
     # TODO: Implement
+    # TODO: These must have their range set first
     @classmethod
     def export_velocity_aug(cls):
         def velocity_aug(src: list, aug_range: float):
@@ -574,6 +573,7 @@ class TokenizerLazy(Tokenizer):
         return velocity_aug
 
     # TODO: Implement
+    # TODO: These must have their range set first
     @classmethod
     def export_time_aug(cls):
         # Remember special case where we have max_time_step

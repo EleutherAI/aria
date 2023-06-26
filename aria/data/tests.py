@@ -1,6 +1,10 @@
 """Includes tests for filtering MidiDict objects."""
 
 
+# TODO:
+# - Migrate this into datasets.py for simplicity
+
+
 def max_programs(mid_dict, **config):
     present_programs = []
     for msg in mid_dict.instrument_msgs:

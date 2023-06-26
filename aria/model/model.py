@@ -33,6 +33,24 @@ class ModelConfig:
     def set_vocab_size(self, vocab_size: int):
         self.vocab_size = vocab_size
 
+    def __eq__(self, other):
+        try:
+            vs_equal = self.vocab_size == other.vocab_size
+        except:
+            # Default behaviour if one/both is missing
+            vs_equal = True
+
+        return (
+            vs_equal
+            and self.d_model == other.d_model
+            and self.n_heads == other.n_heads
+            and self.n_layers == other.n_layers
+            and self.ff_mult == other.ff_mult
+            and self.drop_p == other.drop_p
+            and self.max_seq_len == other.max_seq_len
+            and self.grad_checkpoint == other.grad_checkpoint
+        )
+
 
 # Taken from facebookresearch/llama/model.py
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
@@ -261,6 +279,7 @@ class TransformerLM(nn.Module):
     def __init__(self, model_config: ModelConfig):
         super().__init__()
 
+        self.max_seq_len = model_config.max_seq_len
         self.model = Transformer(model_config)
         self.lm_head = nn.Linear(
             model_config.d_model, model_config.vocab_size, bias=False
