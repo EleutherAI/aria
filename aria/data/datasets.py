@@ -24,7 +24,7 @@ class MidiDataset:
         entries (list[MidiDict]): MidiDict objects to be stored.
     """
 
-    def __init__(self, entries: list[MidiDict] = []):
+    def __init__(self, entries: list[MidiDict]):
         self.entries = entries
 
     def __len__(self):
@@ -204,16 +204,19 @@ class TokenizedDataset(torch.utils.data.Dataset):
         with open(save_path, "w", encoding="utf-8") as f:
             json.dump(self.entries, f)
 
-    def save_train_val(self, save_path: str, tt_split: float = 0.9):
+    def save_train_val(self, save_path: str, split: float = 0.9):
         """Saves test, train split to JSON file. Note that this can be reloaded
         using TokenizedDataset.load_train_val."""
-        split_idx = round(tt_split * len(self))
+        assert 0.0 <= split <= 1.0, "Invalid test-validation split ratio"
+
+        split_idx = round(split * len(self))
         train_entries = self.entries[:split_idx]
         val_entries = self.entries[split_idx:]
 
         with open(save_path, "w", encoding="utf-8") as f:
             json.dump({"train": train_entries, "val": val_entries}, f)
 
+    # TODO: This needs to reload the json back into tuples (hashable)
     @classmethod
     def load(cls, load_path: str, tokenizer: Tokenizer):
         """Loads dataset from JSON file."""
@@ -224,6 +227,7 @@ class TokenizedDataset(torch.utils.data.Dataset):
 
         return cls(entries, tokenizer)
 
+    # TODO: This needs to reload the json back into tuples (hashable)
     @classmethod
     def load_train_val(cls, load_path: str, tokenizer: Tokenizer):
         """Loads train/val datasets from JSON file."""
@@ -254,6 +258,6 @@ def build_tokenized_dataset(
 ):
     entries = []
     for midi_dict in midi_dataset:
-        entries += tokenizer.tokenize(midi_dict)["tokens"]
+        entries.extend(tokenizer.tokenize_midi_dict(midi_dict))
 
     return TokenizedDataset(entries, tokenizer)

@@ -120,7 +120,7 @@ class TokenizerLazy(Tokenizer):
         super().__init__(
             padding, truncate_type, max_seq_len, stride_len, return_tensors
         )
-        self.config = load_config()["tokenizer"]
+        self.config = load_config()["tokenizer"]["lazy"]
 
         # Calculate time quantizations (in ms)
         num_steps = self.config["time_quantization"]["num_steps"]

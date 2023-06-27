@@ -40,47 +40,56 @@
     },
 
     "tokenizer": {
-        "ignore_instruments": {
-            "piano": false,
-            "chromatic": true,
-            "organ": false,
-            "guitar": false,
-            "bass": false,
-            "strings": false,
-            "ensemble": false,
-            "brass": false,
-            "reed": false,
-            "pipe": false,
-            "synth_lead": false,
-            "synth_pad": true,
-            "synth_effect": true,
-            "ethnic": true,
-            "percussive": true,
-            "sfx": true
-        },
-        "instrument_programs": {
-            "piano": 0,
-            "chromatic": 13,
-            "organ": 16,
-            "guitar": 24,
-            "bass": 32,
-            "strings": 40,
-            "ensemble": 48,
-            "brass": 56,
-            "reed": 64,
-            "pipe": 73,
-            "synth_lead": 80,
-            "synth_pad": 88,
-            "synth_effect": 96,
-            "ethnic": 104,
-            "percussive": 112,
-            "sfx": 120
-        },
-        "drum_velocity": 60,
-        "velocity_quantization": 15,
-        "time_quantization": {
-            "num_steps": 500,
-            "min_step": 10
+        "lazy": {
+            "default_args": {
+                "padding": true,
+                "truncate_type": "strided",
+                "max_seq_len": 1024,
+                "stride_len": 256,
+                "return_tensors": true
+            },
+            "ignore_instruments": {
+                "piano": false,
+                "chromatic": true,
+                "organ": false,
+                "guitar": false,
+                "bass": false,
+                "strings": false,
+                "ensemble": false,
+                "brass": false,
+                "reed": false,
+                "pipe": false,
+                "synth_lead": false,
+                "synth_pad": true,
+                "synth_effect": true,
+                "ethnic": true,
+                "percussive": true,
+                "sfx": true
+            },
+            "instrument_programs": {
+                "piano": 0,
+                "chromatic": 13,
+                "organ": 16,
+                "guitar": 24,
+                "bass": 32,
+                "strings": 40,
+                "ensemble": 48,
+                "brass": 56,
+                "reed": 64,
+                "pipe": 73,
+                "synth_lead": 80,
+                "synth_pad": 88,
+                "synth_effect": 96,
+                "ethnic": 104,
+                "percussive": 112,
+                "sfx": 120
+            },
+            "drum_velocity": 60,
+            "velocity_quantization": 15,
+            "time_quantization": {
+                "num_steps": 500,
+                "min_step": 10
+            }
         }
     }
 }
