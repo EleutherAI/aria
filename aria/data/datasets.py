@@ -5,6 +5,7 @@ import logging
 import copy
 import torch
 import mido
+import aria.data.midi
 
 from pathlib import Path
 from typing import Callable
@@ -86,21 +87,33 @@ def build_mididict_dataset(
         failed_tests = []
         for test_name, test_config in config["tests"].items():
             if test_config["run"] is True:
-                # If test failed append to failed_tests
-                if (
-                    getattr(tests, test_name)(
-                        _mid_dict, **test_config["config"]
-                    )
-                    is False
-                ):
-                    failed_tests.append(test_name)
+                # All midi_dict tests must follow this naming convention
+                test_fn_name = "_test" + " " + test_name
+                test_args = test_config["args"]
+
+                try:
+                    test_fn = getattr(aria.data.midi, test_fn_name)
+                except:
+                    logging.warn(f"Error finding test function for {test_name}")
+                else:
+                    if test_fn(_mid_dict, **test_args) is False:
+                        failed_tests.append(test_name)
 
         return failed_tests
 
     def _process_midi(_mid_dict: MidiDict):
         for fn_name, fn_config in config["pre_processing"].items():
             if fn_config["run"] is True:
-                getattr(_mid_dict, fn_name)(**fn_config["config"])
+                fn_args = fn_config["args"]
+                getattr(_mid_dict, fn_name)(**fn_args)
+
+                try:
+                    # Note fn_args is passed as a dict, not unpacked as kwargs
+                    getattr(_mid_dict, fn_name)(fn_args)
+                except:
+                    logging.warn(
+                        f"Error finding preprocessing function for {fn_name}"
+                    )
 
         return _mid_dict
 
@@ -137,6 +150,7 @@ def build_mididict_dataset(
 # TODO:
 # - Perhaps add a record of which tokenizer/config was used to build a dataset,
 #   if this is not the same as the tokenizer used during training, throw err?
+# - Change this to integrate with huggingface's ecosystem
 class TokenizedDataset(torch.utils.data.Dataset):
     """Container for datasets of pre-processed (tokenized) MidiDict objects.
 
@@ -161,6 +175,7 @@ class TokenizedDataset(torch.utils.data.Dataset):
             self.tokenizer.return_tensors is True
         ), "tokenizer must have return_tensors == True"
 
+        # Maybe refactor this to avoid the use of deepcopy - perf reasons.
         # We use create a copy so that self._transform does not permanently
         # mutate the entries.
         entry = copy.deepcopy(self.entries[idx])
@@ -176,6 +191,7 @@ class TokenizedDataset(torch.utils.data.Dataset):
         # Default behaviour is to act as the identity function
         return entry
 
+    # This is a bit gross
     def set_transform(self, transform: Callable | list[Callable]):
         """Sets data augmentation transformation functions.
 
@@ -228,7 +244,6 @@ class TokenizedDataset(torch.utils.data.Dataset):
 
         return data
 
-    # TODO: This needs to reload the json back into tuples (hashable)
     @classmethod
     def load(cls, load_path: str, tokenizer: Tokenizer):
         """Loads dataset from JSON file."""
@@ -239,7 +254,6 @@ class TokenizedDataset(torch.utils.data.Dataset):
 
         return cls(cls._json_to_hashable(entries), tokenizer)
 
-    # TODO: This needs to reload the json back into tuples (hashable)
     @classmethod
     def load_train_val(cls, load_path: str, tokenizer: Tokenizer):
         """Loads train/val datasets from JSON file."""

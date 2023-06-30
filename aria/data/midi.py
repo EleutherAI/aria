@@ -7,7 +7,7 @@ from copy import deepcopy
 
 
 # TODO:
-# - Possibly refactor names 'mid' to 'midi'
+# - Possibly refactor names 'mid' to 'midi' - DO THIS
 # - Write proper tests
 
 
@@ -128,7 +128,7 @@ class MidiDict:
     # - Add remove drums (aka remove channel 9&16) pre-processing
     # - Add similar method for removing specific programs
     # - Decide whether this is necessary to have here in pre-precessing
-    def remove_instruments(self, **config):
+    def remove_instruments(self, config: dict):
         """Removes all channels with instruments specified in config."""
         programs_to_remove = [
             i
@@ -392,3 +392,32 @@ def dict_to_midi(mid_data: dict, ticks_per_beat: int):
     mid.tracks.append(track)
 
     return mid
+
+
+def _test_max_programs(midi_dict: MidiDict, max: int):
+    """Returns false if midi_dict uses more than {max} programs."""
+    present_programs = set(
+        map(
+            lambda msg: msg["data"],
+            midi_dict.instrument_msgs,
+        )
+    )
+
+    if len(present_programs) <= max:
+        return True
+    else:
+        return False
+
+
+def _test_max_instruments(midi_dict: MidiDict, max: int):
+    present_instruments = set(
+        map(
+            lambda msg: midi_dict.program_to_instrument[msg["data"]],
+            midi_dict.instrument_msgs,
+        )
+    )
+
+    if len(present_instruments) <= max:
+        return True
+    else:
+        return False

@@ -3,13 +3,13 @@
         "tests": {
             "max_programs":{
                 "run": true,
-                "config": {
+                "test_args": {
                     "max": 20
                 }
             },
             "max_instruments":{
                 "run": true,
-                "config": {
+                "test_args": {
                     "max": 3
                 }
             }
