@@ -157,7 +157,7 @@ class MidiDict:
             )
 
 
-# Loosely inspired by pretty_midi src
+# Loosely inspired by pretty_midi
 def _extract_track_data(track: mido.MidiTrack):
     meta_msgs = []
     tempo_msgs = []
@@ -263,6 +263,7 @@ def _extract_track_data(track: mido.MidiTrack):
     }
 
 
+# TODO: Redo docstring
 def midi_to_dict(mid: mido.MidiFile):
     """Returns MIDI data in an intermediate dictionary form for tokenization.
 
@@ -299,6 +300,7 @@ def midi_to_dict(mid: mido.MidiFile):
     return data
 
 
+# TODO: Redo docstring
 def dict_to_midi(mid_data: dict, ticks_per_beat: int):
     """Converts MIDI information from dictionary form into a mido.MidiFile.
 

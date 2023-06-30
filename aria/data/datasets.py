@@ -15,6 +15,7 @@ from aria.data import tests
 from aria.data.midi import MidiDict
 
 
+# TODO: Add proper docstring
 class MidiDataset:
     """Container for datasets of MidiDict objects.
 
@@ -62,6 +63,7 @@ class MidiDataset:
         )
 
 
+# TODO: Add functionality for hashing checksum the MIDIs -  removing dupes
 def build_mididict_dataset(
     dir: str,
     recur: bool = False,
@@ -216,6 +218,16 @@ class TokenizedDataset(torch.utils.data.Dataset):
         with open(save_path, "w", encoding="utf-8") as f:
             json.dump({"train": train_entries, "val": val_entries}, f)
 
+    @classmethod
+    def _json_to_hashable(cls, data: list):
+        """Converts JSON objects to a hashable format (inplace)."""
+        for seq in data:
+            for i, tok in enumerate(seq):
+                if isinstance(tok, list):
+                    seq[i] = tuple(tok)
+
+        return data
+
     # TODO: This needs to reload the json back into tuples (hashable)
     @classmethod
     def load(cls, load_path: str, tokenizer: Tokenizer):
@@ -223,20 +235,26 @@ class TokenizedDataset(torch.utils.data.Dataset):
         with open(load_path) as f:
             entries = json.load(f)
 
-        assert isinstance(entries, list), "Invalid dataset"
+        assert isinstance(entries, list) is True, "Invalid dataset"
 
-        return cls(entries, tokenizer)
+        return cls(cls._json_to_hashable(entries), tokenizer)
 
     # TODO: This needs to reload the json back into tuples (hashable)
     @classmethod
     def load_train_val(cls, load_path: str, tokenizer: Tokenizer):
         """Loads train/val datasets from JSON file."""
         with open(load_path) as f:
-            entries = json.load(f)
+            data = json.load(f)
 
-        assert "train" in entries and "val" in entries, "Invalid dataset"
+        assert set(data.keys()) == {"train", "val"}, "Invalid dataset"
+        assert isinstance(data["train"], list) and isinstance(
+            data["val"], list
+        ), "Invalid dataset"
 
-        return cls(entries["train"], tokenizer), cls(entries["val"], tokenizer)
+        train_entries = cls._json_to_hashable(data["train"])
+        val_entries = cls._json_to_hashable(data["val"])
+
+        return cls(train_entries, tokenizer), cls(val_entries, tokenizer)
 
     @classmethod
     def build(
