@@ -556,8 +556,7 @@ class TokenizerLazy(Tokenizer):
             ticks_per_beat=ticks_per_beat,
         )
 
-    @classmethod
-    def export_pitch_aug(cls, aug_range: int):
+    def export_pitch_aug(self, aug_range: int):
         def pitch_aug(
             _aug_range: float,
             src: list,
@@ -586,14 +585,12 @@ class TokenizerLazy(Tokenizer):
         return functools.partial(pitch_aug, aug_range)
 
     # TODO: Implement - follow export_pitch aug
-    @classmethod
-    def export_velocity_aug(cls):
+    def export_velocity_aug(self):
         # Remember to import the velocity quantization into the function
         raise NotImplementedError
 
     # TODO: Implement - follow export_pitch aug
-    @classmethod
-    def export_time_aug(cls):
+    def export_time_aug(self):
         # Remember special case where we have max_time_step
         raise NotImplementedError
 
