@@ -3,13 +3,13 @@
         "tests": {
             "max_programs":{
                 "run": true,
-                "test_args": {
+                "args": {
                     "max": 20
                 }
             },
             "max_instruments":{
                 "run": true,
-                "test_args": {
+                "args": {
                     "max": 3
                 }
             }
@@ -17,7 +17,7 @@
         "pre_processing": {
             "remove_instruments": {
                 "run": true,
-                "config": {
+                "args": {
                     "piano": false,
                     "chromatic": true,
                     "organ": false,

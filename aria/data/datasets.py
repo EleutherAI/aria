@@ -167,6 +167,9 @@ class TokenizedDataset(torch.utils.data.Dataset):
         self.entries = entries
         self.tokenizer = tokenizer
 
+        # Default transformation function
+        self._transform = lambda x: x
+
     def __len__(self):
         return len(self.entries)
 
@@ -187,11 +190,7 @@ class TokenizedDataset(torch.utils.data.Dataset):
 
         return self.tokenizer.encode(src), self.tokenizer.encode(tgt)
 
-    def _transform(self, entry: list):
-        # Default behaviour is to act as the identity function
-        return entry
-
-    # This is a bit gross
+    # This is a bit gross - refactor this
     def set_transform(self, transform: Callable | list[Callable]):
         """Sets data augmentation transformation functions.
 

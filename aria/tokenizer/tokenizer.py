@@ -1,10 +1,12 @@
 """Includes Tokenizers and pre-processing utilities."""
 
 import torch
+import functools
 import itertools
 import copy
 
 from collections import defaultdict
+from random import randint
 from mido.midifiles.units import second2tick, tick2second
 
 from aria.data.midi import MidiDict
@@ -554,33 +556,46 @@ class TokenizerLazy(Tokenizer):
             ticks_per_beat=ticks_per_beat,
         )
 
-    # TODO: Implement
-    # TODO: These must have their range set first
     @classmethod
-    def export_pitch_aug(cls):
-        def pitch_aug(src: list, aug_range: float):
-            pass
+    def export_pitch_aug(cls, aug_range: int):
+        def pitch_aug(
+            _aug_range: float,
+            src: list,
+        ):
+            pitch_aug = randint(-_aug_range, _aug_range)
+            for idx, curr_tok in enumerate(src):
+                if isinstance(curr_tok, str):
+                    # This should only trigger for special tokens
+                    _tok_type = "special"
+                else:
+                    _tok_type = curr_tok[0]
 
-        return pitch_aug
+                if (
+                    _tok_type == "special"
+                    or _tok_type == "dur"
+                    or _tok_type == "drum"
+                    or _tok_type == "wait"
+                ):
+                    continue
+                else:  # Augment note token
+                    (_instrument, _pitch, _velocity) = curr_tok
 
-    # TODO: Implement
-    # TODO: These must have their range set first
+                    src[idx] = (_instrument, _pitch + pitch_aug, _velocity)
+
+        # See functools.partial docs
+        return functools.partial(pitch_aug, aug_range)
+
+    # TODO: Implement - follow export_pitch aug
     @classmethod
     def export_velocity_aug(cls):
-        def velocity_aug(src: list, aug_range: float):
-            pass
+        # Remember to import the velocity quantization into the function
+        raise NotImplementedError
 
-        return velocity_aug
-
-    # TODO: Implement
-    # TODO: These must have their range set first
+    # TODO: Implement - follow export_pitch aug
     @classmethod
     def export_time_aug(cls):
         # Remember special case where we have max_time_step
-        def time_aug(src: list, aug_range: float):
-            pass
-
-        return time_aug
+        raise NotImplementedError
 
 
 def _get_duration_ms(
