@@ -557,17 +557,15 @@ class TokenizerLazy(Tokenizer):
         )
 
     def export_pitch_aug(self, aug_range: int):
-        def pitch_aug(
+        def pitch_aug_seq(
             _aug_range: float,
             src: list,
         ):
-            pitch_aug = randint(-_aug_range, _aug_range)
-            for idx, curr_tok in enumerate(src):
-                if isinstance(curr_tok, str):
-                    # This should only trigger for special tokens
+            def pitch_aug_tok(tok, _pitch_aug):
+                if isinstance(tok, str):
                     _tok_type = "special"
                 else:
-                    _tok_type = curr_tok[0]
+                    _tok_type = tok[0]
 
                 if (
                     _tok_type == "special"
@@ -575,14 +573,18 @@ class TokenizerLazy(Tokenizer):
                     or _tok_type == "drum"
                     or _tok_type == "wait"
                 ):
-                    continue
-                else:  # Augment note token
-                    (_instrument, _pitch, _velocity) = curr_tok
+                    # Return without changing
+                    return tok
+                else:
+                    # Return augmented tok
+                    (_instrument, _pitch, _velocity) = tok
+                    return (_instrument, _pitch + _pitch_aug, _velocity)
 
-                    src[idx] = (_instrument, _pitch + pitch_aug, _velocity)
+            pitch_aug = randint(-_aug_range, _aug_range)
+            return [pitch_aug_tok(x, pitch_aug) for x in src]
 
         # See functools.partial docs
-        return functools.partial(pitch_aug, aug_range)
+        return functools.partial(pitch_aug_seq, aug_range)
 
     # TODO: Implement - follow export_pitch aug
     def export_velocity_aug(self):

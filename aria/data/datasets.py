@@ -12,7 +12,6 @@ from typing import Callable
 
 from aria.config import load_config
 from aria.tokenizer import Tokenizer
-from aria.data import tests
 from aria.data.midi import MidiDict
 
 
