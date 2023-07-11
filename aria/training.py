@@ -137,9 +137,9 @@ def pretrain(
     )
     # Add aug_range for transform fns
     transform_fns = [
-        tokenizer.export_time_aug(4),
-        # tokenizer.export_pitch_aug(),
-        # tokenizer.export_velocity_aug(),
+        tokenizer.export_pitch_aug(4),
+        tokenizer.export_velocity_aug(1),
+        # tokenizer.export_time_aug(),
     ]
     train_dataset.set_transform(transform_fns)
     val_dataset.set_transform(transform_fns)

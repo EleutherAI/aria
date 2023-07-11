@@ -41,12 +41,12 @@
 
     "tokenizer": {
         "lazy": {
-            "default_args": {
+            "dataset_gen_args": {
                 "padding": true,
                 "truncate_type": "strided",
                 "max_seq_len": 1024,
                 "stride_len": 256,
-                "return_tensors": true
+                "return_tensors": false
             },
             "ignore_instruments": {
                 "piano": false,
@@ -85,7 +85,9 @@
                 "sfx": 120
             },
             "drum_velocity": 60,
-            "velocity_quantization": 15,
+            "velocity_quantization": {
+                "step": 15
+            },
             "time_quantization": {
                 "num_steps": 500,
                 "min_step": 10

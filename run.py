@@ -179,7 +179,7 @@ def data(args):
                 "must provide -tokenizer flag if using tokenized mode."
             )
 
-        config = load_config()["tokenizer"][args.tokenizer]["default_args"]
+        config = load_config()["tokenizer"][args.tokenizer]["dataset_gen_args"]
         if args.tokenizer == "lazy":
             tokenizer = TokenizerLazy(**config)
         else:
