@@ -24,6 +24,14 @@ def get_short_seq():
 
 class TestLazyTokenizer(unittest.TestCase):
     def test_tokenize_detokenize_mididict(self):
+        def tokenize_detokenize(file_name: str):
+            mid = mido.MidiFile(f"tests/test_data/{file_name}")
+            midi_dict = MidiDict.from_midi(mid)
+            tokenized_seq = tknzr.tokenize_midi_dict(midi_dict)[0]
+            detokenized_midi_dict = tknzr.detokenize_midi_dict(tokenized_seq)
+            res = detokenized_midi_dict.to_midi()
+            res.save(f"tests/test_results/{file_name}")
+
         tknzr = tokenizer.TokenizerLazy(
             padding=False,
             truncate_type="none",
@@ -31,13 +39,10 @@ class TestLazyTokenizer(unittest.TestCase):
             return_tensors=False,
         )
 
-        mid = mido.MidiFile("tests/test_data/arabesque.mid")
-        midi_dict = MidiDict.from_midi(mid)
-        tokenized_seq = tknzr.tokenize_midi_dict(midi_dict)[0]
-        detokenized_midi_dict = tknzr.detokenize_midi_dict(tokenized_seq)
-
-        res = detokenized_midi_dict.to_midi()
-        res.save("tests/test_results/arabesque.mid")
+        tokenize_detokenize("basic.mid")
+        tokenize_detokenize("arabesque.mid")
+        tokenize_detokenize("beethoven.mid")
+        tokenize_detokenize("pop.mid")
 
     def test_aug(self):
         tknzr = tokenizer.TokenizerLazy(
