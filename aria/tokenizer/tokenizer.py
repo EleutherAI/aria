@@ -1,10 +1,12 @@
 """Includes Tokenizers and pre-processing utilities."""
 
 import torch
+import functools
 import itertools
 import copy
 
 from collections import defaultdict
+from random import randint
 from mido.midifiles.units import second2tick, tick2second
 
 from aria.data.midi import MidiDict
@@ -57,8 +59,9 @@ class Tokenizer:
         self.tok_to_id = {}
         self.id_to_tok = {}
         self.vocab_size = -1
-        self.pad_id = -1
 
+        self.bos_tok = "<S>"
+        self.eos_tok = "<E>"
         self.pad_tok = "<P>"
         self.unk_tok = "<U>"
 
@@ -119,24 +122,29 @@ class TokenizerLazy(Tokenizer):
         super().__init__(
             padding, truncate_type, max_seq_len, stride_len, return_tensors
         )
-        self.config = load_config()["tokenizer"]
+        self.config = load_config()["tokenizer"]["lazy"]
 
         # Calculate time quantizations (in ms)
-        num_steps = self.config["time_quantization"]["num_steps"]
-        min_step = self.config["time_quantization"]["min_step"]
-        self.time_step_quantizations = [min_step * i for i in range(num_steps)]
+        self.num_time_step = self.config["time_quantization"]["num_steps"]
+        self.min_time_step = self.config["time_quantization"]["min_step"]
+        self.time_step_quantizations = [
+            self.min_time_step * i for i in range(self.num_time_step)
+        ]
         self.max_time_step = self.time_step_quantizations[-1]
-        self.min_time_step = min_step
+
+        # Calculate velocity quantizations
+        self.velocity_step = self.config["velocity_quantization"]["step"]
+        self.velocity_quantizations = [
+            i * self.velocity_step
+            for i in range(int(127 / self.velocity_step) + 1)
+        ]
+        self.max_velocity = self.velocity_quantizations[-1]
 
         self.instrument_tokens = [
             k
             for k, v in self.config["ignore_instruments"].items()
             if v is False
         ] + ["drums"]
-
-        self.bos_tok = "<S>"
-        self.eos_tok = "<E>"
-        self.pad_tok = "<P>"
 
         # Build vocab
         self.special_tokens = [
@@ -149,11 +157,10 @@ class TokenizerLazy(Tokenizer):
         self.wait_tokens = [("wait", i) for i in self.time_step_quantizations]
         self.drum_tokens = [("drum", i) for i in range(35, 82)]
 
-        vel_quant = self.config["velocity_quantization"]
         self.note_tokens = itertools.product(
             self.instrument_tokens,
             [i for i in range(128)],
-            [i * vel_quant for i in range(int(127 / vel_quant) + 1)],
+            self.velocity_quantizations,
         )
         self.note_tokens = list(self.note_tokens)
 
@@ -251,47 +258,46 @@ class TokenizerLazy(Tokenizer):
 
         return channel_to_pedal_intervals
 
+    @classmethod
+    def _find_closest_int(cls, n: int, sorted_list: list):
+        # Selects closest integer to n from sorted_list
+        # Time ~ Log(n)
+
+        left, right = 0, len(sorted_list) - 1
+        closest = float("inf")
+
+        while left <= right:
+            mid = (left + right) // 2
+            diff = abs(sorted_list[mid] - n)
+
+            if diff < abs(closest - n):
+                closest = sorted_list[mid]
+
+            if sorted_list[mid] < n:
+                left = mid + 1
+            else:
+                right = mid - 1
+
+        return closest
+
+    def _quantize_time(self, time: int):
+        # This function will return values res >= 0 (inc. 0)
+        return TokenizerLazy._find_closest_int(
+            time, self.time_step_quantizations
+        )
+
+    def _quantize_velocity(self, velocity: int):
+        # This function will return values in the range 0 < res =< 127
+        velocity_quantized = TokenizerLazy._find_closest_int(
+            velocity, self.velocity_quantizations
+        )
+
+        if velocity_quantized == 0 and velocity != 0:
+            return self.velocity_step
+        else:
+            return velocity_quantized
+
     def tokenize_midi_dict(self, midi_dict: MidiDict):
-        def _quantize_time(time: int):
-            # This function will return values res >= 0 (inc. 0)
-            def _find_closest_int(n: int, sorted_list: list):
-                # Selects closest integer to n from sorted_list
-                # Time ~ Log(n)
-
-                left, right = 0, len(sorted_list) - 1
-                closest = float("inf")
-
-                while left <= right:
-                    mid = (left + right) // 2
-                    diff = abs(sorted_list[mid] - n)
-
-                    if diff < abs(closest - n):
-                        closest = sorted_list[mid]
-
-                    if sorted_list[mid] < n:
-                        left = mid + 1
-                    else:
-                        right = mid - 1
-
-                return closest
-
-            return _find_closest_int(time, self.time_step_quantizations)
-
-        def _quantize_velocity(velocity: int):
-            # This function will return values in the range 0 < res < 127
-            def _round(x, base):
-                return int(base * round(float(x) / base))
-
-            quant_step = self.config["velocity_quantization"]
-            res = _round(velocity, quant_step)
-
-            if res == 0:
-                res = quant_step
-            elif res > 127:  # Rounded up above valid velocity range
-                res -= quant_step
-
-            return res
-
         ticks_per_beat = midi_dict.ticks_per_beat
         midi_dict = self._remove_instruments(midi_dict)
         channel_to_pedal_intervals = self._build_pedal_intervals(midi_dict)
@@ -355,8 +361,8 @@ class TokenizerLazy(Tokenizer):
                 )
 
                 # Quantize
-                _velocity = _quantize_velocity(_velocity)
-                _note_duration = _quantize_time(_note_duration)
+                _velocity = self._quantize_velocity(_velocity)
+                _note_duration = self._quantize_time(_note_duration)
                 if _note_duration == 0:
                     _note_duration = self.min_time_step
 
@@ -379,7 +385,7 @@ class TokenizerLazy(Tokenizer):
                     _wait_duration -= self.max_time_step
 
                 # Only append wait tok if it is non-zero
-                _wait_duration = _quantize_time(_wait_duration)
+                _wait_duration = self._quantize_time(_wait_duration)
                 if _wait_duration != 0:
                     tokenized_seq.append(("wait", _wait_duration))
 
@@ -557,30 +563,121 @@ class TokenizerLazy(Tokenizer):
             ticks_per_beat=ticks_per_beat,
         )
 
-    # TODO: Implement
-    @classmethod
-    def export_pitch_aug(cls):
-        def pitch_aug(src: list, aug_range: float):
-            pass
+    def export_pitch_aug(self, aug_range: int):
+        """Exports a function that augments the pitch of all note tokens.
 
-        return pitch_aug
+        Note that notes which fall out of the range (0, 127) will be replaced
+        with the unknown token '<U>'.
 
-    # TODO: Implement
-    @classmethod
-    def export_velocity_aug(cls):
-        def velocity_aug(src: list, aug_range: float):
-            pass
+        Args:
+            aug_range (int): Returned function will randomly augment the pitch
+                from a value in the range (-aug_range, aug_range).
 
-        return velocity_aug
+        Returns:
+            Callable[list]: Exported function.
+        """
 
-    # TODO: Implement
-    @classmethod
-    def export_time_aug(cls):
+        def pitch_aug_seq(
+            src: list,
+            unk_tok: str,
+            _aug_range: float,
+        ):
+            def pitch_aug_tok(tok, _pitch_aug):
+                if isinstance(tok, str):
+                    _tok_type = "special"
+                else:
+                    _tok_type = tok[0]
+
+                if (
+                    _tok_type == "special"
+                    or _tok_type == "dur"
+                    or _tok_type == "drum"
+                    or _tok_type == "wait"
+                ):
+                    # Return without changing
+                    return tok
+                else:
+                    # Return augmented tok
+                    (_instrument, _pitch, _velocity) = tok
+
+                    if 0 <= _pitch + _pitch_aug <= 127:
+                        return (_instrument, _pitch + _pitch_aug, _velocity)
+                    else:
+                        return unk_tok
+
+            pitch_aug = randint(-_aug_range, _aug_range)
+            return [pitch_aug_tok(x, pitch_aug) for x in src]
+
+        # See functools.partial docs
+        return functools.partial(
+            pitch_aug_seq,
+            unk_tok=self.unk_tok,
+            _aug_range=aug_range,
+        )
+
+    def export_velocity_aug(self, aug_steps_range: int):
+        """Exports a function which augments the velocity of all pitch tokens.
+
+        This augmentation truncated such that it returns a valid note token.
+
+        Args:
+            aug_steps_range (int): Returned function will randomly augment
+                velocity in the range aug_steps_range * (-self.velocity_step,
+                self.velocity step).
+
+        Returns:
+            Callable[str]: Exported function.
+        """
+
+        def velocity_aug_seq(
+            src: list,
+            velocity_step: int,
+            max_velocity: int,
+            _aug_steps_range: float,
+        ):
+            def velocity_aug_tok(tok, _velocity_aug):
+                if isinstance(tok, str):
+                    _tok_type = "special"
+                else:
+                    _tok_type = tok[0]
+
+                if (
+                    _tok_type == "special"
+                    or _tok_type == "dur"
+                    or _tok_type == "drum"
+                    or _tok_type == "wait"
+                ):
+                    # Return without changing
+                    return tok
+                else:
+                    # Return augmented tok
+                    (_instrument, _pitch, _velocity) = tok
+
+                    # Check it doesn't go out of bounds
+                    if _velocity + _velocity_aug >= max_velocity:
+                        return (_instrument, _pitch, max_velocity)
+                    elif _velocity + _velocity_aug <= velocity_step:
+                        return (_instrument, _pitch, velocity_step)
+
+                    return (_instrument, _pitch, _velocity + _velocity_aug)
+
+            velocity_aug = velocity_step * randint(
+                -_aug_steps_range, _aug_steps_range
+            )
+            return [velocity_aug_tok(x, velocity_aug) for x in src]
+
+        # See functools.partial docs
+        return functools.partial(
+            velocity_aug_seq,
+            velocity_step=self.velocity_step,
+            max_velocity=self.max_velocity,
+            _aug_steps_range=aug_steps_range,
+        )
+
+    # TODO: Implement - follow export_pitch aug
+    def export_time_aug(self):
         # Remember special case where we have max_time_step
-        def time_aug(src: list, aug_range: float):
-            pass
-
-        return time_aug
+        raise NotImplementedError
 
 
 def _get_duration_ms(

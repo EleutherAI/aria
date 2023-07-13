@@ -16,6 +16,7 @@ from aria.data.datasets import TokenizedDataset
 
 # TODO:
 # - Refactor
+# - This needs to be tested
 
 
 class PretrainLM(pl.LightningModule):
@@ -96,7 +97,7 @@ def get_gpu_precision():
 def pretrain(
     model_name: str,
     tokenizer_name: str,
-    data: str,
+    data_path: str,
     workers: int,
     gpus: int,
     epochs: int,
@@ -106,7 +107,7 @@ def pretrain(
     # Validate inputs
     assert 0 < workers <= 128, "Too many workers"
     assert 0 < gpus <= 8, "Too many GPUs"
-    assert os.path.isfile(data)
+    assert os.path.isfile(data_path)
     assert os.path.isfile(checkpoint)
     assert torch.cuda.is_available() is True, "CUDA not available"
 
@@ -131,13 +132,14 @@ def pretrain(
 
     # Load datasets and dataloader
     train_dataset, val_dataset = TokenizedDataset.load_train_val(
-        data,
+        data_path,
         tokenizer,
     )
+    # Add aug_range for transform fns
     transform_fns = [
-        tokenizer.export_time_aug(),
-        tokenizer.export_pitch_aug(),
-        tokenizer.export_velocity_aug(),
+        tokenizer.export_pitch_aug(4),
+        tokenizer.export_velocity_aug(1),
+        # tokenizer.export_time_aug(),
     ]
     train_dataset.set_transform(transform_fns)
     val_dataset.set_transform(transform_fns)
