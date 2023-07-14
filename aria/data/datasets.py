@@ -1,6 +1,7 @@
 """Contains classes and utilities for building and processing datasets."""
 
 import json
+import jsonlines
 import logging
 import copy
 import torch
@@ -39,16 +40,20 @@ class MidiDataset:
 
     def save(self, save_path: str):
         """Saves dataset to JSON file."""
-        with open(save_path, "w", encoding="utf-8") as f:
-            json.dump([entry._get_msg_dict() for entry in self.entries], f)
+
+        with jsonlines.open(save_path, mode="w") as writer:
+            for midi_dict in self.entries:
+                writer.write(midi_dict.get_msg_dict())
 
     @classmethod
     def load(cls, load_path: str):
         """Loads dataset from JSON file."""
-        with open(load_path) as f:
-            entries = json.load(f)
+        midi_dicts = []
+        with jsonlines.open(load_path) as reader:
+            for entry in reader:
+                midi_dicts.append(MidiDict.from_msg_dict(entry))
 
-        return cls([MidiDict(**entry) for entry in entries])
+        return cls(midi_dicts)
 
     @classmethod
     def build(
@@ -57,9 +62,25 @@ class MidiDataset:
         recur: bool = False,
     ):
         """Inplace version of build_dataset."""
-        return build_mididict_dataset(
+        return cls(
+            build_mididict_dataset(
+                dir=dir,
+                recur=recur,
+            )
+        )
+
+    @classmethod
+    def build_direct_to_file(
+        cls,
+        dir: str,
+        save_path: str,
+        recur: bool = False,
+    ):
+        """Inplace version of build_dataset."""
+        build_mididict_dataset(
             dir=dir,
             recur=recur,
+            stream_save_path=save_path,
         )
 
 
@@ -67,6 +88,7 @@ class MidiDataset:
 def build_mididict_dataset(
     dir: str,
     recur: bool = False,
+    stream_save_path: str = None,
 ):
     """Builds dataset of MidiDicts.
 
@@ -77,9 +99,13 @@ def build_mididict_dataset(
         dir (str): Directory to index from.
         recur (bool): If True, recursively search directories for MIDI files.
             Defaults to False.
+        stream_save_path: If True, stream the dictionaries directly to a jsonl
+            file instead of returning them as a list. This option is
+            appropriate when processing very large numbers of MIDI files.
 
     Returns:
-        Dataset: Dataset of parsed, filtered, and preprocessed MidiDicts.
+        list[MidiDict]: List of parsed, filtered, and preprocessed MidiDicts.
+            This is only returned if stream_save_path is not provided.
     """
 
     def _run_tests(_mid_dict: MidiDict):
@@ -87,34 +113,41 @@ def build_mididict_dataset(
         for test_name, test_config in config["tests"].items():
             if test_config["run"] is True:
                 # All midi_dict tests must follow this naming convention
-                test_fn_name = "_test" + " " + test_name
+                test_fn_name = "_test" + "_" + test_name
                 test_args = test_config["args"]
 
                 try:
                     test_fn = getattr(aria.data.midi, test_fn_name)
                 except:
-                    logging.warn(f"Error finding test function for {test_name}")
+                    logging.error(
+                        f"Error finding test function for {test_name}"
+                    )
                 else:
                     if test_fn(_mid_dict, **test_args) is False:
                         failed_tests.append(test_name)
 
         return failed_tests
 
-    def _process_midi(_mid_dict: MidiDict):
+    def _preprocess_mididict(_mid_dict: MidiDict):
         for fn_name, fn_config in config["pre_processing"].items():
             if fn_config["run"] is True:
                 fn_args = fn_config["args"]
-                getattr(_mid_dict, fn_name)(**fn_args)
+                getattr(_mid_dict, fn_name)(fn_args)
 
                 try:
                     # Note fn_args is passed as a dict, not unpacked as kwargs
                     getattr(_mid_dict, fn_name)(fn_args)
                 except:
-                    logging.warn(
+                    logging.error(
                         f"Error finding preprocessing function for {fn_name}"
                     )
 
         return _mid_dict
+
+    if stream_save_path is None:
+        streaming = False
+    else:
+        streaming = True
 
     config = load_config()["data"]
 
@@ -126,30 +159,44 @@ def build_mididict_dataset(
         paths += Path(dir).glob(f"*.mid")
         paths += Path(dir).glob(f"*.midi")
 
-    # Run tests and process located MIDIs
-    entries = []
-    for path in paths:
-        try:
-            mid_dict = MidiDict.from_midi(mido.MidiFile(path))
-        except Exception:
-            print(f"Failed to load file at {path}.")
+    if streaming is True:
+        with jsonlines.open(stream_save_path, mode="w") as writer:
+            for path in paths:
+                try:
+                    mid_dict = MidiDict.from_midi(mido.MidiFile(path))
+                except Exception:
+                    logging.error(f"Failed to load file at {path}.")
 
-        failed_tests = _run_tests(mid_dict)
-        if failed_tests:
-            print(
-                f"{path} not added. Failed tests:",
-                ", ".join(failed_tests) + ".",
-            )
-        else:
-            entries.append(_process_midi(mid_dict))
+                failed_tests = _run_tests(mid_dict)
+                if failed_tests:
+                    logging.info(f"File at {path} failed preprocessing tests:")
+                    for test_name in failed_tests:
+                        logging.info(test_name)
+                else:
+                    writer.write(_preprocess_mididict(mid_dict).get_msg_dict())
 
-    return MidiDataset(entries)
+    else:  # streaming is False
+        entries = []
+        for path in paths:
+            try:
+                mid_dict = MidiDict.from_midi(mido.MidiFile(path))
+            except Exception:
+                logging.error(f"Failed to load file at {path}.")
+
+            failed_tests = _run_tests(mid_dict)
+            if failed_tests:
+                logging.info(f"File at {path} failed preprocessing tests:")
+                for test_name in failed_tests:
+                    logging.info(test_name)
+            else:
+                entries.append(_preprocess_mididict(mid_dict))
+
+        return entries
 
 
 # TODO:
 # - Perhaps add a record of which tokenizer/config was used to build a dataset,
 #   if this is not the same as the tokenizer used during training, throw err?
-# - Change this to integrate with huggingface's ecosystem
 class TokenizedDataset(torch.utils.data.Dataset):
     """Container for datasets of pre-processed (tokenized) MidiDict objects.
 
@@ -275,7 +322,7 @@ class TokenizedDataset(torch.utils.data.Dataset):
         tokenizer: Tokenizer,
     ):
         if tokenizer.truncate_type != "strided":
-            logging.warn(
+            logging.warning(
                 "Tokenizer striding not being used when building dataset."
             )
 
