@@ -42,10 +42,7 @@
     "tokenizer": {
         "lazy": {
             "dataset_gen_args": {
-                "padding": true,
-                "truncate_type": "strided",
                 "max_seq_len": 1024,
-                "stride_len": 256,
                 "return_tensors": false
             },
             "ignore_instruments": {

@@ -65,9 +65,7 @@ class TestTokenizedDataset(unittest.TestCase):
     # Test building is working (on the file level)
     def test_build(self):
         tknzr = tokenizer.TokenizerLazy(
-            padding=True,
-            truncate_type="default",
-            max_seq_len=64,
+            max_seq_len=512,
             return_tensors=False,
         )
         mididict_dataset = datasets.MidiDataset.build(
@@ -99,16 +97,13 @@ class TestTokenizedDataset(unittest.TestCase):
             sum(1 for _ in dataset_buffer_from_file.file_buff),
             len(dataset_buffer_from_file) + 1,
         )
-        self.assertEqual(len(dataset_buffer_from_file), len(mididict_dataset))
 
         dataset_buffer_from_file.close()
         dataset_buffer_from_mdset.close()
 
     def test_mmap(self):
         tknzr = tokenizer.TokenizerLazy(
-            padding=True,
-            truncate_type="default",
-            max_seq_len=200,
+            max_seq_len=512,
             return_tensors=False,
         )
         midi_dataset = datasets.MidiDataset.build(
@@ -123,7 +118,6 @@ class TestTokenizedDataset(unittest.TestCase):
         )
 
         raw_entries = [src for src, tgt in tokenized_dataset]
-        self.assertEqual(len(raw_entries), len(midi_dataset))
         self.assertEqual(len({len(_) for _ in raw_entries}), 1)
 
         src, tgt = tokenized_dataset[0]
@@ -134,9 +128,7 @@ class TestTokenizedDataset(unittest.TestCase):
 
     def test_augmentation(self):
         tknzr = tokenizer.TokenizerLazy(
-            padding=True,
-            truncate_type="default",
-            max_seq_len=200,
+            max_seq_len=512,
             return_tensors=False,
         )
         midi_dataset = datasets.MidiDataset.build(

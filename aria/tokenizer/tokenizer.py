@@ -20,40 +20,18 @@ class Tokenizer:
     """Abstract Tokenizer class for tokenizing midi_dict objects.
 
     Args:
-        padding (bool): If True, add padding to tokenized sequences.
-        truncate_type (str): Style in which to truncate the tokenized sequences.
-            Options are "none", "default", and "strided".
-        max_seq_len (int): Sequence length to truncate according to.
-        stride_len (int, optional): Stride length to use if truncate_type is
-            "strided".
+        max_seq_len (int): Maximum sequence length supported by tokenizer.
         return_tensors (bool, optional): If True, encode will return tensors.
             Defaults to False.
     """
 
     def __init__(
         self,
-        padding: bool,
-        truncate_type: str,
         max_seq_len: int,
-        stride_len: int = None,
         return_tensors: bool = False,
     ):
-        assert truncate_type in {
-            "none",
-            "default",
-            "strided",
-        }, "Invalid value for truncation_type"
-
-        if truncate_type == "strided":
-            assert stride_len is not None and (
-                0 < stride_len < max_seq_len
-            ), "stride_len must be between 0 and max_seq_len"
-
         self.name = None
-        self.padding = padding
         self.max_seq_len = max_seq_len
-        self.truncate_type = truncate_type
-        self.stride_len = stride_len
         self.return_tensors = return_tensors
 
         # These must be implemented in child class (abstract params)
@@ -114,15 +92,10 @@ class TokenizerLazy(Tokenizer):
 
     def __init__(
         self,
-        padding: bool,
-        truncate_type: str,
         max_seq_len: int,
-        stride_len: int = None,
         return_tensors: bool = False,
     ):
-        super().__init__(
-            padding, truncate_type, max_seq_len, stride_len, return_tensors
-        )
+        super().__init__(max_seq_len, return_tensors)
         self.config = load_config()["tokenizer"]["lazy"]
         self.name = "lazy"
 
@@ -246,54 +219,13 @@ class TokenizerLazy(Tokenizer):
         else:
             return velocity_quantized
 
-    # TODO:
-    # - Refactor this into an internal method
-    # - Add make sure that the truncation ends on a dur, and doesn't cut
-    #   off or start early.
-    def _truncate(self, present_instruments: list, tokenized_seq: list):
-        """Truncates a tokenized sequence according to self.truncate_type."""
-        if self.truncate_type == "none":
-            _res = (
-                present_instruments
-                + [self.bos_tok]
-                + tokenized_seq
-                + [self.eos_tok]
-            )
-            res = [_res]
-        elif self.truncate_type == "default":
-            _res = (
-                present_instruments
-                + [self.bos_tok]
-                + tokenized_seq
-                + [self.eos_tok]
-            )
-            if self.padding is True:
-                _res += [self.pad_tok] * (self.max_seq_len - len(_res))
-            res = [_res[: self.max_seq_len]]
-        elif self.truncate_type == "strided":
-            _res = [self.bos_tok] + tokenized_seq + [self.eos_tok]
-            seq_len = len(_res)
-            prefix_len = len(present_instruments)
-
-            res = []
-            idx = 0
-            # No padding needed here
-            while idx + self.max_seq_len - prefix_len < seq_len:
-                res.append(
-                    present_instruments
-                    + _res[idx : idx + self.max_seq_len - prefix_len]
-                )
-                idx += self.stride_len
-
-            # Add the last sequence
-            _seq = (
-                present_instruments
-                + _res[idx : idx + self.max_seq_len - prefix_len]
-            )
-            if self.padding is True:
-                _seq += [self.pad_tok] * (self.max_seq_len - len(_seq))
-
-            res.append(_seq)
+    def _format(self, present_instruments: list, unformatted_seq: list):
+        res = (
+            present_instruments
+            + [self.bos_tok]
+            + unformatted_seq
+            + [self.eos_tok]
+        )
 
         return res
 
@@ -389,9 +321,9 @@ class TokenizerLazy(Tokenizer):
                 if _wait_duration != 0:
                     tokenized_seq.append(("wait", _wait_duration))
 
-        return self._truncate(
+        return self._format(
             present_instruments=present_instruments,
-            tokenized_seq=tokenized_seq,
+            unformatted_seq=tokenized_seq,
         )
 
     # TODO:
@@ -404,7 +336,7 @@ class TokenizerLazy(Tokenizer):
         TICKS_PER_BEAT = 480
         TEMPO = 500000
 
-        # Set messagetempos
+        # Set message tempos
         tempo_msgs = [{"type": "tempo", "data": TEMPO, "tick": 0}]
         meta_msgs = []
         pedal_msgs = []
@@ -448,15 +380,23 @@ class TokenizerLazy(Tokenizer):
         ):
             if curr_tok in self.special_tokens:
                 _curr_tok_type = "special"
+            elif isinstance(curr_tok, str):  # Present instrument prefix
+                _curr_tok_type = "prefix"
             else:
                 _curr_tok_type = curr_tok[0]
 
             if next_tok in self.special_tokens:
                 _next_tok_type = "special"
+            elif isinstance(next_tok, str):  # Present instrument prefix
+                _next_tok_type = "prefix"
             else:
                 _next_tok_type = next_tok[0]
 
-            if _curr_tok_type == "dur" or _curr_tok_type == "special":
+            if (
+                _curr_tok_type == "special"
+                or _curr_tok_type == "prefix"
+                or _curr_tok_type == "dur"
+            ):
                 continue
             elif _curr_tok_type == "wait":
                 curr_tick += int(
@@ -522,7 +462,7 @@ class TokenizerLazy(Tokenizer):
                 )
 
             else:
-                logging.warn(
+                logging.warning(
                     f"Unexpected token sequence: {curr_tok}, {next_tok}"
                 )
 

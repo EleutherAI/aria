@@ -106,7 +106,7 @@ def pretrain(
 ):
     # Validate inputs
     assert 0 < workers <= 128, "Too many workers"
-    assert 0 < gpus <= 8, "Too many GPUs"
+    assert 0 < gpus <= 8, "Too many (or none) GPUs"
     assert os.path.isfile(data_path)
     assert os.path.isfile(checkpoint)
     assert torch.cuda.is_available() is True, "CUDA not available"
