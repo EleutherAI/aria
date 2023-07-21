@@ -106,18 +106,33 @@ class MidiDict:
             | {i: "sfx" for i in range(120, 127 + 1)}
         )
 
-    def _get_msg_dict(self):
+    def get_msg_dict(self):
         return {
             "meta_msgs": self.meta_msgs,
             "tempo_msgs": self.tempo_msgs,
             "pedal_msgs": self.pedal_msgs,
             "instrument_msgs": self.instrument_msgs,
             "note_msgs": self.note_msgs,
+            "ticks_per_beat": self.ticks_per_beat,
         }
 
     def to_midi(self):
         """Inplace version of dict_to_midi."""
-        return dict_to_midi(self._get_msg_dict(), self.ticks_per_beat)
+        return dict_to_midi(self.get_msg_dict())
+
+    @classmethod
+    def from_msg_dict(cls, msg_dict: dict):
+        """Inplace version of midi_to_dict."""
+        assert msg_dict.keys() == {
+            "meta_msgs",
+            "tempo_msgs",
+            "pedal_msgs",
+            "instrument_msgs",
+            "note_msgs",
+            "ticks_per_beat",
+        }
+
+        return cls(**msg_dict)
 
     @classmethod
     def from_midi(cls, mid: mido.MidiFile):
@@ -129,7 +144,8 @@ class MidiDict:
     # - Add similar method for removing specific programs
     # - Decide whether this is necessary to have here in pre-precessing
     def remove_instruments(self, config: dict):
-        """Removes all channels with instruments specified in config."""
+        """Removes all messages with instruments specified in config, excluding
+        drums."""
         programs_to_remove = [
             i
             for i in range(1, 127 + 1)
@@ -144,8 +160,14 @@ class MidiDict:
         # Remove drums (channel 9/16) from channels to remove
         channels_to_remove = [i for i in channels_to_remove if i not in {9, 16}]
 
-        # Remove unwanted messages all type by looping over msgs types
-        for msgs_name, msgs_list in self._get_msg_dict().items():
+        # Remove unwanted messages all type by looping over msgs types. We need
+        # to remove ticks_per_beat as this does not contain any messages.
+        msg_dict = {
+            k: v
+            for k, v in self.get_msg_dict().items()
+            if k is not "ticks_per_beat"
+        }
+        for msgs_name, msgs_list in msg_dict.items():
             setattr(
                 self,
                 msgs_name,
@@ -301,7 +323,7 @@ def midi_to_dict(mid: mido.MidiFile):
 
 
 # TODO: Redo docstring
-def dict_to_midi(mid_data: dict, ticks_per_beat: int):
+def dict_to_midi(mid_data: dict):
     """Converts MIDI information from dictionary form into a mido.MidiFile.
 
     This function performs midi_to_dict in reverse. For a complete
@@ -323,8 +345,10 @@ def dict_to_midi(mid_data: dict, ticks_per_beat: int):
         "pedal_msgs",
         "instrument_msgs",
         "note_msgs",
+        "ticks_per_beat",
     }, "Invalid json/dict."
 
+    ticks_per_beat = mid_data.pop("ticks_per_beat")
     if "meta_msgs" in mid_data.keys():
         del mid_data["meta_msgs"]
 
