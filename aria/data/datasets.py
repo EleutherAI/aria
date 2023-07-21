@@ -1,6 +1,9 @@
 """Contains classes and utilities for building and processing datasets."""
 
 import json
+import os
+import mmap
+import atexit
 import jsonlines
 import logging
 import copy
@@ -17,6 +20,7 @@ from aria.data.midi import MidiDict
 
 
 # TODO: Add proper docstring
+# - Add functionality for splitting the dataset into train-val split
 class MidiDataset:
     """Container for datasets of MidiDict objects.
 
@@ -61,7 +65,7 @@ class MidiDataset:
         dir: str,
         recur: bool = False,
     ):
-        """Inplace version of build_dataset."""
+        """Builds are returns a MidiDataset, see build_mididict_dataset."""
         return cls(
             build_mididict_dataset(
                 dir=dir,
@@ -70,17 +74,24 @@ class MidiDataset:
         )
 
     @classmethod
-    def build_direct_to_file(
+    def build_to_file(
         cls,
         dir: str,
         save_path: str,
         recur: bool = False,
+        overwrite: bool = False,
     ):
-        """Inplace version of build_dataset."""
+        """Builds MidiDataset, saving the results directly to a file.
+
+        This function will not return a MidiDataset object. It is well suited
+        for situations where the resulting MidiDataset will not fit in the
+        system's memory.
+        """
         build_mididict_dataset(
             dir=dir,
             recur=recur,
             stream_save_path=save_path,
+            overwrite=overwrite,
         )
 
 
@@ -89,6 +100,7 @@ def build_mididict_dataset(
     dir: str,
     recur: bool = False,
     stream_save_path: str = None,
+    overwrite: bool = False,
 ):
     """Builds dataset of MidiDicts.
 
@@ -102,6 +114,7 @@ def build_mididict_dataset(
         stream_save_path: If True, stream the dictionaries directly to a jsonl
             file instead of returning them as a list. This option is
             appropriate when processing very large numbers of MIDI files.
+        overwrite: If True, overwrite file at stream_save_path when streaming.
 
     Returns:
         list[MidiDict]: List of parsed, filtered, and preprocessed MidiDicts.
@@ -149,6 +162,11 @@ def build_mididict_dataset(
     else:
         streaming = True
 
+        if overwrite is False and os.path.isfile(stream_save_path) is True:
+            raise FileExistsError(f"File at {stream_save_path} already exists.")
+        elif overwrite is True and os.path.isfile(stream_save_path) is True:
+            os.remove(stream_save_path)
+
     config = load_config()["data"]
 
     paths = []
@@ -194,49 +212,72 @@ def build_mididict_dataset(
         return entries
 
 
-# TODO:
-# - Perhaps add a record of which tokenizer/config was used to build a dataset,
-#   if this is not the same as the tokenizer used during training, throw err?
 class TokenizedDataset(torch.utils.data.Dataset):
-    """Container for datasets of pre-processed (tokenized) MidiDict objects.
-
-    Note that the __getitem__ method of this class returns src, tgt pairs
-
-    Args:
-        entries (list): MidiDict objects to be stored.
-        tokenizer (Tokenizer): Tokenizer for converting tokens to ids. Note: in
-            the case that TokenizedDataset is provided as input to a DataLoader,
-            tokenizer is expected to have return_tensors == True.
-    """
-
-    def __init__(self, entries: list, tokenizer: Tokenizer):
-        self.entries = entries
+    def __init__(self, file_path: str, tokenizer: Tokenizer):
         self.tokenizer = tokenizer
+        self._transform = None
 
-        # Default transformation function
-        self._transform = lambda x: x
+        self.file_buff = open(file_path, mode="r")
+        self.file_mmap = mmap.mmap(
+            self.file_buff.fileno(), 0, access=mmap.ACCESS_READ
+        )
+
+        # Check self.tokenizers is the same as the one used to generate file
+        _debug = self.file_mmap.readline()
+        file_config = json.loads(_debug)
+        for k, v in file_config.items():
+            assert getattr(self.tokenizer, k) == v
+
+        self.index = self._build_index()
+
+    def close(self):
+        # This is unnecessary because mmap is closed automatically when gc,
+        # however using this stops ResourceWarnings.
+        self.file_buff.close()
+        self.file_mmap.close()
 
     def __len__(self):
-        return len(self.entries)
+        return len(self.index)
 
     def __getitem__(self, idx: int):
-        assert (
-            self.tokenizer.return_tensors is True
-        ), "tokenizer must have return_tensors == True"
+        def _format(tok):
+            # This is required because json formats tuples into lists
+            if isinstance(tok, list):
+                return tuple(tok)
+            return tok
 
-        # Maybe refactor this to avoid the use of deepcopy - perf reasons.
-        # We use create a copy so that self._transform does not permanently
-        # mutate the entries.
-        entry = copy.deepcopy(self.entries[idx])
-        entry_aug = self._transform(entry)
+        self.file_mmap.seek(self.index[idx])
 
-        # Using '+' implicitly creates a copy
-        src = entry_aug
-        tgt = entry_aug[1:] + [self.tokenizer.pad_tok]
+        _debug = self.file_mmap.readline()
+        seq = json.loads(_debug)  # Load raw seq
+        seq = [_format(tok) for tok in seq]  # Format into hashable
+        if self._transform:
+            seq = self._transform(seq)  # Data augmentation
+
+        src = seq
+        tgt = seq[1:] + [self.tokenizer.pad_tok]
 
         return self.tokenizer.encode(src), self.tokenizer.encode(tgt)
 
-    # This is a bit gross - refactor this
+    def _build_index(self):
+        # Skip first line containing config
+        self.file_mmap.seek(0)
+        self.file_mmap.readline()
+
+        index = []
+        while True:
+            pos = self.file_mmap.tell()
+            line_buffer = self.file_mmap.readline()
+            if line_buffer == b"":
+                break
+            else:
+                index.append(pos)
+
+        logging.debug(f"Finished indexing {len(index)} sequences")
+
+        return index
+
+    # This is a bit gross - maybe refactor this
     def set_transform(self, transform: Callable | list[Callable]):
         """Sets data augmentation transformation functions.
 
@@ -255,86 +296,54 @@ class TokenizedDataset(torch.utils.data.Dataset):
             # Define new transformation function (apply fn in order)
             def _new_transform(x):
                 for fn in transform:
-                    res = fn(x)
-                return res
+                    x = fn(x)
+                return x
 
             self._transform = _new_transform
         else:
             raise ValueError("Must provide function or list of functions.")
 
-    def save(self, save_path: str):
-        """Saves dataset to JSON file."""
-        with open(save_path, "w", encoding="utf-8") as f:
-            json.dump(self.entries, f)
-
-    def save_train_val(self, save_path: str, split: float = 0.9):
-        """Saves test, train split to JSON file. Note that this can be reloaded
-        using TokenizedDataset.load_train_val."""
-        assert 0.0 <= split <= 1.0, "Invalid test-validation split ratio"
-
-        split_idx = round(split * len(self))
-        train_entries = self.entries[:split_idx]
-        val_entries = self.entries[split_idx:]
-
-        with open(save_path, "w", encoding="utf-8") as f:
-            json.dump({"train": train_entries, "val": val_entries}, f)
-
-    @classmethod
-    def _json_to_hashable(cls, data: list):
-        """Converts JSON objects to a hashable format (inplace)."""
-        for seq in data:
-            for i, tok in enumerate(seq):
-                if isinstance(tok, list):
-                    seq[i] = tuple(tok)
-
-        return data
-
-    @classmethod
-    def load(cls, load_path: str, tokenizer: Tokenizer):
-        """Loads dataset from JSON file."""
-        with open(load_path) as f:
-            entries = json.load(f)
-
-        assert isinstance(entries, list) is True, "Invalid dataset"
-
-        return cls(cls._json_to_hashable(entries), tokenizer)
-
-    @classmethod
-    def load_train_val(cls, load_path: str, tokenizer: Tokenizer):
-        """Loads train/val datasets from JSON file."""
-        with open(load_path) as f:
-            data = json.load(f)
-
-        assert set(data.keys()) == {"train", "val"}, "Invalid dataset"
-        assert isinstance(data["train"], list) and isinstance(
-            data["val"], list
-        ), "Invalid dataset"
-
-        train_entries = cls._json_to_hashable(data["train"])
-        val_entries = cls._json_to_hashable(data["val"])
-
-        return cls(train_entries, tokenizer), cls(val_entries, tokenizer)
-
     @classmethod
     def build(
         cls,
-        midi_dataset: MidiDataset,
         tokenizer: Tokenizer,
+        save_path: str,
+        midi_dataset: MidiDataset = None,
+        midi_dataset_path: str = None,
+        overwrite: bool = False,
     ):
-        if tokenizer.truncate_type != "strided":
-            logging.warning(
-                "Tokenizer striding not being used when building dataset."
+        if overwrite is False and os.path.isfile(save_path) is True:
+            raise FileExistsError(f"File at {save_path} already exists.")
+        elif overwrite is True and os.path.isfile(save_path) is True:
+            os.remove(save_path)
+
+        if midi_dataset is None and midi_dataset_path is None:
+            raise ValueError(
+                "Must provide either midi_dataset or midi_dataset_path."
             )
 
-        return build_tokenized_dataset(midi_dataset, tokenizer)
+        with jsonlines.open(save_path, mode="w") as writer:
+            # Write tokenizer info into json on first line
+            writer.write(
+                {
+                    "name": tokenizer.name,
+                    "padding": tokenizer.padding,
+                    "truncate_type": tokenizer.truncate_type,
+                    "max_seq_len": tokenizer.max_seq_len,
+                    "stride_len": tokenizer.stride_len,
+                }
+            )
 
+            if midi_dataset:
+                for midi_dict in midi_dataset:
+                    for entry in tokenizer.tokenize_midi_dict(midi_dict):
+                        writer.write(entry)
 
-def build_tokenized_dataset(
-    midi_dataset: MidiDataset,
-    tokenizer: Tokenizer,
-):
-    entries = []
-    for midi_dict in midi_dataset:
-        entries.extend(tokenizer.tokenize_midi_dict(midi_dict))
+            elif midi_dataset_path:
+                with jsonlines.open(midi_dataset_path) as reader:
+                    for msg_dict in reader:
+                        midi_dict = MidiDict.from_msg_dict(msg_dict)
+                        for entry in tokenizer.tokenize_midi_dict(midi_dict):
+                            writer.write(entry)
 
-    return TokenizedDataset(entries, tokenizer)
+        return cls(file_path=save_path, tokenizer=tokenizer)

@@ -23,6 +23,7 @@ def get_short_seq():
 
 
 class TestLazyTokenizer(unittest.TestCase):
+    # Add encode decode test
     def test_tokenize_detokenize_mididict(self):
         def tokenize_detokenize(file_name: str):
             mid = mido.MidiFile(f"tests/test_data/{file_name}")

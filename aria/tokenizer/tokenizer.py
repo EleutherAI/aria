@@ -1,9 +1,9 @@
 """Includes Tokenizers and pre-processing utilities."""
 
+import logging
 import torch
 import functools
 import itertools
-import copy
 
 from collections import defaultdict
 from random import randint
@@ -49,6 +49,7 @@ class Tokenizer:
                 0 < stride_len < max_seq_len
             ), "stride_len must be between 0 and max_seq_len"
 
+        self.name = None
         self.padding = padding
         self.max_seq_len = max_seq_len
         self.truncate_type = truncate_type
@@ -123,6 +124,7 @@ class TokenizerLazy(Tokenizer):
             padding, truncate_type, max_seq_len, stride_len, return_tensors
         )
         self.config = load_config()["tokenizer"]["lazy"]
+        self.name = "lazy"
 
         # Calculate time quantizations (in ms)
         self.num_time_step = self.config["time_quantization"]["num_steps"]
@@ -244,6 +246,57 @@ class TokenizerLazy(Tokenizer):
         else:
             return velocity_quantized
 
+    # TODO:
+    # - Refactor this into an internal method
+    # - Add make sure that the truncation ends on a dur, and doesn't cut
+    #   off or start early.
+    def _truncate(self, present_instruments: list, tokenized_seq: list):
+        """Truncates a tokenized sequence according to self.truncate_type."""
+        if self.truncate_type == "none":
+            _res = (
+                present_instruments
+                + [self.bos_tok]
+                + tokenized_seq
+                + [self.eos_tok]
+            )
+            res = [_res]
+        elif self.truncate_type == "default":
+            _res = (
+                present_instruments
+                + [self.bos_tok]
+                + tokenized_seq
+                + [self.eos_tok]
+            )
+            if self.padding is True:
+                _res += [self.pad_tok] * (self.max_seq_len - len(_res))
+            res = [_res[: self.max_seq_len]]
+        elif self.truncate_type == "strided":
+            _res = [self.bos_tok] + tokenized_seq + [self.eos_tok]
+            seq_len = len(_res)
+            prefix_len = len(present_instruments)
+
+            res = []
+            idx = 0
+            # No padding needed here
+            while idx + self.max_seq_len - prefix_len < seq_len:
+                res.append(
+                    present_instruments
+                    + _res[idx : idx + self.max_seq_len - prefix_len]
+                )
+                idx += self.stride_len
+
+            # Add the last sequence
+            _seq = (
+                present_instruments
+                + _res[idx : idx + self.max_seq_len - prefix_len]
+            )
+            if self.padding is True:
+                _seq += [self.pad_tok] * (self.max_seq_len - len(_seq))
+
+            res.append(_seq)
+
+        return res
+
     def tokenize_midi_dict(self, midi_dict: MidiDict):
         ticks_per_beat = midi_dict.ticks_per_beat
         midi_dict.remove_instruments(self.config["ignore_instruments"])
@@ -336,51 +389,10 @@ class TokenizerLazy(Tokenizer):
                 if _wait_duration != 0:
                     tokenized_seq.append(("wait", _wait_duration))
 
-        # Return according to truncation setting
-        if self.truncate_type == "none":
-            _res = (
-                present_instruments
-                + [self.bos_tok]
-                + tokenized_seq
-                + [self.eos_tok]
-            )
-            res = [_res]
-        elif self.truncate_type == "default":
-            _res = (
-                present_instruments
-                + [self.bos_tok]
-                + tokenized_seq
-                + [self.eos_tok]
-            )
-            if self.padding is True:
-                _res += [self.pad_tok] * (self.max_seq_len - len(_res))
-            res = [_res[: self.max_seq_len]]
-        elif self.truncate_type == "strided":
-            _res = [self.bos_tok] + tokenized_seq + [self.eos_tok]
-            seq_len = len(_res)
-            prefix_len = len(present_instruments)
-
-            res = []
-            idx = 0
-            # No padding needed here
-            while idx + self.max_seq_len - prefix_len < seq_len:
-                res.append(
-                    present_instruments
-                    + _res[idx : idx + self.max_seq_len - prefix_len]
-                )
-                idx += self.stride_len
-
-            # Add the last sequence
-            _seq = (
-                present_instruments
-                + _res[idx : idx + self.max_seq_len - prefix_len]
-            )
-            if self.padding is True:
-                _seq += [self.pad_tok] * (self.max_seq_len - len(_seq))
-
-            res.append(_seq)
-
-        return res
+        return self._truncate(
+            present_instruments=present_instruments,
+            tokenized_seq=tokenized_seq,
+        )
 
     # TODO:
     # - There is a minor bug with repeated notes occurring whilst the pedal is
@@ -435,13 +447,18 @@ class TokenizerLazy(Tokenizer):
             tokenized_seq[start:], tokenized_seq[start + 1 :]
         ):
             if curr_tok in self.special_tokens:
-                _tok_type = "special"
+                _curr_tok_type = "special"
             else:
-                _tok_type = curr_tok[0]
+                _curr_tok_type = curr_tok[0]
 
-            if _tok_type == "dur" or _tok_type == "special":
+            if next_tok in self.special_tokens:
+                _next_tok_type = "special"
+            else:
+                _next_tok_type = next_tok[0]
+
+            if _curr_tok_type == "dur" or _curr_tok_type == "special":
                 continue
-            elif _tok_type == "wait":
+            elif _curr_tok_type == "wait":
                 curr_tick += int(
                     second2tick(
                         second=1e-3 * curr_tok[1],
@@ -449,7 +466,7 @@ class TokenizerLazy(Tokenizer):
                         tempo=TEMPO,
                     )
                 )
-            elif _tok_type == "drum":
+            elif _curr_tok_type == "drum":
                 _tick = curr_tick
                 _pitch = curr_tok[1]
                 _channel = instrument_to_channel["drum"]
@@ -471,7 +488,10 @@ class TokenizerLazy(Tokenizer):
                     }
                 )
 
-            else:  # Case curr_tok, next_tok are note, dur respectively
+            elif (
+                _curr_tok_type in self.instrument_tokens
+                and _next_tok_type == "dur"
+            ):
                 duration = next_tok[1]
 
                 _tick = curr_tick
@@ -499,6 +519,11 @@ class TokenizerLazy(Tokenizer):
                         "tick": _tick,
                         "channel": _channel,
                     }
+                )
+
+            else:
+                logging.warn(
+                    f"Unexpected token sequence: {curr_tok}, {next_tok}"
                 )
 
         return MidiDict(
