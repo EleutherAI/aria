@@ -41,6 +41,7 @@ class TestLazyTokenizer(unittest.TestCase):
         tokenize_detokenize("basic.mid")
         tokenize_detokenize("arabesque.mid")
         tokenize_detokenize("beethoven.mid")
+        tokenize_detokenize("bach.mid")
         tokenize_detokenize("pop.mid")
 
     def test_aug(self):

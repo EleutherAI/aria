@@ -38,6 +38,7 @@ class Tokenizer:
         self.tok_to_id = {}
         self.id_to_tok = {}
         self.vocab_size = -1
+        self.pad_id = -1
 
         self.bos_tok = "<S>"
         self.eos_tok = "<E>"
@@ -234,21 +235,20 @@ class TokenizerLazy(Tokenizer):
         midi_dict.remove_instruments(self.config["ignore_instruments"])
         channel_to_pedal_intervals = self._build_pedal_intervals(midi_dict)
 
+        channels_used = {msg["channel"] for msg in midi_dict.note_msgs}
+
         channel_to_instrument = {
             msg["channel"]: midi_dict.program_to_instrument[msg["data"]]
             for msg in midi_dict.instrument_msgs
             if msg["channel"] not in {9, 16}  # Exclude drums
         }
+        # If non-drum channel is missing from instrument_msgs, default to piano
+        for c in channels_used:
+            if channel_to_instrument.get(c) is None and c not in {9, 16}:
+                channel_to_instrument[c] = "piano"
 
         # Add non-drums to present_instruments (prefix)
-        present_instruments = [
-            midi_dict.program_to_instrument[msg["data"]]
-            for msg in midi_dict.instrument_msgs
-            if msg["channel"] not in {9, 16}
-        ]
-
-        # Add drums to present_instruments (prefix) if channels 9/16 are used
-        channels_used = {msg["channel"] for msg in midi_dict.instrument_msgs}
+        present_instruments = list(channel_to_instrument.values())
         if 9 in channels_used or 16 in channels_used:
             present_instruments.append("drums")
 
