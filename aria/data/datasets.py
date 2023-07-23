@@ -175,6 +175,9 @@ def build_mididict_dataset(
         paths += Path(dir).glob(f"*.mid")
         paths += Path(dir).glob(f"*.midi")
 
+    if len(paths) == 0:
+        logging.warning("Directory contains no files matching *.mid or *.midi")
+
     if streaming is True:
         with jsonlines.open(stream_save_path, mode="w") as writer:
             for path in paths:
@@ -383,6 +386,8 @@ class TokenizedDataset(torch.utils.data.Dataset):
             )
 
             if midi_dataset:
+                if len(midi_dataset) == 0:
+                    logging.warning("midi_dataset is empty")
                 for midi_dict in midi_dataset:
                     tokenized_seq = tokenizer.tokenize_midi_dict(midi_dict)
                     for entry in _truncate_and_stride(tokenized_seq):

@@ -36,15 +36,15 @@
                     "sfx": true
                 }
             }
+        },
+        "dataset_gen_args": {
+            "max_seq_len": 256,
+            "stride_len": 256
         }
     },
 
     "tokenizer": {
         "lazy": {
-            "dataset_gen_args": {
-                "max_seq_len": 1024,
-                "return_tensors": false
-            },
             "ignore_instruments": {
                 "piano": false,
                 "chromatic": true,

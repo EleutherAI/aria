@@ -1,32 +1,19 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 import sys
 
 
 def _parse_train_args():
-    argp = argparse.ArgumentParser(
-        usage="""run.py train [-h] [-ckpt CKPT] -epochs EPOCHS [-bs BS] [-workers WORKERS] [-gpus GPUS] model tokenizer data"""
-    )
+    argp = argparse.ArgumentParser(prog="run.py train")
+    argp.add_argument("model", help="name of the model to train")
+    argp.add_argument("tokenizer", help="name of the tokenizer to use")
+    argp.add_argument("train_data", help="path to train data")
+    argp.add_argument("val_data", help="path to val data")
+    argp.add_argument("-ckpt", help="path to the checkpoint", required=False)
     argp.add_argument(
-        "model",
-        help="name of the model to train",
-    )
-    argp.add_argument(
-        "tokenizer",
-        help="name of the tokenizer to use",
-    )
-    argp.add_argument("data", help="path to data")
-    argp.add_argument(
-        "-ckpt",
-        help="path to the checkpoint",
-        required=False,
-    )
-    argp.add_argument(
-        "-epochs",
-        help="number of epochs",
-        type=int,
-        required=True,
+        "-epochs", help="number of epochs", type=int, required=True
     )
     argp.add_argument("-bs", help="batch size", type=int, default=32)
     argp.add_argument(
@@ -44,7 +31,8 @@ def train(args):
     pretrain(
         model_name=args.model,
         tokenizer_name=args.tokenizer,
-        data_path=args.data,
+        train_data_path=args.train_data,
+        val_data_path=args.val_data,
         workers=args.workers,
         gpus=args.gpus,
         epochs=args.epochs,
@@ -54,9 +42,7 @@ def train(args):
 
 
 def _parse_sample_args():
-    argp = argparse.ArgumentParser(
-        usage="run.py sample [-h] -var VAR -trunc TRUNC ckpt_path midi_path"
-    )
+    argp = argparse.ArgumentParser(prog="run.py sample")
     argp.add_argument("ckpt_path", help="path to model checkpoint")
     argp.add_argument("midi_path", help="path to midi file")
     argp.add_argument("-var", help="number of variations", required=True)
@@ -90,8 +76,6 @@ def sample(args):
     model = PretrainLM.load_from_checkpoint(model_path).model
     max_seq_len = model.max_seq_len
     tokenizer = TokenizerLazy(
-        padding=True,
-        truncate_type="default",
         max_seq_len=max_seq_len,
         return_tensors=True,
     )
@@ -124,26 +108,20 @@ def sample(args):
 
 
 def _parse_data_args():
-    argp = argparse.ArgumentParser(
-        usage="""run.py data [-h] [-r] [-tokenizer {lazy}] [-split SPLIT] dir save_path {midi_dict,tokenized}"""
-    )
-    argp.add_argument(
-        "dir",
-        help="directory containing midi files",
-    )
-    argp.add_argument(
-        "save_path",
-        help="path to save dataset",
-    )
+    argp = argparse.ArgumentParser(prog="run.py data")
     argp.add_argument(
         "format",
         choices=["midi_dict", "tokenized"],
         help="type of dataset to build",
     )
+    argp.add_argument("save_path", help="path to save dataset")
+
     argp.add_argument(
-        "-r",
-        action="store_true",
-        help="recursively search dirs",
+        "-dir", help="directory containing midi files", required=False
+    )
+    argp.add_argument("-r", action="store_true", help="recursively search dirs")
+    argp.add_argument(
+        "-load_path", help="path midi_dict dataset", required=False
     )
     argp.add_argument(
         "-tokenizer",
@@ -151,17 +129,11 @@ def _parse_data_args():
         choices=["lazy"],
         help="specify tokenizer type",
     )
-    argp.add_argument(
-        "-split",
-        required=False,
-        type=float,
-        help="train-val split ratio",
-    )
+
     return argp.parse_args(sys.argv[2:])
 
 
-# TODO
-# - Test
+# NOTE: This must be refactored if additional tokenizers are added
 def data(args):
     """Entrypoint for data processing"""
     from aria.tokenizer import TokenizerLazy
@@ -169,27 +141,50 @@ def data(args):
     from aria.data.datasets import TokenizedDataset
     from aria.config import load_config
 
-    midi_dataset = MidiDataset.build(dir=args.dir, recur=args.r)
+    # TODO: Add asserts that files (midi files and load files)
 
     if args.format == "midi_dict":
-        midi_dataset.save(args.save_path)
+        assert args.dir, "build directory must be provided"
+        MidiDataset.build_to_file(
+            dir=args.dir,
+            save_path=args.save_path,
+            recur=args.r,
+            overwrite=True,
+        )
+
     elif args.format == "tokenized":
-        if args.tokenizer is None:
-            raise ValueError(
-                "must provide -tokenizer flag if using tokenized mode."
+        assert not (
+            args.dir is None and args.load_path is None
+        ), "must provide a load_path or a directory containing midi"
+
+        config = load_config()["data"]["dataset_gen_args"]
+        tokenizer = TokenizerLazy(max_seq_len=config["max_seq_len"])
+        if args.load_path:
+            TokenizedDataset.build(
+                tokenizer=tokenizer,
+                save_path=args.save_path,
+                midi_dataset_path=args.load_path,
+                padding=True,
+                stride_len=config["stride_len"],
+                overwrite=True,
             )
-
-        config = load_config()["tokenizer"][args.tokenizer]["dataset_gen_args"]
-        if args.tokenizer == "lazy":
-            tokenizer = TokenizerLazy(**config)
-        else:
-            return NotImplementedError
-
-        tokenized_dataset = TokenizedDataset.build(midi_dataset, tokenizer)
-        if args.split:
-            tokenized_dataset.save_train_val(args.save_path, args.split)
-        else:
-            tokenized_dataset.save(args.save_path)
+        elif args.dir:
+            buffer_path = "midi_dataset.buffer.jsonl"
+            MidiDataset.build_to_file(
+                dir=args.dir,
+                save_path=buffer_path,
+                recur=args.r,
+                overwrite=True,
+            )
+            TokenizedDataset.build(
+                tokenizer=tokenizer,
+                save_path=args.save_path,
+                midi_dataset_path=buffer_path,
+                padding=True,
+                stride_len=config["stride_len"],
+                overwrite=True,
+            )
+            os.remove(buffer_path)
 
 
 def main():
