@@ -285,7 +285,9 @@ def _extract_track_data(track: mido.MidiTrack):
     }
 
 
-# TODO: Redo docstring
+# TODO:
+# - This method has some perf issues - profile and make more efficient
+# - Redo docstring
 def midi_to_dict(mid: mido.MidiFile):
     """Returns MIDI data in an intermediate dictionary form for tokenization.
 
@@ -297,8 +299,6 @@ def midi_to_dict(mid: mido.MidiFile):
             entries "meta_msgs", "tempo_msgs", "pedal_msgs", "instrument_msgs",
             "note_msgs".
     """
-    mid = deepcopy(mid)
-
     # Convert time in mid to absolute
     for track in mid.tracks:
         curr_tick = 0
