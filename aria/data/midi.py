@@ -165,7 +165,7 @@ class MidiDict:
         msg_dict = {
             k: v
             for k, v in self.get_msg_dict().items()
-            if k is not "ticks_per_beat"
+            if k != "ticks_per_beat"
         }
         for msgs_name, msgs_list in msg_dict.items():
             setattr(
@@ -442,6 +442,13 @@ def _test_max_instruments(midi_dict: MidiDict, max: int):
     )
 
     if len(present_instruments) <= max:
+        return True
+    else:
+        return False
+
+
+def _test_no_notes(midi_dict: MidiDict):
+    if len(midi_dict.note_msgs) > 0:
         return True
     else:
         return False

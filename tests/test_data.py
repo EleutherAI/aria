@@ -1,4 +1,5 @@
 import unittest
+import os
 import logging
 import filecmp
 
@@ -61,6 +62,8 @@ class TestMidiDataset(unittest.TestCase):
         self.assertEqual(type(dataset_reloaded[0]), MidiDict)
 
 
+# For some reason, when running this test on a server the present instruments
+# and order of tokenized datasets is different??
 class TestTokenizedDataset(unittest.TestCase):
     # Test building is working (on the file level)
     def test_build(self):
@@ -162,5 +165,8 @@ class TestTokenizedDataset(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if os.path.isdir("tests/test_results") is False:
+        os.mkdir("tests/test_results")
+
     logging.basicConfig(level=logging.INFO)
     unittest.main()

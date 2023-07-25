@@ -35,6 +35,7 @@ class Tokenizer:
         self.return_tensors = return_tensors
 
         # These must be implemented in child class (abstract params)
+        self.config = {}
         self.tok_to_id = {}
         self.id_to_tok = {}
         self.vocab_size = -1
@@ -131,20 +132,23 @@ class TokenizerLazy(Tokenizer):
         ]
 
         self.wait_tokens = [("wait", i) for i in self.time_step_quantizations]
+        self.dur_tokens = [("dur", i) for i in self.time_step_quantizations]
         self.drum_tokens = [("drum", i) for i in range(35, 82)]
 
-        self.note_tokens = itertools.product(
-            self.instrument_tokens,
-            [i for i in range(128)],
-            self.velocity_quantizations,
+        self.note_tokens = list(
+            itertools.product(
+                self.instrument_tokens,
+                [i for i in range(128)],
+                self.velocity_quantizations,
+            )
         )
-        self.note_tokens = list(self.note_tokens)
 
         self.vocab = (
             self.special_tokens
             + self.instrument_tokens
             + self.note_tokens
             + self.drum_tokens
+            + self.dur_tokens
             + self.wait_tokens
         )
 
@@ -233,6 +237,10 @@ class TokenizerLazy(Tokenizer):
     def tokenize_midi_dict(self, midi_dict: MidiDict):
         ticks_per_beat = midi_dict.ticks_per_beat
         midi_dict.remove_instruments(self.config["ignore_instruments"])
+
+        if len(midi_dict.note_msgs) == 0:
+            raise Exception("note_msgs is empty after ignoring instruments")
+
         channel_to_pedal_intervals = self._build_pedal_intervals(midi_dict)
 
         channels_used = {msg["channel"] for msg in midi_dict.note_msgs}
@@ -435,7 +443,12 @@ class TokenizerLazy(Tokenizer):
                 duration = next_tok[1]
 
                 _tick = curr_tick
-                _channel = instrument_to_channel[curr_tok[0]]
+
+                _channel = instrument_to_channel.get(curr_tok[0], None)
+                if _channel is None:
+                    logging.warning("Tried to decode unexpected note message")
+                    continue
+
                 _pitch = curr_tok[1]
                 _velocity = curr_tok[2]
                 _start_tick = curr_tick
@@ -587,6 +600,7 @@ class TokenizerLazy(Tokenizer):
         )
 
     # TODO: Implement - follow export_pitch aug
+    # Also implement order mix up for chords
     def export_time_aug(self):
         # Remember special case where we have max_time_step
         raise NotImplementedError

@@ -1,23 +1,24 @@
 import unittest
 import logging
+import os
 import mido
 
 from aria import tokenizer
 from aria.data.midi import MidiDict
 
 
-def get_short_seq():
+def get_short_seq(tknzr: tokenizer.TokenizerLazy):
     return [
         "piano",
         "drums",
         "<S>",
-        ("piano", 62, 50),
-        ("dur", 50),
-        ("wait", 100),
-        ("drum", 50),
-        ("piano", 64, 70),
-        ("dur", 100),
-        ("wait", 100),
+        ("piano", 62, tknzr._quantize_velocity(50)),
+        ("dur", tknzr._quantize_time(50)),
+        ("wait", tknzr._quantize_time(100)),
+        ("drum", tknzr._quantize_time(50)),
+        ("piano", 64, tknzr._quantize_velocity(70)),
+        ("dur", tknzr._quantize_time(100)),
+        ("wait", tknzr._quantize_time(100)),
         "<E>",
     ]
 
@@ -49,25 +50,47 @@ class TestLazyTokenizer(unittest.TestCase):
             max_seq_len=512,
             return_tensors=False,
         )
-        seq = get_short_seq()
+        seq = get_short_seq(tknzr)
         pitch_aug_fn = tknzr.export_pitch_aug(aug_range=5)
         velocity_aug_fn = tknzr.export_velocity_aug(aug_steps_range=2)
 
-        seq_pitch_augmented = pitch_aug_fn(get_short_seq())
+        seq_pitch_augmented = pitch_aug_fn(get_short_seq(tknzr))
         logging.info(f"pitch_aug_fn:\n{seq} ->\n{seq_pitch_augmented}")
         self.assertEqual(
             seq_pitch_augmented[3][1] - seq[3][1],
             seq_pitch_augmented[7][1] - seq[7][1],
         )
 
-        seq_velocity_augmented = velocity_aug_fn(get_short_seq())
+        seq_velocity_augmented = velocity_aug_fn(get_short_seq(tknzr))
         logging.info(f"velocity_aug_fn:\n{seq} ->\n{seq_velocity_augmented}")
         self.assertEqual(
             seq_velocity_augmented[3][2] - seq[3][2],
             seq_velocity_augmented[7][2] - seq[7][2],
         )
 
+    def test_encode_decode(self):
+        tknzr = tokenizer.TokenizerLazy(
+            max_seq_len=512,
+            return_tensors=True,
+        )
+        seq = get_short_seq(tknzr)
+        enc_dec_seq = tknzr.decode(tknzr.encode(seq))
+        for x, y in zip(seq, enc_dec_seq):
+            self.assertEqual(x, y)
+
+        tknzr = tokenizer.TokenizerLazy(
+            max_seq_len=512,
+            return_tensors=False,
+        )
+        seq = get_short_seq(tknzr)
+        enc_dec_seq = tknzr.decode(tknzr.encode(seq))
+        for x, y in zip(seq, enc_dec_seq):
+            self.assertEqual(x, y)
+
 
 if __name__ == "__main__":
+    if os.path.isdir("tests/test_results") is False:
+        os.mkdir("tests/test_results")
+
     logging.basicConfig(level=logging.INFO)
     unittest.main()

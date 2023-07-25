@@ -45,9 +45,11 @@ def _parse_sample_args():
     argp = argparse.ArgumentParser(prog="run.py sample")
     argp.add_argument("ckpt_path", help="path to model checkpoint")
     argp.add_argument("midi_path", help="path to midi file")
-    argp.add_argument("-var", help="number of variations", required=True)
     argp.add_argument(
-        "-trunc", help="length to truncated prompt", required=True
+        "-var", help="number of variations", type=int, required=True
+    )
+    argp.add_argument(
+        "-trunc", help="length to truncated prompt", type=int, required=True
     )
 
     return argp.parse_args(sys.argv[2:])
@@ -68,12 +70,12 @@ def sample(args):
 
     assert cuda_is_available() is True, "CUDA device not available"
 
-    model_path = args.model_path
+    ckpt_path = args.ckpt_path
     midi_path = args.midi_path
-    num_variations = args.n
-    truncate_len = args.t
+    num_variations = args.var
+    truncate_len = args.trunc
 
-    model = PretrainLM.load_from_checkpoint(model_path).model
+    model = PretrainLM.load_from_checkpoint(ckpt_path).model
     max_seq_len = model.max_seq_len
     tokenizer = TokenizerLazy(
         max_seq_len=max_seq_len,
@@ -88,7 +90,7 @@ def sample(args):
     midi_dict = MidiDict.from_midi(
         mid=mido.MidiFile(midi_path),
     )
-    prompt_seq = tokenizer.tokenize_midi_dict(midi_dict=midi_dict)[0]
+    prompt_seq = tokenizer.tokenize_midi_dict(midi_dict=midi_dict)
     prompt_seq = prompt_seq[:truncate_len]
     prompts = [prompt_seq for _ in range(num_variations)]
 
@@ -101,10 +103,13 @@ def sample(args):
         max_gen_len=max_seq_len,
     )
 
-    for idx, tokenized_seq in results:
+    if os.path.isdir("samples") is False:
+        os.mkdir("samples")
+
+    for idx, tokenized_seq in enumerate(results):
         res_midi_dict = tokenizer.detokenize_midi_dict(tokenized_seq)
         res_midi = res_midi_dict.to_midi()
-        res_midi.save(f"res_{idx}.mid")
+        res_midi.save(f"samples/res_{idx + 1}.mid")
 
 
 def _parse_data_args():

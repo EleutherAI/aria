@@ -38,7 +38,7 @@ class PretrainLM(pl.LightningModule):
 
         self.log(
             "train_loss",
-            loss,
+            round(loss.item(), 3),
             on_step=False,
             on_epoch=True,
             prog_bar=True,
@@ -58,7 +58,7 @@ class PretrainLM(pl.LightningModule):
 
         self.log(
             "val_loss",
-            loss,
+            round(loss.item(), 3),
             on_step=False,
             on_epoch=True,
             prog_bar=True,
@@ -67,7 +67,7 @@ class PretrainLM(pl.LightningModule):
         )
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.model.parameters(), lr=3e-3)
+        return torch.optim.AdamW(self.model.parameters(), lr=3e-4)
 
 
 def get_gpu_precision():
@@ -124,6 +124,7 @@ def pretrain(
         model = PretrainLM.load_from_checkpoint(checkpoint)
     elif not checkpoint:
         model = PretrainLM(model_config)
+    model.train()
 
     # Load datasets & dataloaders
     train_dataset = TokenizedDataset(
@@ -143,6 +144,7 @@ def pretrain(
         train_dataset,
         batch_size=batch_size,
         num_workers=workers,
+        shuffle=True,
     )
     val_dataloader = DataLoader(
         val_dataset,
