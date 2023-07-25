@@ -15,5 +15,5 @@ def load_config():
 
 def load_model_config(name: str):
     """Returns a dictionary containing the model config."""
-    with open(os.path.join(CONFIG_DIR, f"{name}.json")) as f:
+    with open(os.path.join(CONFIG_DIR, "models", f"{name}.json")) as f:
         return json.load(f)

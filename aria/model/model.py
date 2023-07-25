@@ -6,9 +6,6 @@ import torch.utils.checkpoint
 from torch import nn as nn
 from torch.nn import functional as F
 from typing import Tuple
-from dataclasses import dataclass
-
-from aria.tokenizer import Tokenizer
 
 
 class ModelConfig:

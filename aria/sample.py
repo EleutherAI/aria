@@ -15,7 +15,8 @@ from aria.model import TransformerLM
 from aria.tokenizer import Tokenizer
 
 # TODO:
-# - Test
+# - Debug this to make sure it is working
+# - This seriously needs to be double and triple checked
 
 
 @torch.autocast(device_type="cuda", dtype=torch.float16)
@@ -25,10 +26,10 @@ def batch_sample_model(
     prompts: List[list],
     max_seq_len: int,
     max_gen_len: int,
-    temperature: float = 0.8,
-    top_p: float = 0.95,
+    temperature: float = 0.75,
+    top_p: float = 0.9,
 ):
-    """Performs greedy (top_p) autoregressive sampling on a bach of prompts.
+    """Performs greedy (top_p) autoregressive sampling on a batch of prompts.
 
     Args:
         model (TransformerLM): Model to sample from.
@@ -43,8 +44,9 @@ def batch_sample_model(
         List[list]: The list of samples, decoded by the tokenizer.
     """
     assert tokenizer.return_tensors is True, "tokenizer must return tensors."
+    model.eval()
 
-    pad_id = tokenizer.tok_to_id[tokenizer.pad_id]
+    pad_id = tokenizer.pad_id
     eos_id = tokenizer.tok_to_id[tokenizer.eos_tok]
 
     bsz = len(prompts)
@@ -58,9 +60,8 @@ def batch_sample_model(
 
     input_text_mask = tokens != pad_id
     start_pos = min_prompt_size
-    prev_pos = 0
     for cur_pos in range(start_pos, total_len):
-        logits = model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+        logits = model.forward(tokens[:, :cur_pos])[:, -1, :]
         if temperature > 0:
             probs = torch.softmax(logits / temperature, dim=-1)
             next_token = sample_top_p(probs, top_p)
@@ -72,7 +73,6 @@ def batch_sample_model(
             input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
         )
         tokens[:, cur_pos] = next_token
-        prev_pos = cur_pos
 
     decoded = []
     for idx, seq in enumerate(tokens.tolist()):

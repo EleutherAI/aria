@@ -2,6 +2,7 @@
 
 import re
 import torch
+import logging
 import lightning as pl
 import os.path
 
@@ -13,10 +14,6 @@ from aria.config import load_model_config
 from aria.model import ModelConfig, TransformerLM
 from aria.tokenizer import TokenizerLazy
 from aria.data.datasets import TokenizedDataset
-
-# TODO:
-# - Refactor
-# - This needs to be tested
 
 
 class PretrainLM(pl.LightningModule):
@@ -37,12 +34,11 @@ class PretrainLM(pl.LightningModule):
 
         # Transpose for CrossEntropyLoss
         logits = logits.transpose(1, 2)
-        tgt = tgt.transpose(1, 2)
         loss = self.loss_fn(logits, tgt)
 
         self.log(
             "train_loss",
-            loss,
+            round(loss.item(), 3),
             on_step=False,
             on_epoch=True,
             prog_bar=True,
@@ -58,12 +54,11 @@ class PretrainLM(pl.LightningModule):
 
         # Transpose for CrossEntropyLoss
         logits = logits.transpose(1, 2)
-        tgt = tgt.transpose(1, 2)
         loss = self.loss_fn(logits, tgt).item()
 
         self.log(
             "val_loss",
-            loss,
+            round(loss.item(), 3),
             on_step=False,
             on_epoch=True,
             prog_bar=True,
@@ -90,33 +85,33 @@ def get_gpu_precision():
         return "16-mixed"
 
 
-# TODO:
-# - Test
-# - Refactor
-# - Add docstrings
 def pretrain(
     model_name: str,
     tokenizer_name: str,
-    data_path: str,
+    train_data_path: str,
+    val_data_path: str,
     workers: int,
     gpus: int,
     epochs: int,
     batch_size: int,
     checkpoint: str = None,
+    overfit: bool = False,
 ):
     # Validate inputs
     assert 0 < workers <= 128, "Too many workers"
-    assert 0 < gpus <= 8, "Too many GPUs"
-    assert os.path.isfile(data_path)
-    assert os.path.isfile(checkpoint)
+    assert 0 < gpus <= 8, "Too many (or none) GPUs"
+    assert epochs > 0, "Invalid number of epochs"
+    assert batch_size > 0, "Invalid batch size"
+    assert os.path.isfile(train_data_path)
+    assert os.path.isfile(val_data_path)
     assert torch.cuda.is_available() is True, "CUDA not available"
+    if checkpoint:
+        assert os.path.isfile(checkpoint)
 
     # Load config and tokenizer
     model_config = ModelConfig(**load_model_config(model_name))
     if tokenizer_name == "lazy":
         tokenizer = TokenizerLazy(
-            padding=True,
-            truncate_type="default",
             max_seq_len=model_config.max_seq_len,
             return_tensors=True,
         )
@@ -127,26 +122,29 @@ def pretrain(
     # Load model
     if isinstance(checkpoint, str) and checkpoint is not None:
         model = PretrainLM.load_from_checkpoint(checkpoint)
-    elif checkpoint is None:
+    elif not checkpoint:
         model = PretrainLM(model_config)
+    model.train()
 
-    # Load datasets and dataloader
-    train_dataset, val_dataset = TokenizedDataset.load_train_val(
-        data_path,
-        tokenizer,
+    # Load datasets & dataloaders
+    train_dataset = TokenizedDataset(
+        file_path=train_data_path,
+        tokenizer=tokenizer,
     )
-    # Add aug_range for transform fns
-    transform_fns = [
-        tokenizer.export_pitch_aug(4),
-        tokenizer.export_velocity_aug(1),
-        # tokenizer.export_time_aug(),
-    ]
-    train_dataset.set_transform(transform_fns)
-    val_dataset.set_transform(transform_fns)
+    val_dataset = TokenizedDataset(
+        file_path=val_data_path,
+        tokenizer=tokenizer,
+    )
+    if overfit is False:
+        train_dataset.set_transform(
+            [tokenizer.export_velocity_aug(2), tokenizer.export_pitch_aug(4)]
+        )
+
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         num_workers=workers,
+        shuffle=True,
     )
     val_dataloader = DataLoader(
         val_dataset,
@@ -155,21 +153,31 @@ def pretrain(
     )
 
     # Setup trainer
-    trainer = pl.Trainer(
-        devices=gpus,
-        accelerator="gpu",
-        precision=get_gpu_precision(),
-        max_epochs=epochs,
-        callbacks=[
-            ModelCheckpoint(
-                filename="{epoch}-{train_loss}-{val_loss}",
-                save_last=True,
-                save_top_k=5,
-                monitor="val_loss",
-                save_weights_only=False,
-            )  # See https://shorturl.at/AGHZ3
-        ],
-    )
+    if overfit is True:
+        trainer = pl.Trainer(
+            devices=gpus,
+            accelerator="gpu",
+            precision=get_gpu_precision(),
+            max_epochs=epochs,
+            overfit_batches=1,
+            enable_checkpointing=False,
+        )
+    else:
+        trainer = pl.Trainer(
+            devices=gpus,
+            accelerator="gpu",
+            precision=get_gpu_precision(),
+            max_epochs=epochs,
+            callbacks=[
+                ModelCheckpoint(
+                    filename="{epoch}-{train_loss}-{val_loss}",
+                    save_last=True,
+                    save_top_k=5,
+                    monitor="val_loss",
+                    save_weights_only=False,
+                )  # See https://shorturl.at/AGHZ3
+            ],
+        )
 
     # Train
     trainer.fit(model, train_dataloader, val_dataloader)

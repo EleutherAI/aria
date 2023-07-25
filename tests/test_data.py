@@ -1,4 +1,5 @@
 import unittest
+import os
 import logging
 import filecmp
 
@@ -30,7 +31,7 @@ class TestMidiDataset(unittest.TestCase):
             recur=True,
         )
 
-        self.assertEqual(len(dataset), 3)
+        self.assertEqual(len(dataset), 4)
         self.assertEqual(type(dataset[0]), MidiDict)
 
     def test_save_load(self):
@@ -43,7 +44,7 @@ class TestMidiDataset(unittest.TestCase):
         dataset_reloaded = datasets.MidiDataset.load(
             "tests/test_results/mididict_dataset.jsonl"
         )
-        self.assertEqual(len(dataset_reloaded), 3)
+        self.assertEqual(len(dataset_reloaded), 4)
         self.assertEqual(type(dataset[0]), type(dataset_reloaded[0]))
 
     def test_build_to_file(self):
@@ -57,17 +58,17 @@ class TestMidiDataset(unittest.TestCase):
         dataset_reloaded = datasets.MidiDataset.load(
             load_path="tests/test_results/mididict_dataset_direct.jsonl",
         )
-        self.assertEqual(len(dataset_reloaded), 3)
+        self.assertEqual(len(dataset_reloaded), 4)
         self.assertEqual(type(dataset_reloaded[0]), MidiDict)
 
 
+# For some reason, when running this test on a server the present instruments
+# and order of tokenized datasets is different??
 class TestTokenizedDataset(unittest.TestCase):
     # Test building is working (on the file level)
     def test_build(self):
         tknzr = tokenizer.TokenizerLazy(
-            padding=True,
-            truncate_type="default",
-            max_seq_len=64,
+            max_seq_len=512,
             return_tensors=False,
         )
         mididict_dataset = datasets.MidiDataset.build(
@@ -99,16 +100,13 @@ class TestTokenizedDataset(unittest.TestCase):
             sum(1 for _ in dataset_buffer_from_file.file_buff),
             len(dataset_buffer_from_file) + 1,
         )
-        self.assertEqual(len(dataset_buffer_from_file), len(mididict_dataset))
 
         dataset_buffer_from_file.close()
         dataset_buffer_from_mdset.close()
 
     def test_mmap(self):
         tknzr = tokenizer.TokenizerLazy(
-            padding=True,
-            truncate_type="default",
-            max_seq_len=200,
+            max_seq_len=512,
             return_tensors=False,
         )
         midi_dataset = datasets.MidiDataset.build(
@@ -123,7 +121,6 @@ class TestTokenizedDataset(unittest.TestCase):
         )
 
         raw_entries = [src for src, tgt in tokenized_dataset]
-        self.assertEqual(len(raw_entries), len(midi_dataset))
         self.assertEqual(len({len(_) for _ in raw_entries}), 1)
 
         src, tgt = tokenized_dataset[0]
@@ -134,9 +131,7 @@ class TestTokenizedDataset(unittest.TestCase):
 
     def test_augmentation(self):
         tknzr = tokenizer.TokenizerLazy(
-            padding=True,
-            truncate_type="default",
-            max_seq_len=200,
+            max_seq_len=512,
             return_tensors=False,
         )
         midi_dataset = datasets.MidiDataset.build(
@@ -170,5 +165,8 @@ class TestTokenizedDataset(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if os.path.isdir("tests/test_results") is False:
+        os.mkdir("tests/test_results")
+
     logging.basicConfig(level=logging.INFO)
     unittest.main()

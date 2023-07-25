@@ -12,6 +12,10 @@
                 "args": {
                     "max": 3
                 }
+            },
+            "no_notes":{
+                "run": true,
+                "args": {}
             }
         },
         "pre_processing": {
@@ -24,10 +28,10 @@
                     "guitar": false,
                     "bass": false,
                     "strings": false,
-                    "ensemble": true,
-                    "brass": true,
-                    "reed": true,
-                    "pipe": true,
+                    "ensemble": false,
+                    "brass": false,
+                    "reed": false,
+                    "pipe": false,
                     "synth_lead": false,
                     "synth_pad": true,
                     "synth_effect": true,
@@ -36,18 +40,15 @@
                     "sfx": true
                 }
             }
+        },
+        "dataset_gen_args": {
+            "max_seq_len": 512,
+            "stride_len": 256
         }
     },
 
     "tokenizer": {
         "lazy": {
-            "dataset_gen_args": {
-                "padding": true,
-                "truncate_type": "strided",
-                "max_seq_len": 1024,
-                "stride_len": 256,
-                "return_tensors": false
-            },
             "ignore_instruments": {
                 "piano": false,
                 "chromatic": true,

@@ -3,10 +3,8 @@
 import json
 import os
 import mmap
-import atexit
 import jsonlines
 import logging
-import copy
 import torch
 import mido
 import aria.data.midi
@@ -177,6 +175,10 @@ def build_mididict_dataset(
         paths += Path(dir).glob(f"*.mid")
         paths += Path(dir).glob(f"*.midi")
 
+    num_paths = len(paths)
+    if num_paths == 0:
+        logging.warning("Directory contains no files matching *.mid or *.midi")
+
     if streaming is True:
         with jsonlines.open(stream_save_path, mode="w") as writer:
             for path in paths:
@@ -223,10 +225,17 @@ class TokenizedDataset(torch.utils.data.Dataset):
         )
 
         # Check self.tokenizers is the same as the one used to generate file
+        # This logic could use a refactor (maybe use deepdict?)
         _debug = self.file_mmap.readline()
-        file_config = json.loads(_debug)
-        for k, v in file_config.items():
-            assert getattr(self.tokenizer, k) == v
+        tok_config = json.loads(_debug)["tokenizer"]
+        assert tok_config["name"] == tokenizer.name
+        assert tok_config["max_seq_len"] == tokenizer.max_seq_len
+        for k, v in tok_config["config"].items():
+            if isinstance(v, dict):
+                for _k, _v in v.items():
+                    assert _v == tokenizer.config[k][_k]
+            elif isinstance(v, str) or isinstance(v, int):
+                assert v == tokenizer.config[k]
 
         self.index = self._build_index()
 
@@ -310,8 +319,52 @@ class TokenizedDataset(torch.utils.data.Dataset):
         save_path: str,
         midi_dataset: MidiDataset = None,
         midi_dataset_path: str = None,
+        padding: bool = True,
+        stride_len: int = None,
         overwrite: bool = False,
     ):
+        # TODO:
+        # - Add make sure that the truncation ends on a dur, and doesn't
+        #   cut off or start early.
+        # - Add docstring
+        def _truncate_and_stride(_tokenized_seq: list):
+            present_instruments = []
+
+            while _tokenized_seq:
+                tok = _tokenized_seq[0]
+                if isinstance(tok, str) and tok != tokenizer.bos_tok:
+                    present_instruments.append(_tokenized_seq.pop(0))
+                else:
+                    break
+
+            seq_len = len(_tokenized_seq)
+            prefix_len = len(present_instruments)
+
+            res = []
+            idx = 0
+            # No padding needed here
+            while idx + tokenizer.max_seq_len - prefix_len < seq_len:
+                res.append(
+                    present_instruments
+                    + _tokenized_seq[
+                        idx : idx + tokenizer.max_seq_len - prefix_len
+                    ]
+                )
+                idx += stride_len
+
+            # Add the last sequence
+            _seq = (
+                present_instruments
+                + _tokenized_seq[idx : idx + tokenizer.max_seq_len - prefix_len]
+            )
+            if padding is True:
+                _seq += [tokenizer.pad_tok] * (
+                    tokenizer.max_seq_len - len(_seq)
+                )
+            res.append(_seq)
+
+            return res
+
         if overwrite is False and os.path.isfile(save_path) is True:
             raise FileExistsError(f"File at {save_path} already exists.")
         elif overwrite is True and os.path.isfile(save_path) is True:
@@ -322,28 +375,53 @@ class TokenizedDataset(torch.utils.data.Dataset):
                 "Must provide either midi_dataset or midi_dataset_path."
             )
 
+        if stride_len:
+            assert 0 < stride_len <= tokenizer.max_seq_len, "Invalid stride_len"
+        else:
+            stride_len = tokenizer.max_seq_len
+
         with jsonlines.open(save_path, mode="w") as writer:
             # Write tokenizer info into json on first line
             writer.write(
                 {
-                    "name": tokenizer.name,
-                    "padding": tokenizer.padding,
-                    "truncate_type": tokenizer.truncate_type,
-                    "max_seq_len": tokenizer.max_seq_len,
-                    "stride_len": tokenizer.stride_len,
+                    "tokenizer": {
+                        "name": tokenizer.name,
+                        "max_seq_len": tokenizer.max_seq_len,
+                        "config": tokenizer.config,
+                    },
+                    "padding": padding,
+                    "stride_len": stride_len,
                 }
             )
 
             if midi_dataset:
-                for midi_dict in midi_dataset:
-                    for entry in tokenizer.tokenize_midi_dict(midi_dict):
-                        writer.write(entry)
+                if len(midi_dataset) == 0:
+                    logging.warning("midi_dataset is empty")
+                for idx, midi_dict in enumerate(midi_dataset):
+                    try:
+                        tokenized_seq = tokenizer.tokenize_midi_dict(midi_dict)
+                    except Exception as e:
+                        logging.warning(
+                            f"failed to tokenize midi_dict with index {idx}: {e}"
+                        )
+                    else:
+                        for entry in _truncate_and_stride(tokenized_seq):
+                            writer.write(entry)
 
             elif midi_dataset_path:
                 with jsonlines.open(midi_dataset_path) as reader:
-                    for msg_dict in reader:
+                    for idx, msg_dict in enumerate(reader):
                         midi_dict = MidiDict.from_msg_dict(msg_dict)
-                        for entry in tokenizer.tokenize_midi_dict(midi_dict):
-                            writer.write(entry)
+                        try:
+                            tokenized_seq = tokenizer.tokenize_midi_dict(
+                                midi_dict
+                            )
+                        except Exception as e:
+                            logging.warning(
+                                f"failed to tokenize midi_dict with index {idx}: {e}"
+                            )
+                        else:
+                            for entry in _truncate_and_stride(tokenized_seq):
+                                writer.write(entry)
 
         return cls(file_path=save_path, tokenizer=tokenizer)
