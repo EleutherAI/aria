@@ -4,7 +4,6 @@ import argparse
 import os
 import logging
 import sys
-import cProfile
 
 
 def _parse_train_args():

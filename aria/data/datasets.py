@@ -224,6 +224,7 @@ def build_mididict_dataset(
         return entries
 
 
+# TODO: Refactor max_seq_len out of tokenizer and into here
 class TokenizedDataset(torch.utils.data.Dataset):
     def __init__(self, file_path: str, tokenizer: Tokenizer):
         self.tokenizer = tokenizer

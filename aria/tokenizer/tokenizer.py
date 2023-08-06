@@ -14,6 +14,7 @@ from aria.config import load_config
 
 # TODO:
 # - Write tests
+# - Refactor max_seq_len out of the tokenizer class and into TokenizedDataset.
 
 
 class Tokenizer:
