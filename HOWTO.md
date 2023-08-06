@@ -1,12 +1,12 @@
-# HOW TO
+# How To
 
 Here, we will provide some code snippets demonstrating the core functionality and hopefully answering some questions. This document is a work in progress and will naturally evolve over time.
 
-## QUICK OVERVIEW
+## Quick Overview
 
 The `run.py` script acts as the entry point for all the basic functionality of Aria.
 
-### DATA
+### Data
 
 The `data` command can be used to build datasets (MidiDict & Tokenized). You must provide the name of the tokenizer you wish to use (currently, the only option is 'lazy'). For more information about the data formats and types of datasets, refer to the DATA section of this document. To view the list of arguments, run the following command:
 
@@ -14,7 +14,7 @@ The `data` command can be used to build datasets (MidiDict & Tokenized). You mus
 python run.py data -h
 ```
 
-### SAMPLING
+### Sampling
 
 The `sample` command provides an easy way to perform autoregressive sampling. To use this, you need to have pre-downloaded model weights (feel free to message me on Discord about where you can get these). This functionality is currently implemented using PyTorch Lightning. You need to provide a path to the `model.ckpt` file. The sample command works by tokenizing the prompt MIDI file, truncating it (according to -trunc), and then using the result as a prompt for top-p autoregressive sampling. To view the list of arguments, run the following command:
 
@@ -22,7 +22,7 @@ The `sample` command provides an easy way to perform autoregressive sampling. To
 python run.py sample -h
 ```
 
-### TRAINING
+### Training
 
 The `train` command is used as the entry point for pre-training models. Most of the configuration is hardcoded into `aria.training` since `train` is currently only used for development purposes. It supports checkpointing and technically could be used for fine-tuning, although I would not recommend it. Instead, I suggest loading the model via the LightningModule `aria.training.PretrainLM` and writing your own training loop. To view the list of arguments for `train`, run the following command:
 
@@ -32,7 +32,7 @@ python run.py train -h
 
 Please note that you need to provide paths to train and validation TokenizedDatasets in order to train a model. For more information, refer to the DATA section of the document.
 
-## DATA
+## Data
 
 ### MIDI
 
@@ -63,7 +63,7 @@ MidiDataset.build_to_file(
 )
 ```
 
-### TOKENIZED DATA
+### Tokenized Data
 
 Tokenizers (refer to `aria.tokenizer`) convert MidiDict objects into sequences of tokens, which can be processed by a Transformer. Currently, only one tokenizer is implemented (`TokenizerLazy`). However, in theory, all other tokenizers would inherit from the `aria.tokenizer.Tokenizer` class. The main functionality is contained in the self-explanatory `tokenize_midi_dict` and `detokenize_midi_dict` methods. In the case of `TokenizerLazy`, there are also several functions that export data augmentation functions designed to be applied to the outputs of `tokenize_midi_dict`. In the past, people have used a variety of methods for tokenizing MIDI files. [MidiTok](https://github.com/Natooz/MidiTok) is an excellent resource if you want to explore this further. The tokenization scheme that `TokenizerLazy` uses is primarily inspired by the [MuseNet](https://openai.com/research/musenet) tokenizer. It aims to balance simplicity and expressiveness while being transformer-friendly and properly supporting multi-track MIDI files.
 
