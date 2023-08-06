@@ -22,7 +22,7 @@ Some early (experimental) samples: [Mozart](https://twitter.com/loubbrad/status/
 Make sure you are using Python 3.10+. Note that I haven't explicitly developed this project for anything other than Linux. If you are using Windows, things might not work properly. In this case I suggest installing using WSL.
 
 ```
-git clone https://github.com/EleutherAI/music-transformer
+git clone https://github.com/eleutherai/aria
 cd aria
 pip install -e .
 ```
