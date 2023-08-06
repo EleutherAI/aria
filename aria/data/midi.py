@@ -7,8 +7,7 @@ from copy import deepcopy
 
 
 # TODO:
-# - Possibly refactor names 'mid' to 'midi' - DO THIS
-# - Write proper tests
+# - Possibly refactor names 'mid' to 'midi'
 
 
 class MidiDict:
@@ -285,7 +284,6 @@ def _extract_track_data(track: mido.MidiTrack):
     }
 
 
-# TODO: Redo docstring
 def midi_to_dict(mid: mido.MidiFile):
     """Returns MIDI data in an intermediate dictionary form for tokenization.
 
@@ -295,10 +293,8 @@ def midi_to_dict(mid: mido.MidiFile):
     Returns:
         dict: Data extracted from the MIDI file. This dictionary has the
             entries "meta_msgs", "tempo_msgs", "pedal_msgs", "instrument_msgs",
-            "note_msgs".
+            "note_msgs", "ticks_per_beat".
     """
-    mid = deepcopy(mid)
-
     # Convert time in mid to absolute
     for track in mid.tracks:
         curr_tick = 0
@@ -322,7 +318,6 @@ def midi_to_dict(mid: mido.MidiFile):
     return data
 
 
-# TODO: Redo docstring
 def dict_to_midi(mid_data: dict):
     """Converts MIDI information from dictionary form into a mido.MidiFile.
 

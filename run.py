@@ -2,13 +2,16 @@
 
 import argparse
 import os
+import logging
 import sys
 
 
 def _parse_train_args():
     argp = argparse.ArgumentParser(prog="run.py train")
     argp.add_argument("model", help="name of the model to train")
-    argp.add_argument("tokenizer", help="name of the tokenizer to use")
+    argp.add_argument(
+        "tokenizer", choices=["lazy"], help="name of the tokenizer to use"
+    )
     argp.add_argument("train_data", help="path to train data")
     argp.add_argument("val_data", help="path to val data")
     argp.add_argument("-ckpt", help="path to the checkpoint", required=False)
@@ -214,6 +217,7 @@ def main():
     elif args.command == "sample":
         sample(args=_parse_sample_args())
     elif args.command == "data":
+        logging.basicConfig(level=logging.INFO)
         data(args=_parse_data_args())
     else:
         print("Unrecognized command")

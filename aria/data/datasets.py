@@ -181,7 +181,10 @@ def build_mididict_dataset(
 
     if streaming is True:
         with jsonlines.open(stream_save_path, mode="w") as writer:
-            for path in paths:
+            for idx, path in enumerate(paths):
+                if idx % 50 == 0 and idx != 0:
+                    logging.info(f"processed midi files: {idx}/{num_paths}")
+
                 try:
                     mid_dict = MidiDict.from_midi(mido.MidiFile(path))
                 except Exception:
@@ -195,25 +198,33 @@ def build_mididict_dataset(
                 else:
                     writer.write(_preprocess_mididict(mid_dict).get_msg_dict())
 
+            logging.info(f"finished building mididict dataset")
+
     else:  # streaming is False
         entries = []
-        for path in paths:
+        for idx, path in enumerate(paths):
+            if idx % 50 == 0 and idx != 0:
+                logging.info(f"processed midi files: {idx}/{num_paths}")
+
             try:
                 mid_dict = MidiDict.from_midi(mido.MidiFile(path))
             except Exception:
-                logging.error(f"Failed to load file at {path}.")
+                logging.error(f"failed to load file at {path}.")
 
             failed_tests = _run_tests(mid_dict)
             if failed_tests:
-                logging.info(f"File at {path} failed preprocessing tests:")
+                logging.info(f"file at {path} failed preprocessing tests:")
                 for test_name in failed_tests:
                     logging.info(test_name)
             else:
                 entries.append(_preprocess_mididict(mid_dict))
 
+        logging.info(f"finished building mididict dataset")
+
         return entries
 
 
+# TODO: Refactor max_seq_len out of tokenizer and into here
 class TokenizedDataset(torch.utils.data.Dataset):
     def __init__(self, file_path: str, tokenizer: Tokenizer):
         self.tokenizer = tokenizer
@@ -398,6 +409,9 @@ class TokenizedDataset(torch.utils.data.Dataset):
                 if len(midi_dataset) == 0:
                     logging.warning("midi_dataset is empty")
                 for idx, midi_dict in enumerate(midi_dataset):
+                    if idx % 50 == 0 and idx != 0:
+                        logging.info(f"processed midi_dicts: {idx}")
+
                     try:
                         tokenized_seq = tokenizer.tokenize_midi_dict(midi_dict)
                     except Exception as e:
@@ -411,6 +425,9 @@ class TokenizedDataset(torch.utils.data.Dataset):
             elif midi_dataset_path:
                 with jsonlines.open(midi_dataset_path) as reader:
                     for idx, msg_dict in enumerate(reader):
+                        if idx % 50 == 0 and idx != 0:
+                            logging.info(f"processed midi_dicts: {idx}")
+
                         midi_dict = MidiDict.from_msg_dict(msg_dict)
                         try:
                             tokenized_seq = tokenizer.tokenize_midi_dict(
@@ -423,5 +440,7 @@ class TokenizedDataset(torch.utils.data.Dataset):
                         else:
                             for entry in _truncate_and_stride(tokenized_seq):
                                 writer.write(entry)
+
+        logging.info(f"finished building tokenized dataset")
 
         return cls(file_path=save_path, tokenizer=tokenizer)
