@@ -134,8 +134,9 @@ class MidiDict:
         return cls(**msg_dict)
 
     @classmethod
-    def from_midi(cls, mid: mido.MidiFile):
-        """Inplace version of midi_to_dict."""
+    def from_midi(cls, mid_path: str):
+        """Loads a MIDI file and returns the coresponding MidiDict."""
+        mid = mido.MidiFile(mid_path)
         return cls(**midi_to_dict(mid))
 
     # TODO:

@@ -22,6 +22,7 @@ class PretrainLM(pl.LightningModule):
     def __init__(self, model_config: ModelConfig):
         super().__init__()
         self.save_hyperparameters()
+        self.config = model_config
         self.model = TransformerLM(model_config)
         self.loss_fn = nn.CrossEntropyLoss()
 
@@ -58,7 +59,7 @@ class PretrainLM(pl.LightningModule):
 
         self.log(
             "val_loss",
-            round(loss.item(), 3),
+            round(loss, 3),
             on_step=False,
             on_epoch=True,
             prog_bar=True,
@@ -112,7 +113,6 @@ def pretrain(
     model_config = ModelConfig(**load_model_config(model_name))
     if tokenizer_name == "lazy":
         tokenizer = TokenizerLazy(
-            max_seq_len=model_config.max_seq_len,
             return_tensors=True,
         )
         model_config.set_vocab_size(tokenizer.vocab_size)
@@ -122,6 +122,9 @@ def pretrain(
     # Load model
     if isinstance(checkpoint, str) and checkpoint is not None:
         model = PretrainLM.load_from_checkpoint(checkpoint)
+        assert (
+            model_config == model.config
+        ), "model config doesn't match checkpoint"
     elif not checkpoint:
         model = PretrainLM(model_config)
     model.train()
@@ -135,6 +138,13 @@ def pretrain(
         file_path=val_data_path,
         tokenizer=tokenizer,
     )
+    assert (
+        train_dataset.max_seq_len == model_config.max_seq_len
+    ), "max_seq_len differs between datasets and model config"
+    assert (
+        val_dataset.max_seq_len == model_config.max_seq_len
+    ), "max_seq_len differs between datasets and model config"
+
     if overfit is False:
         train_dataset.set_transform(
             [tokenizer.export_velocity_aug(2), tokenizer.export_pitch_aug(4)]

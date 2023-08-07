@@ -186,7 +186,7 @@ def build_mididict_dataset(
                     logging.info(f"processed midi files: {idx}/{num_paths}")
 
                 try:
-                    mid_dict = MidiDict.from_midi(mido.MidiFile(path))
+                    mid_dict = MidiDict.from_midi(mid_path=path)
                 except Exception:
                     logging.error(f"Failed to load file at {path}.")
 
@@ -207,7 +207,7 @@ def build_mididict_dataset(
                 logging.info(f"processed midi files: {idx}/{num_paths}")
 
             try:
-                mid_dict = MidiDict.from_midi(mido.MidiFile(path))
+                mid_dict = MidiDict.from_midi(mid_path=path)
             except Exception:
                 logging.error(f"failed to load file at {path}.")
 
@@ -224,7 +224,6 @@ def build_mididict_dataset(
         return entries
 
 
-# TODO: Refactor max_seq_len out of tokenizer and into here
 class TokenizedDataset(torch.utils.data.Dataset):
     def __init__(self, file_path: str, tokenizer: Tokenizer):
         self.tokenizer = tokenizer
@@ -237,16 +236,27 @@ class TokenizedDataset(torch.utils.data.Dataset):
 
         # Check self.tokenizers is the same as the one used to generate file
         # This logic could use a refactor (maybe use deepdict?)
-        _debug = self.file_mmap.readline()
-        tok_config = json.loads(_debug)["tokenizer"]
-        assert tok_config["name"] == tokenizer.name
-        assert tok_config["max_seq_len"] == tokenizer.max_seq_len
-        for k, v in tok_config["config"].items():
-            if isinstance(v, dict):
-                for _k, _v in v.items():
-                    assert _v == tokenizer.config[k][_k]
-            elif isinstance(v, str) or isinstance(v, int):
-                assert v == tokenizer.config[k]
+        buffer = self.file_mmap.readline()
+        try:
+            config = json.loads(buffer)
+            assert config["tokenizer_name"] == tokenizer.name
+            for k, v in config["tokenizer_config"].items():
+                if isinstance(v, dict):
+                    for _k, _v in v.items():
+                        assert _v == tokenizer.config[k][_k]
+                elif isinstance(v, str) or isinstance(v, int):
+                    assert v == tokenizer.config[k]
+        except AssertionError as e:
+            logging.error(
+                f"Tokenizer config setting don't match those used to build {file_path}"
+            )
+            raise e
+        except Exception as e:
+            logging.error("Processing tokenizer config resulted in an error")
+            raise e
+
+        self.tokenizer_name = tokenizer.name
+        self.max_seq_len = config["max_seq_len"]
 
         self.index = self._build_index()
 
@@ -328,12 +338,37 @@ class TokenizedDataset(torch.utils.data.Dataset):
         cls,
         tokenizer: Tokenizer,
         save_path: str,
+        max_seq_len: int,
         midi_dataset: MidiDataset = None,
         midi_dataset_path: str = None,
         padding: bool = True,
         stride_len: int = None,
         overwrite: bool = False,
     ):
+        """Builds and returns a TokenizedDataset.
+
+        Args:
+            tokenizer (Tokenizer): Tokenizer to use to tokenize the MidiDicts.
+            save_path (str): Save path for datasets file.
+            max_seq_len (int): Maximum sequence length used to split the
+                tokenized sequences.
+            midi_dataset (MidiDataset, optional): If provided, build dataset
+                directly from a MidiDataset object.
+            midi_dataset_path (str, optional): If provided, build dataset by
+                dynamically loading MidiDict objects from a MidiDataset save
+                file. If both midi_dataset and midi_dataset_path are provided,
+                midi_dataset will be preffered.
+            padding (bool, optional): If True, pad the sequences so that they
+                have length=max_seq_len. Defaults to True.
+            stride_len (int, optional): If provided, will stride the sequences
+                according to the provided length. Defaults to None.
+            overwrite (bool, optional): If True, will overwrite a previous file
+                located at save_path. Defaults to False.
+
+        Returns:
+            TokenizedDataset: Dataset saved midi_dataset and saved at save_path.
+        """
+
         # TODO:
         # - Add make sure that the truncation ends on a dur, and doesn't
         #   cut off or start early.
@@ -354,24 +389,20 @@ class TokenizedDataset(torch.utils.data.Dataset):
             res = []
             idx = 0
             # No padding needed here
-            while idx + tokenizer.max_seq_len - prefix_len < seq_len:
+            while idx + max_seq_len - prefix_len < seq_len:
                 res.append(
                     present_instruments
-                    + _tokenized_seq[
-                        idx : idx + tokenizer.max_seq_len - prefix_len
-                    ]
+                    + _tokenized_seq[idx : idx + max_seq_len - prefix_len]
                 )
                 idx += stride_len
 
             # Add the last sequence
             _seq = (
                 present_instruments
-                + _tokenized_seq[idx : idx + tokenizer.max_seq_len - prefix_len]
+                + _tokenized_seq[idx : idx + max_seq_len - prefix_len]
             )
             if padding is True:
-                _seq += [tokenizer.pad_tok] * (
-                    tokenizer.max_seq_len - len(_seq)
-                )
+                _seq += [tokenizer.pad_tok] * (max_seq_len - len(_seq))
             res.append(_seq)
 
             return res
@@ -386,20 +417,19 @@ class TokenizedDataset(torch.utils.data.Dataset):
                 "Must provide either midi_dataset or midi_dataset_path."
             )
 
+        assert max_seq_len > 0, "max_seq_len must be greater than 0"
         if stride_len:
-            assert 0 < stride_len <= tokenizer.max_seq_len, "Invalid stride_len"
+            assert 0 < stride_len <= max_seq_len, "Invalid stride_len"
         else:
-            stride_len = tokenizer.max_seq_len
+            stride_len = max_seq_len
 
         with jsonlines.open(save_path, mode="w") as writer:
             # Write tokenizer info into json on first line
             writer.write(
                 {
-                    "tokenizer": {
-                        "name": tokenizer.name,
-                        "max_seq_len": tokenizer.max_seq_len,
-                        "config": tokenizer.config,
-                    },
+                    "tokenizer_config": tokenizer.config,
+                    "tokenizer_name": tokenizer.name,
+                    "max_seq_len": max_seq_len,
                     "padding": padding,
                     "stride_len": stride_len,
                 }

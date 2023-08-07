@@ -48,7 +48,7 @@ class TestMidiDataset(unittest.TestCase):
         self.assertEqual(type(dataset[0]), type(dataset_reloaded[0]))
 
     def test_build_to_file(self):
-        dataset = datasets.MidiDataset.build_to_file(
+        datasets.MidiDataset.build_to_file(
             dir="tests/test_data",
             save_path="tests/test_results/mididict_dataset_direct.jsonl",
             recur=True,
@@ -67,8 +67,8 @@ class TestMidiDataset(unittest.TestCase):
 class TestTokenizedDataset(unittest.TestCase):
     # Test building is working (on the file level)
     def test_build(self):
+        MAX_SEQ_LEN = 512
         tknzr = tokenizer.TokenizerLazy(
-            max_seq_len=512,
             return_tensors=False,
         )
         mididict_dataset = datasets.MidiDataset.build(
@@ -81,12 +81,14 @@ class TestTokenizedDataset(unittest.TestCase):
             tokenizer=tknzr,
             save_path="tests/test_results/dataset_buffer_1.jsonl",
             midi_dataset_path="tests/test_results/mididict_dataset.jsonl",
+            max_seq_len=MAX_SEQ_LEN,
             overwrite=True,
         )
         dataset_buffer_from_mdset = datasets.TokenizedDataset.build(
             tokenizer=tknzr,
             save_path="tests/test_results/dataset_buffer_2.jsonl",
             midi_dataset=mididict_dataset,
+            max_seq_len=MAX_SEQ_LEN,
             overwrite=True,
         )
 
@@ -105,8 +107,8 @@ class TestTokenizedDataset(unittest.TestCase):
         dataset_buffer_from_mdset.close()
 
     def test_mmap(self):
+        MAX_SEQ_LEN = 512
         tknzr = tokenizer.TokenizerLazy(
-            max_seq_len=512,
             return_tensors=False,
         )
         midi_dataset = datasets.MidiDataset.build(
@@ -117,6 +119,7 @@ class TestTokenizedDataset(unittest.TestCase):
             tokenizer=tknzr,
             save_path="tests/test_results/dataset_buffer.jsonl",
             midi_dataset=midi_dataset,
+            max_seq_len=MAX_SEQ_LEN,
             overwrite=True,
         )
 
@@ -130,8 +133,8 @@ class TestTokenizedDataset(unittest.TestCase):
         tokenized_dataset.close()
 
     def test_augmentation(self):
+        MAX_SEQ_LEN = 512
         tknzr = tokenizer.TokenizerLazy(
-            max_seq_len=512,
             return_tensors=False,
         )
         midi_dataset = datasets.MidiDataset.build(
@@ -142,6 +145,7 @@ class TestTokenizedDataset(unittest.TestCase):
             tokenizer=tknzr,
             save_path="tests/test_results/dataset_buffer.jsonl",
             midi_dataset=midi_dataset,
+            max_seq_len=MAX_SEQ_LEN,
             overwrite=True,
         )
         tokenized_dataset.set_transform(

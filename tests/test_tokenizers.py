@@ -27,15 +27,14 @@ class TestLazyTokenizer(unittest.TestCase):
     # Add encode decode test
     def test_tokenize_detokenize_mididict(self):
         def tokenize_detokenize(file_name: str):
-            mid = mido.MidiFile(f"tests/test_data/{file_name}")
-            midi_dict = MidiDict.from_midi(mid)
+            mid_path = f"tests/test_data/{file_name}"
+            midi_dict = MidiDict.from_midi(mid_path=mid_path)
             tokenized_seq = tknzr.tokenize_midi_dict(midi_dict)
             detokenized_midi_dict = tknzr.detokenize_midi_dict(tokenized_seq)
             res = detokenized_midi_dict.to_midi()
             res.save(f"tests/test_results/{file_name}")
 
         tknzr = tokenizer.TokenizerLazy(
-            max_seq_len=512,
             return_tensors=False,
         )
 
@@ -48,7 +47,6 @@ class TestLazyTokenizer(unittest.TestCase):
 
     def test_aug(self):
         tknzr = tokenizer.TokenizerLazy(
-            max_seq_len=512,
             return_tensors=False,
         )
         seq = get_short_seq(tknzr)
@@ -71,7 +69,6 @@ class TestLazyTokenizer(unittest.TestCase):
 
     def test_encode_decode(self):
         tknzr = tokenizer.TokenizerLazy(
-            max_seq_len=512,
             return_tensors=True,
         )
         seq = get_short_seq(tknzr)
@@ -80,7 +77,6 @@ class TestLazyTokenizer(unittest.TestCase):
             self.assertEqual(x, y)
 
         tknzr = tokenizer.TokenizerLazy(
-            max_seq_len=512,
             return_tensors=False,
         )
         seq = get_short_seq(tknzr)
