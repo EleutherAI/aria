@@ -35,7 +35,7 @@ As it stands, the basic functionality of the repository is implemented and teste
 
   We could investigate the possibility of adding Classical Archives' [MIDI collection](https://www.classicalarchives.com/midi.html) to the pre-training data.
   
-* [ ] **Refactor max_seq_len out of the Tokenizer class**
+* [x] **Refactor max_seq_len out of the Tokenizer class**
 
   This change may have adverse effects on other parts of the codebase, so it should be approached with caution. `max_seq_len` should be saved separately in the creation configuration for `TokenizedDataset`, similar to how padding and stride length are handled.
 * [ ] **Improve the striding mechanism in TokenizedDataset.build**

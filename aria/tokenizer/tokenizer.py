@@ -14,25 +14,21 @@ from aria.config import load_config
 
 # TODO:
 # - Write tests
-# - Refactor max_seq_len out of the tokenizer class and into TokenizedDataset.
 
 
 class Tokenizer:
     """Abstract Tokenizer class for tokenizing midi_dict objects.
 
     Args:
-        max_seq_len (int): Maximum sequence length supported by tokenizer.
         return_tensors (bool, optional): If True, encode will return tensors.
             Defaults to False.
     """
 
     def __init__(
         self,
-        max_seq_len: int,
         return_tensors: bool = False,
     ):
         self.name = None
-        self.max_seq_len = max_seq_len
         self.return_tensors = return_tensors
 
         # These must be implemented in child class (abstract params)
@@ -95,10 +91,9 @@ class TokenizerLazy(Tokenizer):
 
     def __init__(
         self,
-        max_seq_len: int,
         return_tensors: bool = False,
     ):
-        super().__init__(max_seq_len, return_tensors)
+        super().__init__(return_tensors)
         self.config = load_config()["tokenizer"]["lazy"]
         self.name = "lazy"
 

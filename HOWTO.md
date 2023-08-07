@@ -70,8 +70,7 @@ Tokenizers (refer to `aria.tokenizer`) convert MidiDict objects into sequences o
 ```python
 # Loading Debussy's arabesque into a MidiDict and then tokenizing it
 MIDI_PATH = "./tests/test_data/arabesque.mid"
-midi = mido.MidiFile(MIDI_PATH)
-midi_dict = MidiDict.from_midi(midi)
+midi_dict = MidiDict.from_midi(MIDI_PATH)
 tokenizer = aria.tokenizer.TokenizerLazy()
 tokenized_seq = tokenizer.tokenize_midi_dict(midi_dict)
 print(tokenized_seq)
@@ -83,7 +82,7 @@ augmented_tokenized_seq = pitch_aug_fn(tokenized_seq)
 print(augmented_tokenized_seq)
 midi_dict = tokenizer.detokenize_midi_dict(augmented_tokenized_seq)
 midi = midi_dict.to_midi()
-midi.save('arabesque')
+midi.save('arabesque.mid')
 ```
 
 As we need rapid access to tokenized sequences during training, we use the class `aria.data.datasets.TokenizedDataset` to organize them into a dataset. This class implements the `torch.utils.data.Dataset` interface and can therefore be used with the PyTorch DataLoader class. There are a few important things to note about how TokenizedDataset works:
@@ -100,10 +99,11 @@ mididict_dataset = datasets.MidiDataset.build(
     dir="tests/test_data",
     recur=True,
 )
-tokenizer = tokenizer.TokenizerLazy(max_seq_len=512, return_tensors=True)
+tokenizer = tokenizer.TokenizerLazy(return_tensors=True)
 tokenized_dataset = datasets.TokenizedDataset.build(
     tokenizer=tokenizer,
     save_path="tokenized_dataset.jsonl",
+    max_seq_len=512,
     midi_dataset=mididict_dataset,
 )
 
@@ -114,18 +114,20 @@ datasets.MidiDataset.build_to_file(
     save_path="mididict_dataset.jsonl",
     recur=True,
 )
-tokenizer = tokenizer.TokenizerLazy(max_seq_len=512, return_tensors=True)
+tokenizer = tokenizer.TokenizerLazy(return_tensors=True)
 tokenized_dataset = datasets.TokenizedDataset.build(
     tokenizer=tokenizer,
     save_path="tokenized_dataset.jsonl",
+    max_seq_len=512,
     midi_dataset_path="mididict_dataset.jsonl",
 )
 
 # A short demonstration of how you might use TokenizerLazy during training
-tokenizer = tokenizer.TokenizerLazy(max_seq_len=512, return_tensors=True)
+tokenizer = tokenizer.TokenizerLazy(return_tensors=True)
 tokenized_dataset = datasets.TokenizedDataset.build(
     tokenizer=tokenizer,
     save_path="tokenized_dataset.jsonl",
+    max_seq_len=512, 
     midi_dataset_path="mididict_dataset.jsonl",
 )
 tokenized_dataset.set_transform(

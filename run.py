@@ -81,7 +81,6 @@ def sample(args):
     model = PretrainLM.load_from_checkpoint(ckpt_path).model
     max_seq_len = model.max_seq_len
     tokenizer = TokenizerLazy(
-        max_seq_len=max_seq_len,
         return_tensors=True,
     )
 
@@ -90,9 +89,7 @@ def sample(args):
     ), "Truncate length longer than maximum length supported by the model."
 
     # Load and format prompts
-    midi_dict = MidiDict.from_midi(
-        mid=mido.MidiFile(midi_path),
-    )
+    midi_dict = MidiDict.from_midi(mid_path=midi_path)
     prompt_seq = tokenizer.tokenize_midi_dict(midi_dict=midi_dict)
     prompt_seq = prompt_seq[:truncate_len]
     prompts = [prompt_seq for _ in range(num_variations)]
@@ -166,14 +163,16 @@ def data(args):
         ), "must provide a load_path or a directory containing midi"
 
         config = load_config()["data"]["dataset_gen_args"]
-        tokenizer = TokenizerLazy(max_seq_len=config["max_seq_len"])
+        # tokenizer = TokenizerLazy(max_seq_len=config["max_seq_len"])
+        tokenizer = TokenizerLazy()
         if args.load_path:
             TokenizedDataset.build(
                 tokenizer=tokenizer,
                 save_path=args.save_path,
                 midi_dataset_path=args.load_path,
-                padding=True,
+                max_seq_len=config["max_seq_len"],
                 stride_len=config["stride_len"],
+                padding=True,
                 overwrite=True,
             )
         elif args.dir:
@@ -188,8 +187,9 @@ def data(args):
                 tokenizer=tokenizer,
                 save_path=args.save_path,
                 midi_dataset_path=buffer_path,
-                padding=True,
+                max_seq_len=config["max_seq_len"],
                 stride_len=config["stride_len"],
+                padding=True,
                 overwrite=True,
             )
             os.remove(buffer_path)
