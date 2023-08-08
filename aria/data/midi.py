@@ -522,7 +522,6 @@ def _test_note_frequency(
         ticks_per_beat=midi_dict.ticks_per_beat,
     )
     notes_per_second = (num_notes * 1e3) / total_duration_ms
-    print(notes_per_second)
 
     if notes_per_second < min_per_second or notes_per_second > max_per_second:
         return False
