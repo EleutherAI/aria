@@ -16,6 +16,13 @@
             "no_notes":{
                 "run": true,
                 "args": {}
+            },
+            "note_frequency":{
+                "run": true,
+                "args": {
+                    "min_per_second": 1,
+                    "max_per_second": 15
+                }
             }
         },
         "pre_processing": {

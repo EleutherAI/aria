@@ -5,6 +5,8 @@ import mido
 from collections import defaultdict
 from copy import deepcopy
 
+from mido.midifiles.units import tick2second
+
 
 # TODO:
 # - Possibly refactor names 'mid' to 'midi'
@@ -188,7 +190,7 @@ def _extract_track_data(track: mido.MidiTrack):
     note_msgs = []
 
     last_note_on = defaultdict(list)
-    for counter, message in enumerate(track):
+    for message in track:
         # Meta messages
         if message.is_meta is True:
             if message.type == "text" or message.type == "copyright":
@@ -418,6 +420,65 @@ def dict_to_midi(mid_data: dict):
     return mid
 
 
+def get_duration_ms(
+    start_tick: int,
+    end_tick: int,
+    tempo_msgs: list,
+    ticks_per_beat: int,
+):
+    """Calculates elapsed time between start_tick and end_tick (in ms)"""
+
+    # Finds idx such that:
+    # tempo_msg[idx]["tick"] < start_tick <= tempo_msg[idx+1]["tick"]
+    for idx, curr_msg in enumerate(tempo_msgs):
+        if start_tick <= curr_msg["tick"]:
+            break
+    if idx > 0:  # Special case idx == 0 -> Don't -1
+        idx -= 1
+
+    # It is important that we initialise curr_tick & curr_tempo here. In the
+    # case that there is a single tempo message the following loop will not run.
+    duration = 0.0
+    curr_tick = start_tick
+    curr_tempo = tempo_msgs[idx]["data"]
+
+    # Sums all tempo intervals before tempo_msgs[-1]["tick"]
+    for curr_msg, next_msg in zip(tempo_msgs[idx:], tempo_msgs[idx + 1 :]):
+        curr_tempo = curr_msg["data"]
+        if end_tick < next_msg["tick"]:
+            delta_tick = end_tick - curr_tick
+        else:
+            delta_tick = next_msg["tick"] - curr_tick
+
+        duration += tick2second(
+            tick=delta_tick,
+            tempo=curr_tempo,
+            ticks_per_beat=ticks_per_beat,
+        )
+
+        if end_tick < next_msg["tick"]:
+            break
+        else:
+            curr_tick = next_msg["tick"]
+
+    # Case end_tick > tempo_msgs[-1]["tick"]
+    if end_tick > tempo_msgs[-1]["tick"]:
+        curr_tempo = tempo_msgs[-1]["data"]
+        delta_tick = end_tick - curr_tick
+
+        duration += tick2second(
+            tick=delta_tick,
+            tempo=curr_tempo,
+            ticks_per_beat=ticks_per_beat,
+        )
+
+    # Convert from seconds to milliseconds
+    duration = duration * 1e3
+    duration = round(duration)
+
+    return duration
+
+
 def _test_max_programs(midi_dict: MidiDict, max: int):
     """Returns false if midi_dict uses more than {max} programs."""
     present_programs = set(
@@ -445,6 +506,28 @@ def _test_max_instruments(midi_dict: MidiDict, max: int):
         return True
     else:
         return False
+
+
+def _test_note_frequency(
+    midi_dict: MidiDict, max_per_second: float, min_per_second: float
+):
+    if not midi_dict.note_msgs:
+        return False
+
+    num_notes = len(midi_dict.note_msgs)
+    total_duration_ms = get_duration_ms(
+        start_tick=midi_dict.note_msgs[0]["data"]["start"],
+        end_tick=midi_dict.note_msgs[-1]["data"]["end"],
+        tempo_msgs=midi_dict.tempo_msgs,
+        ticks_per_beat=midi_dict.ticks_per_beat,
+    )
+    notes_per_second = (num_notes * 1e3) / total_duration_ms
+    print(notes_per_second)
+
+    if notes_per_second < min_per_second or notes_per_second > max_per_second:
+        return False
+    else:
+        return True
 
 
 def _test_no_notes(midi_dict: MidiDict):
