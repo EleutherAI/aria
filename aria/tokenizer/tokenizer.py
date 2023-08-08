@@ -4,9 +4,9 @@ import logging
 import torch
 import functools
 import itertools
+import random
 
 from collections import defaultdict
-from random import randint
 from mido.midifiles.units import second2tick, tick2second
 
 from aria.data.midi import MidiDict
@@ -526,7 +526,7 @@ class TokenizerLazy(Tokenizer):
                     else:
                         return unk_tok
 
-            pitch_aug = randint(-_aug_range, _aug_range)
+            pitch_aug = random.randint(-_aug_range, _aug_range)
             return [pitch_aug_tok(x, pitch_aug) for x in src]
 
         # See functools.partial docs
@@ -554,7 +554,7 @@ class TokenizerLazy(Tokenizer):
             src: list,
             velocity_step: int,
             max_velocity: int,
-            _aug_steps_range: float,
+            _aug_steps_range: int,
         ):
             def velocity_aug_tok(tok, _velocity_aug):
                 if isinstance(tok, str):
@@ -582,7 +582,7 @@ class TokenizerLazy(Tokenizer):
 
                     return (_instrument, _pitch, _velocity + _velocity_aug)
 
-            velocity_aug = velocity_step * randint(
+            velocity_aug = velocity_step * random.randint(
                 -_aug_steps_range, _aug_steps_range
             )
             return [velocity_aug_tok(x, velocity_aug) for x in src]
@@ -595,11 +595,107 @@ class TokenizerLazy(Tokenizer):
             _aug_steps_range=aug_steps_range,
         )
 
-    # TODO: Implement - follow export_pitch aug
-    # Also implement order mix up for chords
-    def export_time_aug(self):
-        # Remember special case where we have max_time_step
-        raise NotImplementedError
+    def export_tempo_aug(self, tempo_aug_range: float):
+        def tempo_aug_seq(
+            src: list,
+            min_time_step: int,
+            max_time_step: int,
+            pad_tok: str,
+            _tempo_aug_range: float,
+        ):
+            def tempo_aug_tok_raw(tok, _tempo_aug):
+                if isinstance(tok, str):
+                    _tok_type = "special"
+                else:
+                    _tok_type = tok[0]
+
+                if _tok_type == "wait" or _tok_type == "dur":
+                    (__tok_type, _dur) = tok
+
+                    return (
+                        __tok_type,
+                        min_time_step
+                        * int(round(float(_tempo_aug * _dur) / min_time_step)),
+                    )
+                else:
+                    # Return without changing
+                    return tok
+
+            tempo_aug = random.uniform(
+                1 - tempo_aug_range, 1 + _tempo_aug_range
+            )
+            augmented_seq = [tempo_aug_tok_raw(x, tempo_aug) for x in src]
+
+            # Recalculate dur and wait tokens so that they are correctly
+            # formatted after naive augmentation.
+            initial_seq_len = len(augmented_seq)
+            idx = 0
+            buffer = []
+            while idx < len(augmented_seq):
+                tok = augmented_seq[idx]
+                if isinstance(tok, str):
+                    tok_type = "special"
+                else:
+                    tok_type = tok[0]
+
+                # Get tok_type of next token if possible
+                if idx + 1 < len(augmented_seq):
+                    next_tok = augmented_seq[idx + 1]
+                    if isinstance(next_tok, str):
+                        next_tok_type = "special"
+                    else:
+                        next_tok_type = next_tok[0]
+                else:
+                    next_tok_type = None
+
+                # If necessary add wait token to the buffer
+                if tok_type == "wait":
+                    # Overflow
+                    if buffer or tok[1] >= max_time_step:
+                        buffer.append(augmented_seq.pop(idx))
+                    # Underflow
+                    elif next_tok_type == "wait":
+                        buffer.append(augmented_seq.pop(idx))
+                    else:
+                        idx += 1
+
+                # Current tok not wait token so if the buffer is not empty
+                # recalculate and reinsert wait tokens in the buffer.
+                elif buffer:
+                    buffer_remaining_dur = sum(_tok[1] for _tok in buffer)
+
+                    while buffer_remaining_dur > max_time_step:
+                        augmented_seq.insert(idx, ("wait", max_time_step))
+                        buffer_remaining_dur -= max_time_step
+                        idx += 1
+
+                    augmented_seq.insert(idx, ("wait", buffer_remaining_dur))
+                    buffer = []
+                    idx += 1
+
+                # If dur token has overflowed, truncate at _max_time_step
+                elif tok_type == "dur":
+                    if tok[1] > max_time_step:
+                        augmented_seq[idx] = ("dur", max_time_step)
+                    idx += 1
+
+                else:
+                    idx += 1
+
+            # Pad or truncate to original sequence length as necessary
+            augmented_seq = augmented_seq[:initial_seq_len]
+            augmented_seq += [pad_tok] * (initial_seq_len - len(augmented_seq))
+
+            return augmented_seq
+
+        # See functools.partial docs
+        return functools.partial(
+            tempo_aug_seq,
+            min_time_step=self.min_time_step,
+            max_time_step=self.max_time_step,
+            pad_tok=self.pad_tok,
+            _tempo_aug_range=tempo_aug_range,
+        )
 
 
 def _get_duration_ms(

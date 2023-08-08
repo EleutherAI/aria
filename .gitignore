@@ -163,3 +163,5 @@ cython_debug/
 tools/
 data/
 tests/test_results
+lightning_logs/
+.vscode/
