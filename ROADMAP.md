@@ -16,7 +16,7 @@ As it stands, the basic functionality of the repository is implemented and teste
 * [ ] **Add speed data-augmentation function**
 
   This data-augmentation function should change the speed of a tokenized sequence by some (float) factor. The main issue I foresee is accounting for the way that wait tokens are currently implemented. Depending on the `config.json`, the lazy tokenizer has a max wait token `("wait", t_max)`. Any 'wait' event longer than `t_max` is represented as a sequence of tokens. For instance, a wait of 2*t_max + 10ms would be `("wait", t_max), ("wait", t_max), ("wait", 10)`.
-* [ ] **Fix encode/decode disparity bug**
+* [x] **Fix encode/decode disparity bug**
 
   There is a bug in MidiDict/TokenizerLazy that occasionally results in repeated notes being encoded incorrectly. This needs to be fixed before the main training can start.
 * [ ] **Add checksum pre-processing test**
