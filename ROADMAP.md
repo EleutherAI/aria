@@ -19,9 +19,9 @@ As it stands, the basic functionality of the repository is implemented and teste
 * [x] **~~Fix encode/decode disparity bug~~**
 
   There is a bug in MidiDict/TokenizerLazy that occasionally results in repeated notes being encoded incorrectly. This needs to be fixed before the main training can start.
-* [ ] **Add checksum pre-processing test**
+* [x] **~~Add checksum/hash pre-processing test~~**
 
-  Implement a pre-processing test which detects duplicate MIDI files by doing a sort of checksum on the MIDI file. I'm not quite sure how to implement this but it should not be too hard.
+  Implement a pre-processing test which detects duplicate MIDI files by doing a sort of checksum/hash on the MIDI file. I'm not quite sure how to implement this but it should not be too hard.
 * [x] **~~Add further pre-processing tests~~**
 
   Add further MidiDict pre-processing tests to improve dataset quality. Some ideas are checking for the frequency of note messages (an average of > 15 p/s or < 2 p/s is a bad sign). I'm open to any suggestions for MidiDict preprocessing tests. Properly cleaning pre-training datasets has a huge effect on model quality and robustness.
