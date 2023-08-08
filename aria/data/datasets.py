@@ -6,7 +6,7 @@ import mmap
 import jsonlines
 import logging
 import torch
-import mido
+
 import aria.data.midi
 
 from pathlib import Path
@@ -179,6 +179,7 @@ def build_mididict_dataset(
     if num_paths == 0:
         logging.warning("Directory contains no files matching *.mid or *.midi")
 
+    seen_hashes = {}
     if streaming is True:
         with jsonlines.open(stream_save_path, mode="w") as writer:
             for idx, path in enumerate(paths):
@@ -189,6 +190,14 @@ def build_mididict_dataset(
                     mid_dict = MidiDict.from_midi(mid_path=path)
                 except Exception:
                     logging.error(f"Failed to load file at {path}.")
+                    continue
+
+                mid_hash = mid_dict.calculate_hash()
+                if seen_hashes.get(mid_hash, False) is True:
+                    logging.info(f"File at {path} is a duplicate")
+                    continue
+                else:
+                    seen_hashes[mid_hash] = True
 
                 failed_tests = _run_tests(mid_dict)
                 if failed_tests:
@@ -210,6 +219,14 @@ def build_mididict_dataset(
                 mid_dict = MidiDict.from_midi(mid_path=path)
             except Exception:
                 logging.error(f"failed to load file at {path}.")
+                continue
+
+            mid_hash = mid_dict.calculate_hash()
+            if seen_hashes.get(mid_hash, False) is True:
+                logging.info(f"File at {path} is a duplicate")
+                continue
+            else:
+                seen_hashes[mid_hash] = True
 
             failed_tests = _run_tests(mid_dict)
             if failed_tests:

@@ -1,5 +1,7 @@
 """Utils for data/MIDI processing."""
 
+import hashlib
+import json
 import mido
 
 from collections import defaultdict
@@ -140,6 +142,14 @@ class MidiDict:
         """Loads a MIDI file and returns the coresponding MidiDict."""
         mid = mido.MidiFile(mid_path)
         return cls(**midi_to_dict(mid))
+
+    def calculate_hash(self):
+        msg_dict_to_hash = self.get_msg_dict()
+        del msg_dict_to_hash["meta_msgs"]
+
+        return hashlib.md5(
+            json.dumps(msg_dict_to_hash, sort_keys=True).encode()
+        ).hexdigest()
 
     # TODO:
     # - Add remove drums (aka remove channel 9&16) pre-processing
