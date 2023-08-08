@@ -18,7 +18,7 @@ As it stands, the basic functionality of the repository is implemented and teste
   This data-augmentation function should change the speed of a tokenized sequence by some (float) factor. The main issue I foresee is accounting for the way that wait tokens are currently implemented. Depending on the `config.json`, the lazy tokenizer has a max wait token `("wait", t_max)`. Any 'wait' event longer than `t_max` is represented as a sequence of tokens. For instance, a wait of 2*t_max + 10ms would be `("wait", t_max), ("wait", t_max), ("wait", 10)`.
 * [x] **Fix encode/decode disparity bug**
 
-  There is a bug in MidiDict/TokenizerLazy that occasionally results in repeated notes being encoded incorrectly. This needs to be fixed before the main training can start.
+  ~~There is a bug in MidiDict/TokenizerLazy that occasionally results in repeated notes being encoded incorrectly. This needs to be fixed before the main training can start.~~
 * [ ] **Add checksum pre-processing test**
 
   Implement a pre-processing test which detects duplicate MIDI files by doing a sort of checksum on the MIDI file. I'm not quite sure how to implement this but it should not be too hard.
@@ -37,7 +37,7 @@ As it stands, the basic functionality of the repository is implemented and teste
   
 * [x] **Refactor max_seq_len out of the Tokenizer class**
 
-  This change may have adverse effects on other parts of the codebase, so it should be approached with caution. `max_seq_len` should be saved separately in the creation configuration for `TokenizedDataset`, similar to how padding and stride length are handled.
+  ~~This change may have adverse effects on other parts of the codebase, so it should be approached with caution. `max_seq_len` should be saved separately in the creation configuration for `TokenizedDataset`, similar to how padding and stride length are handled.~~
 * [ ] **Improve the striding mechanism in TokenizedDataset.build**
 
   Currently, striding can result in sequences starting or ending in awkward places. For example, it is possible for a sequence to begin with a duration token. Ideally, the logic should be modified to prevent this.
