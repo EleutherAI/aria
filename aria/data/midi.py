@@ -188,7 +188,7 @@ def _extract_track_data(track: mido.MidiTrack):
     note_msgs = []
 
     last_note_on = defaultdict(list)
-    for message in track:
+    for counter, message in enumerate(track):
         # Meta messages
         if message.is_meta is True:
             if message.type == "text" or message.type == "copyright":
@@ -233,14 +233,16 @@ def _extract_track_data(track: mido.MidiTrack):
             )
         # Note messages
         elif message.type == "note_on" and message.velocity > 0:
-            last_note_on[message.note].append((message.time, message.velocity))
+            last_note_on[(message.note, message.channel)].append(
+                (message.time, message.velocity)
+            )
         elif message.type == "note_off" or (
             message.type == "note_on" and message.velocity == 0
         ):
             # Ignore non-existent note-ons
-            if message.note in last_note_on:
+            if (message.note, message.channel) in last_note_on:
                 end_tick = message.time
-                open_notes = last_note_on[message.note]
+                open_notes = last_note_on[(message.note, message.channel)]
 
                 notes_to_close = [
                     (start_tick, velocity)
@@ -271,10 +273,12 @@ def _extract_track_data(track: mido.MidiTrack):
                 if len(notes_to_close) > 0 and len(notes_to_keep) > 0:
                     # Note-on on the same tick but we already closed
                     # some previous notes -> it will continue, keep it.
-                    last_note_on[message.note] = notes_to_keep
+                    last_note_on[
+                        (message.note, message.channel)
+                    ] = notes_to_keep
                 else:
                     # Remove the last note on for this instrument
-                    del last_note_on[message.note]
+                    del last_note_on[(message.note, message.channel)]
 
     return {
         "meta_msgs": meta_msgs,
