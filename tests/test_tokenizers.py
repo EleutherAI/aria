@@ -17,6 +17,12 @@ def get_short_seq(tknzr: tokenizer.TokenizerLazy):
         ("wait", tknzr._quantize_time(100)),
         ("drum", tknzr._quantize_time(50)),
         ("piano", 64, tknzr._quantize_velocity(70)),
+        ("dur", tknzr._quantize_time(1000000)),
+        ("wait", tknzr._quantize_time(1000000)),
+        ("wait", tknzr._quantize_time(1000000)),
+        ("wait", tknzr._quantize_time(1000000)),
+        ("wait", tknzr._quantize_time(100)),
+        ("piano", 65, tknzr._quantize_velocity(70)),
         ("dur", tknzr._quantize_time(100)),
         ("wait", tknzr._quantize_time(100)),
         "<E>",
@@ -52,6 +58,7 @@ class TestLazyTokenizer(unittest.TestCase):
         seq = get_short_seq(tknzr)
         pitch_aug_fn = tknzr.export_pitch_aug(aug_range=5)
         velocity_aug_fn = tknzr.export_velocity_aug(aug_steps_range=2)
+        tempo_aug_fn = tknzr.export_tempo_aug(tempo_aug_range=0.5)
 
         seq_pitch_augmented = pitch_aug_fn(get_short_seq(tknzr))
         logging.info(f"pitch_aug_fn:\n{seq} ->\n{seq_pitch_augmented}")
@@ -66,6 +73,9 @@ class TestLazyTokenizer(unittest.TestCase):
             seq_velocity_augmented[3][2] - seq[3][2],
             seq_velocity_augmented[7][2] - seq[7][2],
         )
+
+        seq_tempo_augmented = tempo_aug_fn(get_short_seq(tknzr))
+        logging.info(f"tempo_aug_fn:\n{seq} ->\n{seq_tempo_augmented}")
 
     def test_encode_decode(self):
         tknzr = tokenizer.TokenizerLazy(

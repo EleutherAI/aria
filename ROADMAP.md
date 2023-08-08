@@ -13,7 +13,7 @@ As it stands, the basic functionality of the repository is implemented and teste
 * [ ] **Add chord mix-up data-augmentation function** 
 
   This (tokenized) data-augmentation function should randomly shuffle the order of notes that occur concurrently. For instance, `("piano", 60, 50), ("dur", 10), ("piano", 64, 50), ("dur", 20)` could be augmented to `("piano", 64, 50), ("dur", 20), ("piano", 60, 50), ("dur", 10)` as there is no wait token between the notes. See `aria.tokenizer.TokenizerLazy.export_pitch_aug()` for an example of how to implement data augmentation functions.
-* [ ] **Add speed data-augmentation function**
+* [x] **~~Add speed data-augmentation function~~**
 
   This data-augmentation function should change the speed of a tokenized sequence by some (float) factor. The main issue I foresee is accounting for the way that wait tokens are currently implemented. Depending on the `config.json`, the lazy tokenizer has a max wait token `("wait", t_max)`. Any 'wait' event longer than `t_max` is represented as a sequence of tokens. For instance, a wait of 2*t_max + 10ms would be `("wait", t_max), ("wait", t_max), ("wait", 10)`.
 * [x] **~~Fix encode/decode disparity bug~~**

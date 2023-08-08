@@ -147,7 +147,11 @@ def pretrain(
 
     if overfit is False:
         train_dataset.set_transform(
-            [tokenizer.export_velocity_aug(2), tokenizer.export_pitch_aug(4)]
+            [
+                tokenizer.export_velocity_aug(2),
+                tokenizer.export_pitch_aug(4),
+                tokenizer.export_tempo_aug(0.15),
+            ]
         )
 
     train_dataloader = DataLoader(
