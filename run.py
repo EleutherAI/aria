@@ -64,7 +64,6 @@ def _parse_sample_args():
 # - Move to sample.py ?
 def sample(args):
     """Entrypoint for sampling"""
-    import mido
     from torch.cuda import is_available as cuda_is_available
     from aria.training import PretrainLM
     from aria.tokenizer import TokenizerLazy

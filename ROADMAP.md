@@ -28,7 +28,7 @@ As it stands, the basic functionality of the repository is implemented and teste
 * [ ] **Add meta-token prefix support for LazyTokenizer**
 
   Investigate the possibility of adding meta-tokens to the prefix in LazyTokenizer. Some examples could be genre, composer, or data source tags. This might require a rewrite of how sequence prefixes are handled.
-* [ ] **Add 'ending soon' token to lazy tokenizer**
+* [x] **~~Add 'ending soon' token to lazy tokenizer~~**
 
   This token should appear ~100 notes before the end token '<E>' appears. The idea is that we can insert the 'ending soon' token intentionally to force the model to end the track naturally before it runs out of context.
 * [ ] **Finalize the pre-training MIDI dataset**
