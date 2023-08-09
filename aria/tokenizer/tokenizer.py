@@ -43,6 +43,7 @@ class Tokenizer:
         self.eos_tok = "<E>"
         self.pad_tok = "<P>"
         self.unk_tok = "<U>"
+        self.dim_tok = "<D>"
 
     def tokenize_midi_dict(self, midi_dict: MidiDict):
         """Abstract method for tokenizing a MidiDict object into a sequence of
@@ -126,6 +127,7 @@ class TokenizerLazy(Tokenizer):
             self.eos_tok,
             self.pad_tok,
             self.unk_tok,
+            self.dim_tok,
         ]
 
         self.wait_tokens = [("wait", i) for i in self.time_step_quantizations]
@@ -222,6 +224,14 @@ class TokenizerLazy(Tokenizer):
             return velocity_quantized
 
     def _format(self, present_instruments: list, unformatted_seq: list):
+        # If unformatted_seq is longer than 150 tokens insert diminish tok
+        idx = -100 + random.randint(-10, 10)
+        if len(unformatted_seq) > 150:
+            if unformatted_seq[idx][0] == "dur":  # Don't want: note, <D>, dur
+                unformatted_seq.insert(idx - 1, self.dim_tok)
+            else:
+                unformatted_seq.insert(idx, self.dim_tok)
+
         res = (
             present_instruments
             + [self.bos_tok]
@@ -331,10 +341,6 @@ class TokenizerLazy(Tokenizer):
             unformatted_seq=tokenized_seq,
         )
 
-    # TODO:
-    # - There is a minor bug with repeated notes occurring whilst the pedal is
-    #  down. It sounds like the note is turned off and on again when the second
-    #  note plays.
     def detokenize_midi_dict(self, tokenized_seq: list):
         instrument_programs = self.config["instrument_programs"]
         instrument_names = instrument_programs.keys()

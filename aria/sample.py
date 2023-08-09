@@ -15,8 +15,7 @@ from aria.model import TransformerLM
 from aria.tokenizer import Tokenizer
 
 # TODO:
-# - Debug this to make sure it is working
-# - This seriously needs to be double and triple checked
+# - Enable sampling sequences longer than max_seq_len by truncating
 
 
 @torch.autocast(device_type="cuda", dtype=torch.float16)
