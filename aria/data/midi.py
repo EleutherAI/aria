@@ -152,7 +152,7 @@ class MidiDict:
         ).hexdigest()
 
     # TODO:
-    # - Add remove drums (aka remove channel 9&16) pre-processing
+    # - Add remove drums (aka remove channel 9) pre-processing
     # - Add similar method for removing specific programs
     # - Decide whether this is necessary to have here in pre-precessing
     def remove_instruments(self, config: dict):
@@ -169,8 +169,8 @@ class MidiDict:
             if msg["data"] in programs_to_remove
         ]
 
-        # Remove drums (channel 9/16) from channels to remove
-        channels_to_remove = [i for i in channels_to_remove if i not in {9, 16}]
+        # Remove drums (channel 9) from channels to remove
+        channels_to_remove = [i for i in channels_to_remove if i != 9]
 
         # Remove unwanted messages all type by looping over msgs types. We need
         # to remove ticks_per_beat as this does not contain any messages.

@@ -264,16 +264,16 @@ class TokenizerLazy(Tokenizer):
         channel_to_instrument = {
             msg["channel"]: midi_dict.program_to_instrument[msg["data"]]
             for msg in midi_dict.instrument_msgs
-            if msg["channel"] not in {9, 16}  # Exclude drums
+            if msg["channel"] != 9  # Exclude drums
         }
         # If non-drum channel is missing from instrument_msgs, default to piano
         for c in channels_used:
-            if channel_to_instrument.get(c) is None and c not in {9, 16}:
+            if channel_to_instrument.get(c) is None and c != 9:
                 channel_to_instrument[c] = "piano"
 
         # Add non-drums to present_instruments (prefix)
         prefix = [("prefix", x) for x in set(channel_to_instrument.values())]
-        if 9 in channels_used or 16 in channels_used:
+        if 9 in channels_used:
             prefix.append(("prefix", "drum"))
 
         # NOTE: Any preceding silence is removed implicitly
@@ -281,8 +281,8 @@ class TokenizerLazy(Tokenizer):
         num_notes = len(midi_dict.note_msgs)
         for i, msg in enumerate(midi_dict.note_msgs):
             # Special case instrument is a drum. This occurs exclusively when
-            # MIDI channel is 9, 16 when 0 indexing
-            if msg["channel"] in {9, 16}:
+            # MIDI channel is 9 when 0 indexing
+            if msg["channel"] == 9:
                 _pitch = msg["data"]["pitch"]
                 tokenized_seq.append(("drum", _pitch))
 
@@ -362,7 +362,7 @@ class TokenizerLazy(Tokenizer):
         instrument_msgs = [
             {
                 "type": "instrument",
-                "data": 1,
+                "data": 0,
                 "tick": 0,
                 "channel": 9,
             }
@@ -372,8 +372,7 @@ class TokenizerLazy(Tokenizer):
         # Add non-drum instrument_msgs, breaks at first note token
         channel_idx = 0
         for idx, tok in enumerate(tokenized_seq):
-            # Make sure next available channel isn't drum channel
-            if channel_idx == 9 or channel_idx == 16:
+            if channel_idx == 9:  # Skip channel reserved for drums
                 channel_idx += 1
 
             if tok in self.special_tokens:
@@ -525,13 +524,14 @@ class TokenizerLazy(Tokenizer):
             _aug_range: float,
         ):
             def pitch_aug_tok(tok, _pitch_aug):
-                if isinstance(tok, str):
+                if isinstance(tok, str):  # Stand in for special tokens
                     _tok_type = "special"
                 else:
                     _tok_type = tok[0]
 
                 if (
                     _tok_type == "special"
+                    or _tok_type == "prefix"
                     or _tok_type == "dur"
                     or _tok_type == "drum"
                     or _tok_type == "wait"
@@ -578,13 +578,14 @@ class TokenizerLazy(Tokenizer):
             _aug_steps_range: int,
         ):
             def velocity_aug_tok(tok, _velocity_aug):
-                if isinstance(tok, str):
+                if isinstance(tok, str):  # Stand in for special tokens
                     _tok_type = "special"
                 else:
                     _tok_type = tok[0]
 
                 if (
                     _tok_type == "special"
+                    or _tok_type == "prefix"
                     or _tok_type == "dur"
                     or _tok_type == "drum"
                     or _tok_type == "wait"

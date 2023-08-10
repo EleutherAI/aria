@@ -389,33 +389,30 @@ class TokenizedDataset(torch.utils.data.Dataset):
         #   cut off or start early.
         # - Add docstring
         def _truncate_and_stride(_tokenized_seq: list):
-            present_instruments = []
+            prefix = []
 
             while _tokenized_seq:
                 tok = _tokenized_seq[0]
-                if isinstance(tok, str) and tok != tokenizer.bos_tok:
-                    present_instruments.append(_tokenized_seq.pop(0))
+                if tok != tokenizer.bos_tok and tok[0] == "prefix":
+                    prefix.append(_tokenized_seq.pop(0))
                 else:
                     break
 
             seq_len = len(_tokenized_seq)
-            prefix_len = len(present_instruments)
+            prefix_len = len(prefix)
 
             res = []
             idx = 0
             # No padding needed here
             while idx + max_seq_len - prefix_len < seq_len:
                 res.append(
-                    present_instruments
+                    prefix
                     + _tokenized_seq[idx : idx + max_seq_len - prefix_len]
                 )
                 idx += stride_len
 
             # Add the last sequence
-            _seq = (
-                present_instruments
-                + _tokenized_seq[idx : idx + max_seq_len - prefix_len]
-            )
+            _seq = prefix + _tokenized_seq[idx : idx + max_seq_len - prefix_len]
             if padding is True:
                 _seq += [tokenizer.pad_tok] * (max_seq_len - len(_seq))
             res.append(_seq)
