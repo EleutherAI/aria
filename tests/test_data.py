@@ -2,6 +2,7 @@ import unittest
 import os
 import logging
 import filecmp
+import random
 
 from aria import tokenizer
 from aria.data import datasets
@@ -77,6 +78,7 @@ class TestTokenizedDataset(unittest.TestCase):
         )
         mididict_dataset.save("tests/test_results/mididict_dataset.jsonl")
 
+        random.seed(42)
         dataset_buffer_from_file = datasets.TokenizedDataset.build(
             tokenizer=tknzr,
             save_path="tests/test_results/dataset_buffer_1.jsonl",
@@ -84,6 +86,7 @@ class TestTokenizedDataset(unittest.TestCase):
             max_seq_len=MAX_SEQ_LEN,
             overwrite=True,
         )
+        random.seed(42)
         dataset_buffer_from_mdset = datasets.TokenizedDataset.build(
             tokenizer=tknzr,
             save_path="tests/test_results/dataset_buffer_2.jsonl",

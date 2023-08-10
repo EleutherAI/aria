@@ -9,8 +9,8 @@ from aria.data.midi import MidiDict
 
 def get_short_seq(tknzr: tokenizer.TokenizerLazy):
     return [
-        "piano",
-        "drums",
+        ("prefix", "piano"),
+        ("prefix", "drum"),
         "<S>",
         ("piano", 62, tknzr._quantize_velocity(50)),
         ("dur", tknzr._quantize_time(50)),
