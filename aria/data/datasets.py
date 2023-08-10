@@ -17,8 +17,6 @@ from aria.tokenizer import Tokenizer
 from aria.data.midi import MidiDict
 
 
-# TODO: Add proper docstring
-# - Add functionality for splitting the dataset into train-val split
 class MidiDataset:
     """Container for datasets of MidiDict objects.
 

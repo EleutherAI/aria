@@ -203,6 +203,8 @@ def _extract_track_data(track: mido.MidiTrack):
     for message in track:
         # Meta messages
         if message.is_meta is True:
+            # if message.type != "set_tempo":
+            #   print(message)
             if message.type == "text" or message.type == "copyright":
                 meta_msgs.append(
                     {
