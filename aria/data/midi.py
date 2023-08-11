@@ -2,12 +2,16 @@
 
 import hashlib
 import json
+import re
+import logging
+import pathlib
 import mido
 
 from collections import defaultdict
 from copy import deepcopy
 
 from mido.midifiles.units import tick2second
+from aria.config import load_config
 
 
 # TODO:
@@ -81,13 +85,15 @@ class MidiDict:
         instrument_msgs: list,
         note_msgs: list,
         ticks_per_beat: int,
+        metadata: list,
     ):
         self.meta_msgs = meta_msgs
         self.tempo_msgs = tempo_msgs
         self.pedal_msgs = pedal_msgs
         self.instrument_msgs = instrument_msgs
         self.note_msgs = note_msgs
-        self.ticks_per_beat = ticks_per_beat  # Possibly refactor
+        self.ticks_per_beat = ticks_per_beat
+        self.metadata = metadata
 
         # This combines the individual dictionaries into one
         self.program_to_instrument = (
@@ -117,6 +123,7 @@ class MidiDict:
             "instrument_msgs": self.instrument_msgs,
             "note_msgs": self.note_msgs,
             "ticks_per_beat": self.ticks_per_beat,
+            "metadata": self.metadata,
         }
 
     def to_midi(self):
@@ -133,6 +140,7 @@ class MidiDict:
             "instrument_msgs",
             "note_msgs",
             "ticks_per_beat",
+            "metadata",
         }
 
         return cls(**msg_dict)
@@ -145,7 +153,9 @@ class MidiDict:
 
     def calculate_hash(self):
         msg_dict_to_hash = self.get_msg_dict()
-        del msg_dict_to_hash["meta_msgs"]
+        # Remove meta when calculating hash
+        msg_dict_to_hash.pop("meta_msgs")
+        msg_dict_to_hash.pop("metadata")
 
         return hashlib.md5(
             json.dumps(msg_dict_to_hash, sort_keys=True).encode()
@@ -177,7 +187,7 @@ class MidiDict:
         msg_dict = {
             k: v
             for k, v in self.get_msg_dict().items()
-            if k != "ticks_per_beat"
+            if k != "ticks_per_beat" and k != "metadata"
         }
         for msgs_name, msgs_list in msg_dict.items():
             setattr(
@@ -314,6 +324,7 @@ def midi_to_dict(mid: mido.MidiFile):
             entries "meta_msgs", "tempo_msgs", "pedal_msgs", "instrument_msgs",
             "note_msgs", "ticks_per_beat".
     """
+    metadata_config = load_config()["data"]["metadata"]
     # Convert time in mid to absolute
     for track in mid.tracks:
         curr_tick = 0
@@ -334,6 +345,18 @@ def midi_to_dict(mid: mido.MidiFile):
     # Add ticks per beat
     data["ticks_per_beat"] = mid.ticks_per_beat
 
+    # Add callbacks according to config here
+    data["metadata"] = {}
+    for process_name, process_config in metadata_config.items():
+        if process_config["run"] is True:
+            metadata_fn = get_metadata_fn(process_name)
+            fn_args = process_config["args"]
+
+            collected_metadata = metadata_fn(mid=mid, msg_data=data, **fn_args)
+            if collected_metadata:
+                for k, v in collected_metadata.items():
+                    data["metadata"][k] = v
+
     return data
 
 
@@ -353,18 +376,21 @@ def dict_to_midi(mid_data: dict):
     """
     mid_data = deepcopy(mid_data)
 
-    assert set(mid_data.keys()) <= {
+    assert mid_data.keys() == {
         "meta_msgs",
         "tempo_msgs",
         "pedal_msgs",
         "instrument_msgs",
         "note_msgs",
         "ticks_per_beat",
+        "metadata",
     }, "Invalid json/dict."
 
     ticks_per_beat = mid_data.pop("ticks_per_beat")
     if "meta_msgs" in mid_data.keys():
         del mid_data["meta_msgs"]
+    if "metadata" in mid_data.keys():
+        del mid_data["metadata"]
 
     # Add all messages (not ordered) to one track
     track = mido.MidiTrack()
@@ -491,7 +517,76 @@ def get_duration_ms(
     return duration
 
 
-def _test_max_programs(midi_dict: MidiDict, max: int):
+def _match_composer(text: str, composer_name: str):
+    # If name="bach" this pattern will match "bach", "Bach" or "BACH" if
+    # it is either proceeded or preceded by a "_" or " ".
+    pattern = (
+        r"(^|[\s_])("
+        + composer_name.lower()
+        + r"|"
+        + composer_name.upper()
+        + r"|"
+        + composer_name.capitalize()
+        + r")([\s_]|$)"
+    )
+
+    if re.search(pattern, text, re.IGNORECASE):
+        return True
+    else:
+        return False
+
+
+def meta_composer_filename(
+    mid: mido.MidiFile, msg_data: dict, composer_names: list
+):
+    file_name = pathlib.Path(mid.filename).stem
+    matched_names = set()
+    for name in composer_names:
+        if _match_composer(file_name, name):
+            matched_names.add(name)
+
+    # Only return data if only one composer is found
+    matched_names = list(matched_names)
+    if len(matched_names) == 1:
+        return {"composer": matched_names[0]}
+    else:
+        return {}
+
+
+def meta_composer_metamsg(
+    mid: mido.MidiFile, msg_data: dict, composer_names: list
+):
+    matched_names = set()
+    for msg in msg_data["meta_msgs"]:
+        for name in composer_names:
+            if _match_composer(msg["data"], name):
+                matched_names.add(name)
+
+    # Only return data if only one composer is found
+    matched_names = list(matched_names)
+    if len(matched_names) == 1:
+        return {"composer": matched_names[0]}
+    else:
+        return {}
+
+
+def get_metadata_fn(metadata_proc_name: str):
+    # Add additional test_names to this inventory
+    name_to_fn = {
+        "composer_filename": meta_composer_filename,
+        "composer_metamsg": meta_composer_metamsg,
+    }
+
+    fn = name_to_fn.get(metadata_proc_name, None)
+    if fn is None:
+        logging.error(
+            f"Error finding metadata function for {metadata_proc_name}"
+        )
+    else:
+        return fn
+
+
+def test_max_programs(midi_dict: MidiDict, max: int):
     """Returns false if midi_dict uses more than {max} programs."""
     present_programs = set(
         map(
@@ -506,7 +601,7 @@ def _test_max_programs(midi_dict: MidiDict, max: int):
         return False
 
 
-def _test_max_instruments(midi_dict: MidiDict, max: int):
+def test_max_instruments(midi_dict: MidiDict, max: int):
     present_instruments = set(
         map(
             lambda msg: midi_dict.program_to_instrument[msg["data"]],
@@ -520,7 +615,7 @@ def _test_max_instruments(midi_dict: MidiDict, max: int):
         return False
 
 
-def _test_note_frequency(
+def test_note_frequency(
     midi_dict: MidiDict, max_per_second: float, min_per_second: float
 ):
     if not midi_dict.note_msgs:
@@ -541,8 +636,24 @@ def _test_note_frequency(
         return True
 
 
-def _test_no_notes(midi_dict: MidiDict):
+def test_no_notes(midi_dict: MidiDict):
     if len(midi_dict.note_msgs) > 0:
         return True
     else:
         return False
+
+
+def get_test_fn(test_name: str):
+    # Add additional test_names to this inventory
+    name_to_fn = {
+        "max_programs": test_max_programs,
+        "max_instruments": test_max_instruments,
+        "no_notes": test_no_notes,
+        "note_frequency": test_note_frequency,
+    }
+
+    fn = name_to_fn.get(test_name, None)
+    if fn is None:
+        logging.error(f"Error finding preprocessing function for {test_name}")
+    else:
+        return fn

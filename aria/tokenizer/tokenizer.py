@@ -502,6 +502,7 @@ class TokenizerLazy(Tokenizer):
             instrument_msgs=instrument_msgs,
             note_msgs=note_msgs,
             ticks_per_beat=TICKS_PER_BEAT,
+            metadata={},
         )
 
     def export_pitch_aug(self, aug_range: int):
