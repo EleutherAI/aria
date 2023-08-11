@@ -48,6 +48,20 @@
                 }
             }
         },
+        "metadata": {
+            "composer_filename": {
+                "run": true,
+                "args": {
+                    "composer_names": ["bach", "beethoven", "mozart"]
+                }
+            },
+            "composer_metamsg": {
+                "run": true,
+                "args": {
+                    "composer_names": ["bach", "beethoven", "mozart"]
+                }
+            }
+        },
         "dataset_gen_args": {
             "max_seq_len": 512,
             "stride_len": 256

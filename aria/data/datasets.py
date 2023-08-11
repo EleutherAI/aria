@@ -14,7 +14,7 @@ from typing import Callable
 
 from aria.config import load_config
 from aria.tokenizer import Tokenizer
-from aria.data.midi import MidiDict
+from aria.data.midi import MidiDict, get_test_fn
 
 
 class MidiDataset:
@@ -121,22 +121,15 @@ def build_mididict_dataset(
         failed_tests = []
         for test_name, test_config in config["tests"].items():
             if test_config["run"] is True:
-                # All midi_dict tests must follow this naming convention
-                test_fn_name = "_test" + "_" + test_name
+                test_fn = get_test_fn(test_name)
                 test_args = test_config["args"]
 
-                try:
-                    test_fn = getattr(aria.data.midi, test_fn_name)
-                except:
-                    logging.error(
-                        f"Error finding test function for {test_name}"
-                    )
-                else:
-                    if test_fn(_mid_dict, **test_args) is False:
-                        failed_tests.append(test_name)
+                if test_fn(_mid_dict, **test_args) is False:
+                    failed_tests.append(test_name)
 
         return failed_tests
 
+    # Maybe refactor this in the same way as _run_tests
     def _preprocess_mididict(_mid_dict: MidiDict):
         for fn_name, fn_config in config["pre_processing"].items():
             if fn_config["run"] is True:
@@ -186,8 +179,9 @@ def build_mididict_dataset(
 
                 try:
                     mid_dict = MidiDict.from_midi(mid_path=path)
-                except Exception:
-                    logging.error(f"Failed to load file at {path}.")
+                except Exception as e:
+                    logging.error(f"Failed to load file at {path}:")
+                    logging.error(e)
                     continue
 
                 mid_hash = mid_dict.calculate_hash()
@@ -215,8 +209,9 @@ def build_mididict_dataset(
 
             try:
                 mid_dict = MidiDict.from_midi(mid_path=path)
-            except Exception:
-                logging.error(f"failed to load file at {path}.")
+            except Exception as e:
+                logging.error(f"failed to load file at {path}:")
+                logging.error(e)
                 continue
 
             mid_hash = mid_dict.calculate_hash()

@@ -62,9 +62,13 @@ class TestMidiDataset(unittest.TestCase):
         self.assertEqual(len(dataset_reloaded), 5)
         self.assertEqual(type(dataset_reloaded[0]), MidiDict)
 
+    def test_data_hash(self):
+        mid_1 = MidiDict.from_midi("tests/test_data/pop.mid")
+        mid_2 = MidiDict.from_midi("tests/test_data/pop_copy.mid")
 
-# For some reason, when running this test on a server the present instruments
-# and order of tokenized datasets is different??
+        self.assertEqual(mid_1.calculate_hash(), mid_2.calculate_hash())
+
+
 class TestTokenizedDataset(unittest.TestCase):
     # Test building is working (on the file level)
     def test_build(self):
