@@ -16,7 +16,6 @@ from aria.config import load_config
 
 # TODO:
 # - Possibly refactor names 'mid' to 'midi'
-# - Possibly refactor "metadata" to "metadata"
 
 
 class MidiDict:
