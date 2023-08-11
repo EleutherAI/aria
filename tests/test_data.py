@@ -11,8 +11,8 @@ from aria.data.midi import MidiDict
 
 def get_short_seq():
     return [
-        "piano",
-        "drums",
+        ("prefix", "piano"),
+        ("prefix", "drum"),
         "<S>",
         ("piano", 62, 50),
         ("dur", 50),

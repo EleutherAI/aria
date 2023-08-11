@@ -81,13 +81,15 @@ class MidiDict:
         instrument_msgs: list,
         note_msgs: list,
         ticks_per_beat: int,
+        meta_data: list,
     ):
         self.meta_msgs = meta_msgs
         self.tempo_msgs = tempo_msgs
         self.pedal_msgs = pedal_msgs
         self.instrument_msgs = instrument_msgs
         self.note_msgs = note_msgs
-        self.ticks_per_beat = ticks_per_beat  # Possibly refactor
+        self.ticks_per_beat = ticks_per_beat
+        self.meta_data = meta_data
 
         # This combines the individual dictionaries into one
         self.program_to_instrument = (
@@ -117,6 +119,7 @@ class MidiDict:
             "instrument_msgs": self.instrument_msgs,
             "note_msgs": self.note_msgs,
             "ticks_per_beat": self.ticks_per_beat,
+            "meta_data": self.meta_data,
         }
 
     def to_midi(self):
@@ -133,6 +136,7 @@ class MidiDict:
             "instrument_msgs",
             "note_msgs",
             "ticks_per_beat",
+            "meta_data",
         }
 
         return cls(**msg_dict)
@@ -145,7 +149,9 @@ class MidiDict:
 
     def calculate_hash(self):
         msg_dict_to_hash = self.get_msg_dict()
-        del msg_dict_to_hash["meta_msgs"]
+        # Remove meta when calculating hash
+        msg_dict_to_hash.pop("meta_msgs")
+        msg_dict_to_hash.pop("meta_data")
 
         return hashlib.md5(
             json.dumps(msg_dict_to_hash, sort_keys=True).encode()
@@ -177,7 +183,7 @@ class MidiDict:
         msg_dict = {
             k: v
             for k, v in self.get_msg_dict().items()
-            if k != "ticks_per_beat"
+            if k != "ticks_per_beat" and k != "meta_data"
         }
         for msgs_name, msgs_list in msg_dict.items():
             setattr(
@@ -334,6 +340,9 @@ def midi_to_dict(mid: mido.MidiFile):
     # Add ticks per beat
     data["ticks_per_beat"] = mid.ticks_per_beat
 
+    # Add callbacks according to config here
+    data["meta_data"] = ["poop"]
+
     return data
 
 
@@ -353,18 +362,21 @@ def dict_to_midi(mid_data: dict):
     """
     mid_data = deepcopy(mid_data)
 
-    assert set(mid_data.keys()) <= {
+    assert mid_data.keys() == {
         "meta_msgs",
         "tempo_msgs",
         "pedal_msgs",
         "instrument_msgs",
         "note_msgs",
         "ticks_per_beat",
+        "meta_data",
     }, "Invalid json/dict."
 
     ticks_per_beat = mid_data.pop("ticks_per_beat")
     if "meta_msgs" in mid_data.keys():
         del mid_data["meta_msgs"]
+    if "meta_data" in mid_data.keys():
+        del mid_data["meta_data"]
 
     # Add all messages (not ordered) to one track
     track = mido.MidiTrack()
