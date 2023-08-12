@@ -25,7 +25,7 @@ As it stands, the basic functionality of the repository is implemented and teste
 * [x] **~~Add further pre-processing tests~~**
 
   Add further MidiDict pre-processing tests to improve dataset quality. Some ideas are checking for the frequency of note messages (an average of > 15 p/s or < 2 p/s is a bad sign). I'm open to any suggestions for MidiDict preprocessing tests. Properly cleaning pre-training datasets has a huge effect on model quality and robustness.
-* [] **~~Add meta-token prefix support for LazyTokenizer~~**
+* [x] **~~Add meta-token prefix support for LazyTokenizer~~**
 
   Investigate the possibility of adding meta-tokens to the prefix in LazyTokenizer. Some examples could be genre, composer, or data source tags. This might require a rewrite of how sequence prefixes are handled.
 * [x] **~~Add 'ending soon' token to lazy tokenizer~~**
