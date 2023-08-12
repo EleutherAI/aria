@@ -127,8 +127,9 @@ class TokenizerLazy(Tokenizer):
         self.prefix_tokens = [
             ("prefix", "instrument", x) for x in self.instruments_wd
         ]
+        self.composer_names = self.config["composer_names"]
         self.prefix_tokens += [
-            ("prefix", "composer", x) for x in self.config["composer_names"]
+            ("prefix", "composer", x) for x in self.composer_names
         ]
 
         # Build vocab
@@ -276,7 +277,7 @@ class TokenizerLazy(Tokenizer):
             prefix.append(("prefix", "instrument", "drum"))
 
         composer = midi_dict.metadata.get("composer")
-        if composer:
+        if composer and (composer in self.composer_names):
             prefix.insert(0, ("prefix", "composer", composer))
 
         # NOTE: Any preceding silence is removed implicitly
