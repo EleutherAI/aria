@@ -681,11 +681,11 @@ class TokenizerLazy(Tokenizer):
 
                 # If necessary add wait token to the buffer
                 if tok_type == "wait":
-                    # Overflow
                     if buffer or tok[1] >= max_time_step:
+                        # Overflow
                         buffer.append(augmented_seq.pop(idx))
-                    # Underflow
                     elif next_tok_type == "wait":
+                        # Underflow
                         buffer.append(augmented_seq.pop(idx))
                     else:
                         idx += 1
@@ -704,7 +704,7 @@ class TokenizerLazy(Tokenizer):
                     buffer = []
                     idx += 1
 
-                # If dur token has overflowed, truncate at _max_time_step
+                # If dur token has overflowed, truncate at max_time_step
                 elif tok_type == "dur":
                     if tok[1] > max_time_step:
                         augmented_seq[idx] = ("dur", max_time_step)
@@ -727,3 +727,48 @@ class TokenizerLazy(Tokenizer):
             pad_tok=self.pad_tok,
             _tempo_aug_range=tempo_aug_range,
         )
+
+    def export_chord_mixup(self):
+        # Chord mix up will randomly reorder concurrent notes. A concurrent
+        # notes are those which are not separated by a 'wait' token.
+        def chord_mixup(src: list):
+            stack = []
+            for idx, tok in enumerate(src):
+                if isinstance(tok, str):
+                    tok_type = "special"
+                else:
+                    tok_type = tok[0]
+
+                if tok_type == "special" or tok_type == "prefix":
+                    # Skip special tok, reset stack to be safe
+                    stack = []
+                elif tok_type == "wait" and len(stack) <= 1:
+                    # Reset stack as it only contains one note
+                    stack = []
+                elif tok_type == "wait" and len(stack) > 1:
+                    # Stack contains more than one note -> mix-up stack.
+                    random.shuffle(stack)
+                    num_toks = sum(len(note) for note in stack)
+                    _idx = idx - num_toks
+
+                    while stack:
+                        entry = stack.pop()
+                        if entry["note"][0] == "drum":
+                            # Drum case doesn't require a duration token
+                            src[_idx] = entry["note"]
+                            _idx += 1
+                        else:
+                            src[_idx] = entry["note"]
+                            src[_idx + 1] = entry["dur"]
+                            _idx += 2
+
+                elif tok_type == "dur":
+                    # Add dur to previously added note token
+                    stack[-1]["dur"] = tok
+                else:
+                    # Note token -> append to stack
+                    stack.append({"note": tok})
+
+            return src
+
+        return chord_mixup

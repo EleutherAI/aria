@@ -10,7 +10,7 @@ As it stands, the basic functionality of the repository is implemented and teste
 
 ### Data
 
-* [ ] **Add chord mix-up data-augmentation function** 
+* [x] **~~Add chord mix-up data-augmentation function~~** 
 
   This (tokenized) data-augmentation function should randomly shuffle the order of notes that occur concurrently. For instance, `("piano", 60, 50), ("dur", 10), ("piano", 64, 50), ("dur", 20)` could be augmented to `("piano", 64, 50), ("dur", 20), ("piano", 60, 50), ("dur", 10)` as there is no wait token between the notes. See `aria.tokenizer.TokenizerLazy.export_pitch_aug()` for an example of how to implement data augmentation functions.
 * [x] **~~Add speed data-augmentation function~~**

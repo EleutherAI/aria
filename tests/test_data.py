@@ -157,7 +157,11 @@ class TestTokenizedDataset(unittest.TestCase):
             overwrite=True,
         )
         tokenized_dataset.set_transform(
-            [tknzr.export_velocity_aug(2), tknzr.export_pitch_aug(5)]
+            [
+                tknzr.export_pitch_aug(5),
+                tknzr.export_velocity_aug(2),
+                tknzr.export_tempo_aug(0.5),
+            ]
         )
 
         seq = get_short_seq()
