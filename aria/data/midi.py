@@ -85,7 +85,7 @@ class MidiDict:
         instrument_msgs: list,
         note_msgs: list,
         ticks_per_beat: int,
-        metadata: list,
+        metadata: dict,
     ):
         self.meta_msgs = meta_msgs
         self.tempo_msgs = tempo_msgs

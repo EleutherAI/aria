@@ -88,17 +88,6 @@ class Tokenizer:
         return decoded_seq
 
 
-# TODO: ADD META TOKEN FUNCTIONALITY
-# - Refactor meta tokens so they are a triple ("meta", "val")
-#   this should make using tok_type stuff easier. This refactor should touch a
-#   lot of code so take care here.
-# - Add prefix class function to lazy tokenizer that calculates meta tokens.
-#   This prefix class should call various functions according to config.json.
-# - One function could be doing regex on the meta messages, looking for
-#   composer names. If one and only one composer name is found then it is added
-#   to the prefix before the instruments. We could specify the list of
-#   composers we are interested in in the config.json.
-# - By loading according to the config.json we could extend this easily.
 class TokenizerLazy(Tokenizer):
     """Lazy MidiDict Tokenizer"""
 
@@ -133,7 +122,15 @@ class TokenizerLazy(Tokenizer):
             if v is False
         ]
         self.instruments_wd = self.instruments_nd + ["drum"]
-        self.prefix_tokens = [("prefix", x) for x in self.instruments_wd]
+
+        # Prefix tokens
+        self.prefix_tokens = [
+            ("prefix", "instrument", x) for x in self.instruments_wd
+        ]
+        self.composer_names = self.config["composer_names"]
+        self.prefix_tokens += [
+            ("prefix", "composer", x) for x in self.composer_names
+        ]
 
         # Build vocab
         self.special_tokens = [
@@ -272,9 +269,16 @@ class TokenizerLazy(Tokenizer):
                 channel_to_instrument[c] = "piano"
 
         # Add non-drums to present_instruments (prefix)
-        prefix = [("prefix", x) for x in set(channel_to_instrument.values())]
+        prefix = [
+            ("prefix", "instrument", x)
+            for x in set(channel_to_instrument.values())
+        ]
         if 9 in channels_used:
-            prefix.append(("prefix", "drum"))
+            prefix.append(("prefix", "instrument", "drum"))
+
+        composer = midi_dict.metadata.get("composer")
+        if composer and (composer in self.composer_names):
+            prefix.insert(0, ("prefix", "composer", composer))
 
         # NOTE: Any preceding silence is removed implicitly
         tokenized_seq = []
@@ -378,20 +382,24 @@ class TokenizerLazy(Tokenizer):
             if tok in self.special_tokens:
                 continue
             # Non-drum instrument prefix tok
-            elif tok[0] == "prefix" and tok[1] in self.instruments_nd:
+            elif (
+                tok[0] == "prefix"
+                and tok[1] == "instrument"
+                and tok[2] in self.instruments_nd
+            ):
                 if tok[1] in instrument_to_channel.keys():
-                    logging.warning(f"Duplicate prefix {tok[1]}")
+                    logging.warning(f"Duplicate prefix {tok[2]}")
                     continue
                 else:
                     instrument_msgs.append(
                         {
                             "type": "instrument",
-                            "data": instrument_programs[tok[1]],
+                            "data": instrument_programs[tok[2]],
                             "tick": 0,
                             "channel": channel_idx,
                         }
                     )
-                    instrument_to_channel[tok[1]] = channel_idx
+                    instrument_to_channel[tok[2]] = channel_idx
                     channel_idx += 1
             # Catches all other prefix tokens
             elif tok[0] == "prefix":
