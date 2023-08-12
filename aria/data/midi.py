@@ -213,8 +213,6 @@ def _extract_track_data(track: mido.MidiTrack):
     for message in track:
         # Meta messages
         if message.is_meta is True:
-            # if message.type != "set_tempo":
-            #   print(message)
             if message.type == "text" or message.type == "copyright":
                 meta_msgs.append(
                     {
@@ -643,6 +641,23 @@ def test_no_notes(midi_dict: MidiDict):
         return False
 
 
+def test_min_length(midi_dict: MidiDict, min_seconds: int):
+    if not midi_dict.note_msgs:
+        return False
+
+    total_duration_ms = get_duration_ms(
+        start_tick=midi_dict.note_msgs[0]["data"]["start"],
+        end_tick=midi_dict.note_msgs[-1]["data"]["end"],
+        tempo_msgs=midi_dict.tempo_msgs,
+        ticks_per_beat=midi_dict.ticks_per_beat,
+    )
+
+    if total_duration_ms / 1e3 < min_seconds:
+        return False
+    else:
+        return True
+
+
 def get_test_fn(test_name: str):
     # Add additional test_names to this inventory
     name_to_fn = {
@@ -650,6 +665,7 @@ def get_test_fn(test_name: str):
         "max_instruments": test_max_instruments,
         "no_notes": test_no_notes,
         "note_frequency": test_note_frequency,
+        "min_length": test_min_length,
     }
 
     fn = name_to_fn.get(test_name, None)
