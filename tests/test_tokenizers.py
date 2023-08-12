@@ -9,8 +9,9 @@ from aria.data.midi import MidiDict
 
 def get_short_seq(tknzr: tokenizer.TokenizerLazy):
     return [
-        ("prefix", "piano"),
-        ("prefix", "drum"),
+        ("prefix", "instrument", "piano"),
+        ("prefix", "instrument", "drum"),
+        ("prefix", "composer", "bach"),
         "<S>",
         ("piano", 62, tknzr._quantize_velocity(50)),
         ("dur", tknzr._quantize_time(50)),
@@ -63,15 +64,15 @@ class TestLazyTokenizer(unittest.TestCase):
         seq_pitch_augmented = pitch_aug_fn(get_short_seq(tknzr))
         logging.info(f"pitch_aug_fn:\n{seq} ->\n{seq_pitch_augmented}")
         self.assertEqual(
-            seq_pitch_augmented[3][1] - seq[3][1],
-            seq_pitch_augmented[7][1] - seq[7][1],
+            seq_pitch_augmented[4][1] - seq[4][1],
+            seq_pitch_augmented[8][1] - seq[8][1],
         )
 
         seq_velocity_augmented = velocity_aug_fn(get_short_seq(tknzr))
         logging.info(f"velocity_aug_fn:\n{seq} ->\n{seq_velocity_augmented}")
         self.assertEqual(
-            seq_velocity_augmented[3][2] - seq[3][2],
-            seq_velocity_augmented[7][2] - seq[7][2],
+            seq_velocity_augmented[4][2] - seq[4][2],
+            seq_velocity_augmented[8][2] - seq[8][2],
         )
 
         seq_tempo_augmented = tempo_aug_fn(get_short_seq(tknzr))
@@ -93,6 +94,13 @@ class TestLazyTokenizer(unittest.TestCase):
         enc_dec_seq = tknzr.decode(tknzr.encode(seq))
         for x, y in zip(seq, enc_dec_seq):
             self.assertEqual(x, y)
+
+    def test_no_unk_token(self):
+        tknzr = tokenizer.TokenizerLazy()
+        seq = get_short_seq(tknzr)
+        enc_dec_seq = tknzr.decode(tknzr.encode(seq))
+        for tok in enc_dec_seq:
+            self.assertTrue(tok != tknzr.unk_tok)
 
 
 if __name__ == "__main__":

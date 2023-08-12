@@ -11,8 +11,9 @@ from aria.data.midi import MidiDict
 
 def get_short_seq():
     return [
-        ("prefix", "piano"),
-        ("prefix", "drum"),
+        ("prefix", "instrument", "piano"),
+        ("prefix", "instrument", "drum"),
+        ("prefix", "composer", "bach"),
         "<S>",
         ("piano", 62, 50),
         ("dur", 50),
@@ -164,12 +165,12 @@ class TestTokenizedDataset(unittest.TestCase):
 
         logging.info(f"aug:\n{seq} ->\n{seq_augmented}")
         self.assertEqual(
-            seq_augmented[3][1] - seq[3][1],
-            seq_augmented[7][1] - seq[7][1],
+            seq_augmented[4][1] - seq[4][1],
+            seq_augmented[8][1] - seq[8][1],
         )
         self.assertEqual(
-            seq_augmented[3][2] - seq[3][2],
-            seq_augmented[7][2] - seq[7][2],
+            seq_augmented[4][2] - seq[4][2],
+            seq_augmented[8][2] - seq[8][2],
         )
 
         tokenized_dataset.close()
