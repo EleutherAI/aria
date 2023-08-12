@@ -23,6 +23,12 @@
                     "min_per_second": 1,
                     "max_per_second": 15
                 }
+            },
+            "min_length":{
+                "run": true,
+                "args": {
+                    "min_seconds": 30
+                }
             }
         },
         "pre_processing": {
