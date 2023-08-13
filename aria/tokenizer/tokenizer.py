@@ -361,17 +361,9 @@ class TokenizerLazy(Tokenizer):
         tempo_msgs = [{"type": "tempo", "data": TEMPO, "tick": 0}]
         meta_msgs = []
         pedal_msgs = []
+        instrument_msgs = []
 
-        # Drum instrument messages
-        instrument_msgs = [
-            {
-                "type": "instrument",
-                "data": 0,
-                "tick": 0,
-                "channel": 9,
-            }
-        ]
-        instrument_to_channel = {"drum": 9}
+        instrument_to_channel = {}
 
         # Add non-drum instrument_msgs, breaks at first note token
         channel_idx = 0
@@ -380,16 +372,27 @@ class TokenizerLazy(Tokenizer):
                 channel_idx += 1
 
             if tok in self.special_tokens:
+                # Skip special tokens
                 continue
-            # Non-drum instrument prefix tok
             elif (
                 tok[0] == "prefix"
                 and tok[1] == "instrument"
-                and tok[2] in self.instruments_nd
+                and tok[2] in self.instruments_wd
             ):
-                if tok[1] in instrument_to_channel.keys():
+                # Process instrument prefix tokens
+                if tok[2] in instrument_to_channel.keys():
                     logging.warning(f"Duplicate prefix {tok[2]}")
                     continue
+                elif tok[2] == "drum":
+                    instrument_msgs.append(
+                        {
+                            "type": "instrument",
+                            "data": 0,
+                            "tick": 0,
+                            "channel": 9,
+                        }
+                    )
+                    instrument_to_channel["drum"] = 9
                 else:
                     instrument_msgs.append(
                         {
@@ -401,10 +404,11 @@ class TokenizerLazy(Tokenizer):
                     )
                     instrument_to_channel[tok[2]] = channel_idx
                     channel_idx += 1
-            # Catches all other prefix tokens
             elif tok[0] == "prefix":
+                # Skip all other prefix tokens
                 continue
             else:
+                # Note, wait, or duration token
                 start = idx
                 break
 
