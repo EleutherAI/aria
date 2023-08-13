@@ -5,6 +5,7 @@ import os
 import mmap
 import jsonlines
 import logging
+import random
 import torch
 
 from pathlib import Path
@@ -52,6 +53,44 @@ class MidiDataset:
                 midi_dicts.append(MidiDict.from_msg_dict(entry))
 
         return cls(midi_dicts)
+
+    @classmethod
+    def split_from_file(
+        cls,
+        load_path: str,
+        train_val_ratio: float = 0.95,
+        repeatible: bool = True,
+    ):
+        path = Path(load_path)
+        train_save_path = path.with_name(f"{path.stem}_train{path.suffix}")
+        val_save_path = path.with_name(f"{path.stem}_val{path.suffix}")
+
+        if os.path.isfile(train_save_path) is True:
+            raise FileExistsError(f"File at {train_save_path} already exists.")
+        if os.path.isfile(val_save_path) is True:
+            raise FileExistsError(f"File at {val_save_path} already exists.")
+
+        if repeatible:
+            random.seed(42)
+
+        idx_original, idx_train, idx_val = 0, 0, 0
+        with (
+            jsonlines.open(load_path) as dataset,
+            jsonlines.open(train_save_path, mode="w") as train_dataset,
+            jsonlines.open(val_save_path, mode="w") as val_dataset,
+        ):
+            for entry in dataset:
+                idx_original += 1
+                if random.uniform(0, 1) <= train_val_ratio:
+                    idx_train += 1
+                    train_dataset.write(entry)
+                else:
+                    idx_val += 1
+                    val_dataset.write(entry)
+
+        logging.info(
+            f"Succesfully split into train ({idx_train}) and validation ({idx_val}) sets"
+        )
 
     @classmethod
     def build(
