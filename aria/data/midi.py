@@ -8,7 +8,6 @@ import pathlib
 import mido
 
 from collections import defaultdict
-from copy import deepcopy
 
 from mido.midifiles.units import tick2second
 from aria.config import load_config
@@ -372,8 +371,6 @@ def dict_to_midi(mid_data: dict):
     Returns:
         mido.MidiFile: The MIDI parsed from the input data.
     """
-    mid_data = deepcopy(mid_data)
-
     assert mid_data.keys() == {
         "meta_msgs",
         "tempo_msgs",
@@ -385,15 +382,14 @@ def dict_to_midi(mid_data: dict):
     }, "Invalid json/dict."
 
     ticks_per_beat = mid_data.pop("ticks_per_beat")
-    if "meta_msgs" in mid_data.keys():
-        del mid_data["meta_msgs"]
-    if "metadata" in mid_data.keys():
-        del mid_data["metadata"]
+    mid_data = {
+        k: v for k, v in mid_data.items() if k not in {"meta_msgs", "metadata"}
+    }
 
     # Add all messages (not ordered) to one track
     track = mido.MidiTrack()
-    for msgs in mid_data.values():
-        for msg in msgs:
+    for msg_list in mid_data.values():
+        for msg in msg_list:
             if msg["type"] == "tempo":
                 track.append(
                     mido.MetaMessage(

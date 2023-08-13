@@ -7,8 +7,6 @@ import jsonlines
 import logging
 import torch
 
-import aria.data.midi
-
 from pathlib import Path
 from typing import Callable
 
@@ -91,7 +89,6 @@ class MidiDataset:
         )
 
 
-# TODO: Add functionality for hashing checksum the MIDIs -  removing dupes
 def build_mididict_dataset(
     dir: str,
     recur: bool = False,
@@ -146,15 +143,41 @@ def build_mididict_dataset(
 
         return _mid_dict
 
-    if stream_save_path is None:
-        streaming = False
-    else:
-        streaming = True
+    def get_mididicts(_paths: list):
+        num_paths = len(_paths)
+        if num_paths == 0:
+            logging.warning(
+                "Directory contains no files matching *.mid or *.midi"
+            )
 
-        if overwrite is False and os.path.isfile(stream_save_path) is True:
-            raise FileExistsError(f"File at {stream_save_path} already exists.")
-        elif overwrite is True and os.path.isfile(stream_save_path) is True:
-            os.remove(stream_save_path)
+        seen_hashes = {}
+        for idx, path in enumerate(_paths):
+            if idx % 50 == 0 and idx != 0:
+                logging.info(f"processed midi files: {idx}/{num_paths}")
+
+            try:
+                mid_dict = MidiDict.from_midi(mid_path=path)
+            except Exception as e:
+                logging.error(f"Failed to load file at {path}:")
+                logging.error(e)
+                continue
+
+            mid_hash = mid_dict.calculate_hash()
+            if seen_hashes.get(mid_hash, False) is True:
+                logging.info(f"File at {path} is a duplicate")
+                continue
+            else:
+                seen_hashes[mid_hash] = True
+
+            failed_tests = _run_tests(mid_dict)
+            if failed_tests:
+                logging.info(f"File at {path} failed preprocessing tests:")
+                for test_name in failed_tests:
+                    logging.info(test_name)
+            else:
+                yield _preprocess_mididict(mid_dict)
+
+        logging.info(f"finished building mididict dataset")
 
     config = load_config()["data"]
 
@@ -170,68 +193,23 @@ def build_mididict_dataset(
     if num_paths == 0:
         logging.warning("Directory contains no files matching *.mid or *.midi")
 
-    seen_hashes = {}
-    if streaming is True:
-        with jsonlines.open(stream_save_path, mode="w") as writer:
-            for idx, path in enumerate(paths):
-                if idx % 50 == 0 and idx != 0:
-                    logging.info(f"processed midi files: {idx}/{num_paths}")
-
-                try:
-                    mid_dict = MidiDict.from_midi(mid_path=path)
-                except Exception as e:
-                    logging.error(f"Failed to load file at {path}:")
-                    logging.error(e)
-                    continue
-
-                mid_hash = mid_dict.calculate_hash()
-                if seen_hashes.get(mid_hash, False) is True:
-                    logging.info(f"File at {path} is a duplicate")
-                    continue
-                else:
-                    seen_hashes[mid_hash] = True
-
-                failed_tests = _run_tests(mid_dict)
-                if failed_tests:
-                    logging.info(f"File at {path} failed preprocessing tests:")
-                    for test_name in failed_tests:
-                        logging.info(test_name)
-                else:
-                    writer.write(_preprocess_mididict(mid_dict).get_msg_dict())
-
-            logging.info(f"finished building mididict dataset")
-
-    else:  # streaming is False
+    if stream_save_path is None:
+        # Not streaming -> return entries directly
         entries = []
-        for idx, path in enumerate(paths):
-            if idx % 50 == 0 and idx != 0:
-                logging.info(f"processed midi files: {idx}/{num_paths}")
-
-            try:
-                mid_dict = MidiDict.from_midi(mid_path=path)
-            except Exception as e:
-                logging.error(f"failed to load file at {path}:")
-                logging.error(e)
-                continue
-
-            mid_hash = mid_dict.calculate_hash()
-            if seen_hashes.get(mid_hash, False) is True:
-                logging.info(f"File at {path} is a duplicate")
-                continue
-            else:
-                seen_hashes[mid_hash] = True
-
-            failed_tests = _run_tests(mid_dict)
-            if failed_tests:
-                logging.info(f"file at {path} failed preprocessing tests:")
-                for test_name in failed_tests:
-                    logging.info(test_name)
-            else:
-                entries.append(_preprocess_mididict(mid_dict))
-
-        logging.info(f"finished building mididict dataset")
+        for entry in get_mididicts(paths):
+            entries.append(entry)
 
         return entries
+    else:
+        # Streaming -> write to file instead of returning anything
+        if overwrite is False and os.path.isfile(stream_save_path) is True:
+            raise FileExistsError(f"File at {stream_save_path} already exists.")
+        elif overwrite is True and os.path.isfile(stream_save_path) is True:
+            os.remove(stream_save_path)
+
+        with jsonlines.open(stream_save_path, mode="w") as writer:
+            for entry in get_mididicts(paths):
+                writer.write(entry.get_msg_dict())
 
 
 class TokenizedDataset(torch.utils.data.Dataset):
