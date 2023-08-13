@@ -406,6 +406,16 @@ class TokenizedDataset(torch.utils.data.Dataset):
                 )
                 idx += stride_len
 
+                # Checks that next start note will not be cutoff midway
+                while idx < seq_len:
+                    # Break loop when a non 'wait' or 'dur' is seen
+                    if _tokenized_seq[idx] in tokenizer.special_tokens:
+                        break
+                    elif _tokenized_seq[idx][0] in {"wait", "dur"}:
+                        idx += 1
+                    else:
+                        break
+
             # Add the last sequence
             _seq = prefix + _tokenized_seq[idx : idx + max_seq_len - prefix_len]
             if padding is True:
