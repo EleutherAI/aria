@@ -32,18 +32,26 @@ class Tokenizer:
         self.name = None
         self.return_tensors = return_tensors
 
+        self.bos_tok = "<S>"
+        self.eos_tok = "<E>"
+        self.pad_tok = "<P>"
+        self.unk_tok = "<U>"
+        self.dim_tok = "<D>"
+
+        self.special_tokens = [
+            self.bos_tok,
+            self.eos_tok,
+            self.pad_tok,
+            self.unk_tok,
+            self.dim_tok,
+        ]
+
         # These must be implemented in child class (abstract params)
         self.config = {}
         self.tok_to_id = {}
         self.id_to_tok = {}
         self.vocab_size = -1
         self.pad_id = -1
-
-        self.bos_tok = "<S>"
-        self.eos_tok = "<E>"
-        self.pad_tok = "<P>"
-        self.unk_tok = "<U>"
-        self.dim_tok = "<D>"
 
     def tokenize_midi_dict(self, midi_dict: MidiDict):
         """Abstract method for tokenizing a MidiDict object into a sequence of
@@ -133,14 +141,6 @@ class TokenizerLazy(Tokenizer):
         ]
 
         # Build vocab
-        self.special_tokens = [
-            self.bos_tok,
-            self.eos_tok,
-            self.pad_tok,
-            self.unk_tok,
-            self.dim_tok,
-        ]
-
         self.wait_tokens = [("wait", i) for i in self.time_step_quantizations]
         self.dur_tokens = [("dur", i) for i in self.time_step_quantizations]
         self.drum_tokens = [("drum", i) for i in range(35, 82)]
