@@ -16,6 +16,7 @@ from aria.tokenizer import Tokenizer
 from aria.data.midi import MidiDict, get_test_fn
 
 
+# TODO: Investigate why loads of drums tracks are appearing when drum is present
 class MidiDataset:
     """Container for datasets of MidiDict objects.
 
