@@ -91,16 +91,16 @@ def pretrain(
     tokenizer_name: str,
     train_data_path: str,
     val_data_path: str,
-    workers: int,
-    gpus: int,
+    num_workers: int,
+    num_gpus: int,
     epochs: int,
     batch_size: int,
     checkpoint: str = None,
     overfit: bool = False,
 ):
     # Validate inputs
-    assert 0 < workers <= 128, "Too many workers"
-    assert 0 < gpus <= 8, "Too many (or none) GPUs"
+    assert 0 < num_workers <= 128, "Too many workers"
+    assert 0 < num_gpus <= 8, "Too many (or none) GPUs"
     assert epochs > 0, "Invalid number of epochs"
     assert batch_size > 0, "Invalid batch size"
     assert os.path.isfile(train_data_path)
@@ -122,12 +122,8 @@ def pretrain(
     # Load model
     if isinstance(checkpoint, str) and checkpoint is not None:
         model = PretrainLM.load_from_checkpoint(checkpoint)
-        assert (
-            model_config == model.config
-        ), "model config doesn't match checkpoint"
     elif not checkpoint:
         model = PretrainLM(model_config)
-    model.train()
 
     # Load datasets & dataloaders
     train_dataset = TokenizedDataset(
@@ -157,20 +153,21 @@ def pretrain(
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        num_workers=workers,
+        num_workers=num_workers,
         shuffle=True,
     )
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size,
-        num_workers=workers,
+        num_workers=num_workers,
     )
 
     # Setup trainer
     if overfit is True:
         trainer = pl.Trainer(
-            devices=gpus,
+            devices=num_gpus,
             accelerator="gpu",
+            # strategy="ddp",
             precision=get_gpu_precision(),
             max_epochs=epochs,
             overfit_batches=1,
@@ -178,8 +175,9 @@ def pretrain(
         )
     else:
         trainer = pl.Trainer(
-            devices=gpus,
+            devices=num_gpus,
             accelerator="gpu",
+            # strategy="ddp",
             precision=get_gpu_precision(),
             max_epochs=epochs,
             callbacks=[
