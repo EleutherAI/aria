@@ -5,7 +5,6 @@ import torch.utils.checkpoint
 
 from torch import nn as nn
 from torch.nn import functional as F
-from typing import Tuple
 
 
 class ModelConfig:
@@ -30,47 +29,59 @@ class ModelConfig:
     def set_vocab_size(self, vocab_size: int):
         self.vocab_size = vocab_size
 
-    def __eq__(self, other):
-        try:
-            vs_equal = self.vocab_size == other.vocab_size
-        except:
-            # Default behaviour if one/both is missing
-            vs_equal = True
 
-        return (
-            vs_equal
-            and self.d_model == other.d_model
-            and self.n_heads == other.n_heads
-            and self.n_layers == other.n_layers
-            and self.ff_mult == other.ff_mult
-            and self.drop_p == other.drop_p
-            and self.max_seq_len == other.max_seq_len
-            and self.grad_checkpoint == other.grad_checkpoint
-        )
+# Taken from GPT-NeoX see:
+# https://github.com/EleutherAI/gpt-neox/blob/main/megatron/model/positional_embeddings.py
+class RotaryEmbedding(torch.nn.Module):
+    def __init__(self, dim, base=10000, precision=torch.half):
+        super().__init__()
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+        self.seq_len_cached = None
+        self.cos_cached = None
+        self.sin_cached = None
+        self.precision = precision
+
+    def forward(self, x, seq_dim=1, seq_len=None):
+        """Returns tuple cos, sin"""
+        # Comment out bfloat16() specific code for now
+        if seq_len is None:
+            seq_len = x.shape[seq_dim]
+        if seq_len != self.seq_len_cached:
+            self.seq_len_cached = seq_len
+            t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
+            freqs = torch.einsum("i,j->ij", t, self.inv_freq)
+            emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
+            # if self.precision == torch.bfloat16:
+            #     emb = emb.float()
+            self.cos_cached = emb.cos()[:, None, None, :]
+            self.sin_cached = emb.sin()[:, None, None, :]
+            # if self.precision == torch.bfloat16:
+            #     self.cos_cached = self.cos_cached.bfloat16()
+            #     self.sin_cached = self.sin_cached.bfloat16()
+
+        return self.cos_cached, self.sin_cached
 
 
-# Taken from facebookresearch/llama/model.py
-def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
-    ndim = x.ndim
-    assert 0 <= 1 < ndim
-    assert freqs_cis.shape == (x.shape[1], x.shape[-1])
-    shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
-    return freqs_cis.view(*shape)
+def rotate_half(x):
+    x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
+
+    return torch.cat(
+        (-x2, x1), dim=x1.ndim - 1
+    )  # dim=-1 triggers a bug in earlier torch versions
 
 
-# Taken from facebookresearch/llama/model.py
-def apply_rotary_emb(
-    xq: torch.Tensor,
-    xk: torch.Tensor,
-    freqs_cis: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
-    xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    freqs_cis = reshape_for_broadcast(freqs_cis, xq_)
-    xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
-    xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
+@torch.jit.script
+def apply_rotary_pos_emb(q, k, cos, sin, offset: int = 0):
+    """Returns tuple xq, xk"""
+    cos, sin = (
+        cos[offset : q.shape[0] + offset, ...],
+        sin[offset : q.shape[0] + offset, ...],
+    )
 
-    return xq_out.type_as(xq), xk_out.type_as(xk)
+    return (q * cos) + (rotate_half(q) * sin), (k * cos) + (
+        rotate_half(k) * sin
+    )
 
 
 class FusedEncoderBlock(nn.Module):
@@ -95,6 +106,9 @@ class FusedEncoderBlock(nn.Module):
         self.n_heads = model_config.n_heads
         self.d_head = model_config.d_model // model_config.n_heads
         self.max_seq_len = model_config.max_seq_len
+
+        # Positional embeddings
+        self.rotary_emb = RotaryEmbedding(self.d_head)
 
         # Attention
         self.q = nn.Linear(
@@ -134,13 +148,13 @@ class FusedEncoderBlock(nn.Module):
         self.norm1 = nn.LayerNorm(model_config.d_model)
         self.norm2 = nn.LayerNorm(model_config.d_model)
 
-    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor):
-        x = x + self._att_block(self.norm1(x), freqs_cis)
+    def forward(self, x: torch.Tensor):
+        x = x + self._att_block(self.norm1(x))
         x = x + self._ff_block(self.norm2(x))
 
         return x
 
-    def _att_block(self, x: torch.Tensor, freqs_cis: torch.Tensor):
+    def _att_block(self, x: torch.Tensor):
         batch_size, seq_len, _ = x.shape
         xq, xk, xv = self.q(x), self.k(x), self.v(x)
 
@@ -148,7 +162,9 @@ class FusedEncoderBlock(nn.Module):
         xq = xq.view(batch_size, seq_len, self.n_heads, self.d_head)
         xk = xk.view(batch_size, seq_len, self.n_heads, self.d_head)
         xv = xv.view(batch_size, seq_len, self.n_heads, self.d_head)
-        xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
+
+        cos, sin = self.rotary_emb(x=xv, seq_dim=1, seq_len=seq_len)
+        xq, xk = apply_rotary_pos_emb(q=xq, k=xk, cos=cos, sin=sin)
 
         # Reshape for attention calculation: (b_sz, n_head, s_len, d_head)
         xq = xq.transpose(1, 2)
@@ -192,16 +208,7 @@ class Transformer(nn.Module):
 
     def __init__(self, model_config: ModelConfig):
         super().__init__()
-
         self.model_config = model_config
-
-        # Used for Rotary Embeddings - see LLaMA
-        d_head = model_config.d_model // model_config.n_heads
-        max_seq_len = model_config.max_seq_len
-        self.register_buffer(
-            "freqs_cis",
-            self._precompute_freqs_cis(d_head, max_seq_len),
-        )
 
         self.tok_embeddings = nn.Embedding(
             num_embeddings=model_config.vocab_size,
@@ -226,9 +233,7 @@ class Transformer(nn.Module):
         """
         hidden_states = self.tok_embeddings(src)
 
-        # Slices freqs_cis (pos embeddings) according to src seq_len
         assert src.shape[1] <= self.model_config.max_seq_len, "Too long."
-        freqs_cis = torch.view_as_complex(self.freqs_cis)[: src.shape[1]]
 
         # Implements gradient checkpoints on Encoder Layers.
         if self.model_config.grad_checkpoint is True:
@@ -243,27 +248,14 @@ class Transformer(nn.Module):
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(layer),
                     hidden_states,
-                    freqs_cis,
                     preserve_rng_state=True,
                 )
 
         else:
             for layer in self.encode_layers:
-                hidden_states = layer(hidden_states, freqs_cis)
+                hidden_states = layer(hidden_states)
 
         return self.out_layer_norm(hidden_states)
-
-    # Taken from facebookresearch/llama/model.py
-    def _precompute_freqs_cis(self, dim: int, end: int, theta: float = 10000.0):
-        freqs = 1.0 / (
-            theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim)
-        )
-        t = torch.arange(end, device=freqs.device)  # type: ignore
-        freqs = torch.outer(t, freqs).float()  # type: ignore
-        freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
-
-        # Workaround see - https://github.com/pytorch/pytorch/issues/71613
-        return torch.view_as_real(freqs_cis)
 
 
 class TransformerLM(nn.Module):
