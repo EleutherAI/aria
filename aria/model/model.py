@@ -7,6 +7,10 @@ from torch import nn as nn
 from torch.nn import functional as F
 
 
+# TODO:
+# - Fix naming and docstrings
+
+
 class ModelConfig:
     def __init__(
         self,
@@ -72,20 +76,15 @@ def rotate_half(x):
 
 
 @torch.jit.script
-def apply_rotary_pos_emb(q, k, cos, sin, offset: int = 0):
-    """Returns tuple xq, xk"""
-    cos, sin = (
-        cos[offset : q.shape[0] + offset, ...],
-        sin[offset : q.shape[0] + offset, ...],
-    )
-
+def apply_rotary_pos_emb(q, k, cos, sin):
+    """Returns tuple (xq, xk). Expects shape (s_len, b_sz, n_head, d_head)."""
     return (q * cos) + (rotate_half(q) * sin), (k * cos) + (
         rotate_half(k) * sin
     )
 
 
 class FusedEncoderBlock(nn.Module):
-    """Transformer encoder block using F.scaled_dot_product_attention().
+    """Transformer block using F.scaled_dot_product_attention().
 
     This block has the following changes from a typical transformer encoder:
 
@@ -163,8 +162,12 @@ class FusedEncoderBlock(nn.Module):
         xk = xk.view(batch_size, seq_len, self.n_heads, self.d_head)
         xv = xv.view(batch_size, seq_len, self.n_heads, self.d_head)
 
+        # apply_rotary_post_emb expects: (s_len, b_sz, n_head, d_head)
         cos, sin = self.rotary_emb(x=xv, seq_dim=1, seq_len=seq_len)
+        xq, xk = xq.transpose(0, 1), xk.transpose(0, 1)
         xq, xk = apply_rotary_pos_emb(q=xq, k=xk, cos=cos, sin=sin)
+        xq, xk = xq.transpose(0, 1), xk.transpose(0, 1)
+        # xq, xk: (b_sz, s_len, n_head, d_head)
 
         # Reshape for attention calculation: (b_sz, n_head, s_len, d_head)
         xq = xq.transpose(1, 2)
