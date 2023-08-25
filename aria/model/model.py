@@ -110,19 +110,9 @@ class FusedEncoderBlock(nn.Module):
         self.rotary_emb = RotaryEmbedding(self.d_head)
 
         # Attention
-        self.q = nn.Linear(
+        self.mixed_qkv = nn.Linear(
             in_features=model_config.d_model,
-            out_features=model_config.d_model,
-            bias=False,
-        )
-        self.k = nn.Linear(
-            in_features=model_config.d_model,
-            out_features=model_config.d_model,
-            bias=False,
-        )
-        self.v = nn.Linear(
-            in_features=model_config.d_model,
-            out_features=model_config.d_model,
+            out_features=3 * model_config.d_model,
             bias=False,
         )
         self.att_proj_linear = nn.Linear(
@@ -155,7 +145,8 @@ class FusedEncoderBlock(nn.Module):
 
     def _att_block(self, x: torch.Tensor):
         batch_size, seq_len, _ = x.shape
-        xq, xk, xv = self.q(x), self.k(x), self.v(x)
+        mixed_qkv = self.mixed_qkv(x)
+        xq, xk, xv = mixed_qkv.chunk(3, -1)
 
         # Reshape for rotary embeddings
         xq = xq.view(batch_size, seq_len, self.n_heads, self.d_head)
@@ -190,7 +181,7 @@ class FusedEncoderBlock(nn.Module):
             is_causal=True,
         )
 
-        # Shape (b_sz, s_len, n_head, d_head)
+        # Reshape for out: (b_sz, s_len, n_head, d_head)
         out = att.transpose(1, 2).contiguous()
         out = out.view(batch_size, seq_len, self.n_heads * self.d_head)
 
