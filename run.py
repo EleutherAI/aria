@@ -6,44 +6,6 @@ import logging
 import sys
 
 
-def _parse_train_args():
-    argp = argparse.ArgumentParser(prog="run.py train")
-    argp.add_argument("model", help="name of the model to train")
-    argp.add_argument(
-        "tokenizer", choices=["lazy"], help="name of the tokenizer to use"
-    )
-    argp.add_argument("train_data", help="path to train data")
-    argp.add_argument("val_data", help="path to val data")
-    argp.add_argument("-ckpt", help="path to the checkpoint", required=False)
-    argp.add_argument(
-        "-epochs", help="number of epochs", type=int, required=True
-    )
-    argp.add_argument("-bs", help="batch size", type=int, default=32)
-    argp.add_argument(
-        "-workers", help="number of cpu processes", type=int, default=1
-    )
-    argp.add_argument("-gpus", help="number of gpus", type=int, default=1)
-
-    return argp.parse_args(sys.argv[2:])
-
-
-def train(args):
-    """Entrypoint for training"""
-    from aria.training import pretrain
-
-    pretrain(
-        model_name=args.model,
-        tokenizer_name=args.tokenizer,
-        train_data_path=args.train_data,
-        val_data_path=args.val_data,
-        num_workers=args.workers,
-        num_gpus=args.gpus,
-        epochs=args.epochs,
-        batch_size=args.bs,
-        checkpoint=args.ckpt,
-    )
-
-
 def _parse_sample_args():
     argp = argparse.ArgumentParser(prog="run.py sample")
     argp.add_argument("ckpt_path", help="path to model checkpoint")
@@ -211,8 +173,6 @@ def main():
         parser.print_help()
         print("Unrecognized command")
         exit(1)
-    elif args.command == "train":
-        train(args=_parse_train_args())
     elif args.command == "sample":
         sample(args=_parse_sample_args())
     elif args.command == "data":

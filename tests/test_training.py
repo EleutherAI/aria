@@ -2,8 +2,7 @@ import unittest
 import logging
 import os
 
-from aria.training import pretrain
-from aria.train import pretrain as pretrain2
+from aria.train import pretrain
 from aria.tokenizer import TokenizerLazy
 from aria.data.midi import MidiDict
 from aria.data.datasets import MidiDataset, TokenizedDataset
@@ -47,19 +46,7 @@ class TestTraining(unittest.TestCase):
         self.assertTrue(os.path.isfile(TRAIN_DATA_PATH), "train data not found")
         self.assertTrue(os.path.isfile(VAL_DATA_PATH), "val data not found")
 
-        # pretrain(
-        #     model_name="test",
-        #     tokenizer_name="lazy",
-        #     train_data_path=TRAIN_DATA_PATH,
-        #     val_data_path=VAL_DATA_PATH,
-        #     num_workers=4,
-        #     num_gpus=1,
-        #     epochs=500,
-        #     batch_size=2,
-        #     overfit=True,
-        # )
-
-        pretrain2(
+        pretrain(
             model_name="test",
             train_data_path=TRAIN_DATA_PATH,
             val_data_path=VAL_DATA_PATH,
