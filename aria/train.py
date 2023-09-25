@@ -9,6 +9,8 @@ import accelerate
 from torch import nn as nn
 from torch.utils.data import DataLoader
 from accelerate.logging import get_logger
+from logging.handlers import RotatingFileHandler
+from tqdm import tqdm
 
 from aria.config import load_model_config
 from aria.model import ModelConfig, TransformerLM
@@ -32,18 +34,12 @@ from aria.data.datasets import TokenizedDataset
 #   -bs 32 \
 #   -workers 8
 
-# ----- TODO -----
 
-# We want the following functionality:
-# - pretrain: runs the pretrain function
-# - finetune: runs the finetune function
-# - resume: resumes a training run from a checkpoint - pretrain or finetune
-# Each of these should work with accelerate, and the functionality should be
-# chosen according directly from the accelerate cli. We must therefore remove
-# pretrain functionality from the run.py entrypoint.
-
-# - Add support for mixed precision (and gradient clipping)
-# - Add checkpointing
+# TODO:
+# - Add automatic checkpointing to train
+# - Add resume functionality
+# - Add fine-tuning functionality
+# - Test that everything works on a distributed setup
 
 
 def setup_logger(project_dir: str):
@@ -54,7 +50,9 @@ def setup_logger(project_dir: str):
         "[%(asctime)s] %(name)s: [%(levelname)s] %(message)s",
     )
 
-    fh = logging.FileHandler(os.path.join(project_dir, "logs.txt"))
+    fh = RotatingFileHandler(
+        os.path.join(project_dir, "logs.txt"), backupCount=5, maxBytes=1024**3
+    )
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(formatter)
     logger.addHandler(fh)
@@ -64,7 +62,7 @@ def setup_logger(project_dir: str):
     ch.setFormatter(formatter)
     logger.addHandler(ch)
 
-    return get_logger(__name__)
+    return get_logger(__name__)  # using accelerate.logging.get_logger()
 
 
 def setup_project_dir(project_dir: str | None):
@@ -108,7 +106,6 @@ def setup_project_dir(project_dir: str | None):
                 raise e(f"Failed to create project directory at {project_dir}")
         project_dir_abs = os.path.abspath(project_dir)
 
-    # Add checkpoint dir
     os.mkdir(os.path.join(project_dir_abs, "checkpoints"))
 
     return project_dir_abs
@@ -147,7 +144,7 @@ def get_dataloaders(
         train_dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        shuffle=False,
+        shuffle=False,  # Change
     )
     val_dataloader = DataLoader(
         val_dataset,
@@ -159,20 +156,28 @@ def get_dataloaders(
     return train_dataloader, val_dataloader
 
 
-def get_pretrain_lr_scheduler():
-    raise NotImplementedError
-
-
-def get_pretrain_optimizer(model: nn.Module):
-    return torch.optim.AdamW(model.parameters(), lr=3e-4)
-
-
 def rolling_average(prev_avg: float, x_n: float, n: int):
     # Returns rolling average without needing to recalculate
     if n == 0:
         return x_n
     else:
         return ((prev_avg * (n - 1)) / n) + (x_n / n)
+
+
+# TODO: Make sure this works correctly when running on multiple gpus. Seriously
+# step through to make sure that there are no issues when using accelerate.
+# The following is a individual list of things that I want to test.
+#
+# - Add a print statement for the size of the batches inside each model. Does
+#   each model receive the same batch? Are the batches split into different
+#   slices?
+# - What happens when we use a print statement with accelerate launch with
+#   multiple gpus? What happens when we use a normal logger instead of the
+#   accelerate one?
+# - Print every time that the lr scheduler is iterated. Are two processes
+#   running causing it to iterate twice as fast?
+# - See this for more information about how things should run in raw torch,
+#   https://pytorch.org/tutorials/beginner/former_torchies/parallelism_tutorial.html
 
 
 def train(
@@ -182,26 +187,45 @@ def train(
     train_dataloader: DataLoader,
     val_dataloader: DataLoader,
     optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler = None,
+    checkpoint_mode: str | int = "epoch",
+    resume_step: int | None = None,
 ):
-    logger = get_logger(__name__)  # Accelerate logger
-    project_dir = accelerator.project_dir
-    loss_fn = nn.CrossEntropyLoss()
-    TRAILING_LOSS_STEPS = 20
+    def make_checkpoint(_accelerator, _epoch: int, _step: int | None = None):
+        if _step:
+            checkpoint_dir = os.path.join(
+                project_dir,
+                "checkpoints",
+                f"epoch{_epoch}_step{_step}",
+            )
+        else:
+            checkpoint_dir = os.path.join(
+                project_dir,
+                "checkpoints",
+                f"epoch{_epoch}",
+            )
 
-    loss_csv = open(os.path.join(project_dir, "loss.csv"), "w")
-    loss_writer = csv.writer(loss_csv)
-    loss_writer.writerow(["epoch", "step", "loss"])
-    epoch_csv = open(os.path.join(project_dir, "epoch.csv"), "w")
-    epoch_writer = csv.writer(epoch_csv)
-    epoch_writer.writerow(["epoch", "avg_train_loss", "avg_val_loss"])
+        logger.info(
+            f"EPOCH {_epoch}/{epochs}: Saving checkpoint - {checkpoint_dir}"
+        )
+        _accelerator.save_state(checkpoint_dir)
 
-    # Train loop
-    for epoch in range(epochs):
+    # This is all slightly messy as train_loop and val_loop make use of the
+    # variables in the wider scope. Perhaps refactor this at some point.
+    def train_loop(dataloader: DataLoader, _epoch: int, _resume_step: int = 0):
         avg_train_loss = 0
         trailing_loss = 0
         loss_buffer = []
+        lr_for_print = "{:.2e}".format(optimizer.defaults["lr"])
+
         model.train()
-        for step, batch in enumerate(train_dataloader):
+        for step, batch in (
+            pbar := tqdm(
+                enumerate(dataloader),
+                total=len(dataloader),
+                leave=False,
+            )
+        ):
             src, tgt = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
             logits = model(src)  # (b_sz, s_len, v_sz)
             logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
@@ -214,49 +238,152 @@ def train(
             trailing_loss = sum(loss_buffer) / len(loss_buffer)
             avg_train_loss = rolling_average(avg_train_loss, loss.item(), step)
 
+            # Logging
             logger.debug(
-                f"Train step {step} of epoch {epoch}: "
-                + f"loss={round(loss.item(), 5)}, "
-                + f"trailing_loss={round(trailing_loss, 4)}, "
-                + f"average_loss={round(avg_train_loss, 4)}"
+                f"EPOCH {_epoch} STEP {_resume_step + step}: "
+                f"lr={lr_for_print}, "
+                f"loss={round(loss.item(), 4)}, "
+                f"trailing_loss={round(trailing_loss, 4)}, "
+                f"average_loss={round(avg_train_loss, 4)}"
             )
-            loss_writer.writerow([epoch, step, loss.item()])
+            loss_writer.writerow([_epoch, _resume_step + step, loss.item()])
+            pbar.set_postfix_str(
+                f"lr={lr_for_print}, "
+                f"loss={round(loss.item(), 4)}, "
+                f"trailing={round(trailing_loss, 4)}"
+            )
 
+            if isinstance(checkpoint_mode, int):
+                # If checkpoint mode is an int then it determines how often we
+                # should take checkpoints.
+                if step % checkpoint_mode == 0 and step != 0:
+                    make_checkpoint(
+                        _accelerator=accelerator,
+                        _epoch=epoch,
+                        _step=step,
+                    )
+
+            # Backwards step
             accelerator.backward(loss)
             optimizer.step()
             optimizer.zero_grad()
+            if scheduler:
+                scheduler.step()
+                lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
 
             # break # Overfit batch
 
         # continue # Overfit batch
 
         logger.info(
-            f"Finished TRAIN for epoch {epoch}/{epochs - 1}: "
-            + f"average_loss={round(avg_train_loss, 4)}"
+            f"EPOCH {_epoch}/{epochs}: Finished training - "
+            f"average_loss={round(avg_train_loss, 4)}"
         )
 
+        return avg_train_loss
+
+    def val_loop(dataloader, _epoch: int):
         avg_val_loss = 0
-        trailing_loss = 0
-        loss_buffer = []
         model.eval()
-        for step, batch in enumerate(val_dataloader):
+        for step, batch in (
+            pbar := tqdm(
+                enumerate(dataloader),
+                total=len(dataloader),
+                leave=False,
+            )
+        ):
             src, tgt = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
             with torch.no_grad():
                 logits = model(src)  # (b_sz, s_len, v_sz)
             logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
             loss = loss_fn(logits, tgt)
 
+            # Logging
             avg_val_loss = rolling_average(avg_val_loss, loss.item(), step)
+            pbar.set_postfix_str(f"average_loss={round(avg_val_loss, 4)}")
 
+        # EPOCH
         logger.info(
-            f"Finished VAL for epoch {epoch}/{epochs - 1}: "
-            + f"average_loss={round(avg_val_loss, 4)}"
+            f"EPOCH {_epoch}/{epochs}: Finished evaluation - "
+            f"average_loss={round(avg_val_loss, 4)}"
         )
+
+        return avg_val_loss
+
+    if isinstance(checkpoint_mode, int):
+        assert checkpoint_mode > 1, "Invalid checkpoint mode value (too small)"
+
+    TRAILING_LOSS_STEPS = 15
+    logger = get_logger(__name__)  # Accelerate logger
+    project_dir = accelerator.project_dir
+
+    loss_fn = nn.CrossEntropyLoss()
+
+    loss_csv = open(os.path.join(project_dir, "loss.csv"), "w")
+    loss_writer = csv.writer(loss_csv)
+    loss_writer.writerow(["epoch", "step", "loss"])
+    epoch_csv = open(os.path.join(project_dir, "epoch.csv"), "w")
+    epoch_writer = csv.writer(epoch_csv)
+    epoch_writer.writerow(["epoch", "avg_train_loss", "avg_val_loss"])
+
+    if resume_step:
+        logger.info(
+            f"RESUMING TRAINING FROM {resume_step} - LOGGING AS EPOCH 0"
+        )
+        skipped_dataloader = accelerator.skip_first_batches(
+            dataloader=train_dataloader,
+            num_batches=resume_step,
+        )
+        avg_train_loss = train_loop(
+            dataloader=skipped_dataloader,
+            _epoch=0,
+            _resume_step=resume_step,
+        )
+        avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=0)
+        epoch_writer.writerow([0, avg_train_loss, avg_val_loss])
+
+    for epoch in range(1, epochs + 1):
+        avg_train_loss = train_loop(dataloader=train_dataloader, _epoch=epoch)
+        avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=epoch)
         epoch_writer.writerow([epoch, avg_train_loss, avg_val_loss])
+        make_checkpoint(_accelerator=accelerator, _epoch=epoch)
+
+    loss_csv.close()
+    epoch_csv.close()
 
 
 def resume():
     pass
+
+
+def get_pretrain_optim(
+    model: nn.Module,
+    num_epochs: int,
+    steps_per_epoch: int,
+):
+    WARMUP_STEPS = 100
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+
+    warmup_lrs = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=0.00001,
+        end_factor=1,
+        total_iters=WARMUP_STEPS,
+    )
+    linear_decay_lrs = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=1,
+        end_factor=0.1,
+        total_iters=(num_epochs * steps_per_epoch) - WARMUP_STEPS,
+    )
+
+    lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup_lrs, linear_decay_lrs],
+        milestones=[WARMUP_STEPS],
+    )
+
+    return optimizer, lr_scheduler
 
 
 def pretrain(
@@ -286,7 +413,6 @@ def pretrain(
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = torch.compile(TransformerLM(model_config), mode="default")
-    optimizer = get_pretrain_optimizer(model)
 
     train_dataloader, val_dataloader = get_dataloaders(
         train_data_path=train_data_path,
@@ -304,8 +430,24 @@ def pretrain(
         val_dataloader.dataset.max_seq_len == model_config.max_seq_len
     ), "max_seq_len differs between datasets and model config"
 
-    model, train_dataloader, val_dataloader, optimizer = accelerator.prepare(
-        model, train_dataloader, val_dataloader, optimizer
+    optimizer, scheduler = get_pretrain_optim(
+        model,
+        num_epochs=epochs,
+        steps_per_epoch=len(train_dataloader),
+    )
+
+    (
+        model,
+        train_dataloader,
+        val_dataloader,
+        optimizer,
+        scheduler,
+    ) = accelerator.prepare(
+        model,
+        train_dataloader,
+        val_dataloader,
+        optimizer,
+        scheduler,
     )
 
     logger.info("Starting train job")
@@ -316,9 +458,11 @@ def pretrain(
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
         optimizer=optimizer,
+        scheduler=scheduler,
     )
 
 
+# This is all not finished
 def parse_resume_args():
     argp = argparse.ArgumentParser(prog="python aria/train.py resume")
     argp.add_argument(

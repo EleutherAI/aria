@@ -51,7 +51,7 @@ class TestTraining(unittest.TestCase):
             train_data_path=TRAIN_DATA_PATH,
             val_data_path=VAL_DATA_PATH,
             num_workers=4,
-            epochs=500,
+            epochs=10,
             batch_size=1,
         )
 
