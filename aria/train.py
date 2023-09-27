@@ -43,7 +43,11 @@ from aria.data.datasets import TokenizedDataset
 
 
 def setup_logger(project_dir: str):
+    # Get logger and reset all handlers
     logger = logging.getLogger(__name__)
+    for h in logger.handlers[:]:
+        logger.removeHandler(h)
+
     logger.propagate = False
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter(
@@ -111,6 +115,36 @@ def setup_project_dir(project_dir: str | None):
     return project_dir_abs
 
 
+def get_pretrain_optim(
+    model: nn.Module,
+    num_epochs: int,
+    steps_per_epoch: int,
+):
+    WARMUP_STEPS = 100
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+
+    warmup_lrs = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=0.00001,
+        end_factor=1,
+        total_iters=WARMUP_STEPS,
+    )
+    linear_decay_lrs = torch.optim.lr_scheduler.LinearLR(
+        optimizer,
+        start_factor=1,
+        end_factor=0.1,
+        total_iters=(num_epochs * steps_per_epoch) - WARMUP_STEPS,
+    )
+
+    lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup_lrs, linear_decay_lrs],
+        milestones=[WARMUP_STEPS],
+    )
+
+    return optimizer, lr_scheduler
+
+
 def get_dataloaders(
     train_data_path: str,
     val_data_path: str,
@@ -140,6 +174,7 @@ def get_dataloaders(
             ]
         )
 
+    # I should probably have shuffle as false, this is because
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -188,7 +223,7 @@ def train(
     val_dataloader: DataLoader,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
-    checkpoint_mode: str | int = "epoch",
+    steps_per_checkpoint: int | None = None,
     resume_step: int | None = None,
 ):
     def make_checkpoint(_accelerator, _epoch: int, _step: int | None = None):
@@ -216,7 +251,14 @@ def train(
         avg_train_loss = 0
         trailing_loss = 0
         loss_buffer = []
-        lr_for_print = "{:.2e}".format(optimizer.defaults["lr"])
+
+        try:
+            lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
+        except Exception:
+            pass
+        else:
+            print("fail")
+            lr_for_print = "{:.2e}".format(optimizer.param_groups[-1]["lr"])
 
         model.train()
         for step, batch in (
@@ -253,16 +295,6 @@ def train(
                 f"trailing={round(trailing_loss, 4)}"
             )
 
-            if isinstance(checkpoint_mode, int):
-                # If checkpoint mode is an int then it determines how often we
-                # should take checkpoints.
-                if step % checkpoint_mode == 0 and step != 0:
-                    make_checkpoint(
-                        _accelerator=accelerator,
-                        _epoch=epoch,
-                        _step=step,
-                    )
-
             # Backwards step
             accelerator.backward(loss)
             optimizer.step()
@@ -270,6 +302,14 @@ def train(
             if scheduler:
                 scheduler.step()
                 lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
+
+            if steps_per_checkpoint:
+                if step % steps_per_checkpoint == 0 and step != 0:
+                    make_checkpoint(
+                        _accelerator=accelerator,
+                        _epoch=epoch,
+                        _step=step,
+                    )
 
             # break # Overfit batch
 
@@ -310,8 +350,10 @@ def train(
 
         return avg_val_loss
 
-    if isinstance(checkpoint_mode, int):
-        assert checkpoint_mode > 1, "Invalid checkpoint mode value (too small)"
+    if steps_per_checkpoint:
+        assert (
+            steps_per_checkpoint > 1
+        ), "Invalid checkpoint mode value (too small)"
 
     TRAILING_LOSS_STEPS = 15
     logger = get_logger(__name__)  # Accelerate logger
@@ -352,47 +394,18 @@ def train(
     epoch_csv.close()
 
 
-def resume():
-    pass
-
-
-def get_pretrain_optim(
-    model: nn.Module,
-    num_epochs: int,
-    steps_per_epoch: int,
-):
-    WARMUP_STEPS = 100
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-
-    warmup_lrs = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=0.00001,
-        end_factor=1,
-        total_iters=WARMUP_STEPS,
-    )
-    linear_decay_lrs = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=1,
-        end_factor=0.1,
-        total_iters=(num_epochs * steps_per_epoch) - WARMUP_STEPS,
-    )
-
-    lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer,
-        schedulers=[warmup_lrs, linear_decay_lrs],
-        milestones=[WARMUP_STEPS],
-    )
-
-    return optimizer, lr_scheduler
-
-
-def pretrain(
+# TODO: Test that there is no difference between resuming and continuing - need
+# to account for random states.
+def resume_pretrain(
     model_name: str,
     train_data_path: str,
     val_data_path: str,
     num_workers: int,
     batch_size: int,
     epochs: int,
+    checkpoint_dir: str,
+    resume_step: int,
+    steps_per_checkpoint: int | None = None,
     project_dir: str = None,
 ):
     # Validate inputs
@@ -407,6 +420,24 @@ def pretrain(
     accelerator = accelerate.Accelerator(project_dir=project_dir)
     logger = setup_logger(project_dir)
     logger.info(f"Using project directory {project_dir} ")
+    logger.warning(
+        "Please insure that the training config and resume step are set "
+        "correctly, the script does not currently check that this is the case. "
+        "If the previous checkpoint was saved at step n, then resume_step "
+        "should be n+1. If there is a mismatch between the batch size then the "
+        "script will resume at the wrong step."
+    )
+    logger.info(
+        f"Using training config: "
+        f"model_name={model_name}, "
+        f"epochs={epochs}, "
+        f"batch_size={batch_size}, "
+        f"num_workers={num_workers}"
+        f"checkpoint_dir={checkpoint_dir}"
+        f"resume_step={resume_step}"
+    )
+    if steps_per_checkpoint:
+        logger.info(f"Creating checkpoints ")
 
     # Init model
     tokenizer = TokenizerLazy(return_tensors=True)
@@ -420,7 +451,98 @@ def pretrain(
         tokenizer=tokenizer,
         batch_size=batch_size,
         num_workers=num_workers,
-        apply_aug=False,
+        apply_aug=True,
+    )
+
+    assert (
+        train_dataloader.dataset.max_seq_len == model_config.max_seq_len
+    ), "max_seq_len differs between datasets and model config"
+    assert (
+        val_dataloader.dataset.max_seq_len == model_config.max_seq_len
+    ), "max_seq_len differs between datasets and model config"
+
+    optimizer, scheduler = get_pretrain_optim(
+        model,
+        num_epochs=epochs,
+        steps_per_epoch=len(train_dataloader),
+    )
+
+    (
+        model,
+        train_dataloader,
+        val_dataloader,
+        optimizer,
+        scheduler,
+    ) = accelerator.prepare(
+        model,
+        train_dataloader,
+        val_dataloader,
+        optimizer,
+        scheduler,
+    )
+
+    accelerator.load_state(checkpoint_dir)
+    logger.info(f"Loaded checkpoint at {checkpoint_dir}")
+
+    logger.info("Starting train job")
+    train(
+        epochs=epochs,
+        accelerator=accelerator,
+        model=model,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        steps_per_checkpoint=steps_per_checkpoint,
+        resume_step=resume_step,
+    )
+
+
+# Maybe refactor so that pretrain and resume_pretrain use the same prep code
+def pretrain(
+    model_name: str,
+    train_data_path: str,
+    val_data_path: str,
+    num_workers: int,
+    batch_size: int,
+    epochs: int,
+    steps_per_checkpoint: int | None = None,
+    project_dir: str = None,
+):
+    # Validate inputs
+    assert 0 < num_workers <= 128, "Too many workers"
+    assert epochs > 0, "Invalid number of epochs"
+    assert batch_size > 0, "Invalid batch size"
+    assert os.path.isfile(train_data_path)
+    assert os.path.isfile(val_data_path)
+    assert torch.cuda.is_available() is True, "CUDA not available"
+
+    project_dir = setup_project_dir(project_dir)
+    accelerator = accelerate.Accelerator(project_dir=project_dir)
+    logger = setup_logger(project_dir)
+    logger.info(f"Using project directory {project_dir} ")
+    logger.info(
+        f"Using training config: "
+        f"model_name={model_name}, "
+        f"epochs={epochs}, "
+        f"batch_size={batch_size}, "
+        f"num_workers={num_workers}"
+    )
+
+    # Init model
+    tokenizer = TokenizerLazy(return_tensors=True)
+    model_config = ModelConfig(**load_model_config(model_name))
+    model_config.set_vocab_size(tokenizer.vocab_size)
+    model = torch.compile(TransformerLM(model_config), mode="default")
+    logger.info(f"Loaded model with config: {load_model_config(model_name)}")
+
+    train_dataloader, val_dataloader = get_dataloaders(
+        train_data_path=train_data_path,
+        val_data_path=val_data_path,
+        tokenizer=tokenizer,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        apply_aug=True,
     )
 
     assert (
@@ -459,31 +581,23 @@ def pretrain(
         val_dataloader=val_dataloader,
         optimizer=optimizer,
         scheduler=scheduler,
+        steps_per_checkpoint=steps_per_checkpoint,
     )
 
 
-# This is all not finished
 def parse_resume_args():
     argp = argparse.ArgumentParser(prog="python aria/train.py resume")
+    argp.add_argument("model", help="name of model config file")
+    argp.add_argument("train_data", help="path to train data")
+    argp.add_argument("val_data", help="path to val data")
+    argp.add_argument("-cdir", help="checkpoint dir", type=str, required=True)
+    argp.add_argument("-rstep", help="resume step", type=int, required=True)
+    argp.add_argument("-epochs", help="train epochs", type=int, required=True)
+    argp.add_argument("-bs", help="batch size", type=int, default=32)
+    argp.add_argument("-workers", help="number workers", type=int, default=1)
+    argp.add_argument("-pdir", help="project dir", type=str, required=False)
     argp.add_argument(
-        "format",
-        choices=["midi_dict", "tokenized"],
-        help="type of dataset to build",
-    )
-    argp.add_argument("save_path", help="path to save dataset")
-
-    argp.add_argument(
-        "-dir", help="directory containing midi files", required=False
-    )
-    argp.add_argument("-r", action="store_true", help="recursively search dirs")
-    argp.add_argument(
-        "-load_path", help="path midi_dict dataset", required=False
-    )
-    argp.add_argument(
-        "-tokenizer",
-        required=False,
-        choices=["lazy"],
-        help="specify tokenizer type",
+        "-spc", help="steps per checkpoint", type=int, required=False
     )
 
     return argp.parse_args(sys.argv[2:])
@@ -497,10 +611,15 @@ def parse_pretrain_args():
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
     argp.add_argument("-bs", help="batch size", type=int, default=32)
     argp.add_argument("-workers", help="number workers", type=int, default=1)
+    argp.add_argument("-pdir", help="project dir", type=str, required=False)
+    argp.add_argument(
+        "-spc", help="steps per checkpoint", type=int, required=False
+    )
 
     return argp.parse_args(sys.argv[2:])
 
 
+# This entrypoint has not been tested properly.
 if __name__ == "__main__":
     # Nested argparse inspired by - https://shorturl.at/kuKW0
     parser = argparse.ArgumentParser(
@@ -524,9 +643,23 @@ if __name__ == "__main__":
             num_workers=pretrain_args.workers,
             batch_size=pretrain_args.bs,
             epochs=pretrain_args.epochs,
+            project_dir=pretrain_args.pdir,
+            steps_per_checkpoint=pretrain_args.spc,
         )
     elif args.mode == "resume":
-        raise NotImplementedError
+        pretrain_args = parse_resume_args()
+        resume_pretrain(
+            model_name=pretrain_args.model,
+            train_data_path=pretrain_args.train_data,
+            val_data_path=pretrain_args.val_data,
+            checkpoint_dir=pretrain_args.cdir,
+            resume_step=pretrain_args.rstep,
+            num_workers=pretrain_args.workers,
+            batch_size=pretrain_args.bs,
+            epochs=pretrain_args.epochs,
+            project_dir=pretrain_args.pdir,
+            steps_per_checkpoint=pretrain_args.spc,
+        )
     else:
         print("Unrecognized command")
         parser.print_help()

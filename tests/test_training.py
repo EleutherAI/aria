@@ -2,7 +2,7 @@ import unittest
 import logging
 import os
 
-from aria.train import pretrain
+from aria.train import pretrain, resume_pretrain
 from aria.tokenizer import TokenizerLazy
 from aria.data.midi import MidiDict
 from aria.data.datasets import MidiDataset, TokenizedDataset
@@ -17,10 +17,10 @@ VAL_DATA_PATH = "tests/test_results/testoverfit_val_dataset.jsonl"
 
 
 class TestTraining(unittest.TestCase):
-    def test_pretraining(self):
+    def test_overfitting(self):
         pass
 
-    def test_overfitting(self):
+    def test_pretraining(self):
         # Prepare datasets
         train_mididict = MidiDict.from_midi("tests/test_data/beethoven.mid")
         val_mididict = MidiDict.from_midi("tests/test_data/arabesque.mid")
@@ -46,14 +46,37 @@ class TestTraining(unittest.TestCase):
         self.assertTrue(os.path.isfile(TRAIN_DATA_PATH), "train data not found")
         self.assertTrue(os.path.isfile(VAL_DATA_PATH), "val data not found")
 
+        if os.path.isdir("./experiments/0"):
+            logging.warning("Experiment logs present at ./experiments/0")
+
         pretrain(
             model_name="test",
             train_data_path=TRAIN_DATA_PATH,
             val_data_path=VAL_DATA_PATH,
             num_workers=4,
-            epochs=10,
             batch_size=1,
+            epochs=10,
+            steps_per_checkpoint=50,
         )
+
+        if os.path.isdir("./experiments/0/checkpoints/epoch10_step50"):
+            resume_pretrain(
+                model_name="test",
+                train_data_path=TRAIN_DATA_PATH,
+                val_data_path=VAL_DATA_PATH,
+                num_workers=4,
+                batch_size=1,
+                epochs=5,
+                checkpoint_dir="./experiments/0/checkpoints/epoch10_step50",
+                resume_step=51,
+                steps_per_checkpoint=50,
+            )
+        else:
+            logging.warning(
+                "Resume checkpoint not found at "
+                "./experiments/0/checkpoints/epoch10_step50 "
+                "- skipping resume_pretrain test"
+            )
 
 
 if __name__ == "__main__":
