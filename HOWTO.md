@@ -4,7 +4,7 @@ Here, we will provide some code snippets demonstrating the core functionality an
 
 ## Quick Overview
 
-The `run.py` script acts as the entry point for all the basic functionality of Aria.
+The `run.py` script acts as the entry point for some of the basic functionality of Aria. It has two commands.
 
 ### Data
 
@@ -21,16 +21,6 @@ The `sample` command provides an easy way to perform autoregressive sampling. To
 ```
 python run.py sample -h
 ```
-
-### Training
-
-The `train` command is used as the entry point for pre-training models. Most of the configuration is hardcoded into `aria.training` since `train` is currently only used for development purposes. It supports checkpointing and technically could be used for fine-tuning, although I would not recommend it. Instead, I suggest loading the model via the LightningModule `aria.training.PretrainLM` and writing your own training loop. To view the list of arguments for `train`, run the following command:
-
-```
-python run.py train -h
-```
-
-Please note that you need to provide paths to train and validation TokenizedDatasets in order to train a model. For more information, refer to the DATA section of the document.
 
 ## Data
 

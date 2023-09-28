@@ -63,6 +63,28 @@ class TestMidiDataset(unittest.TestCase):
         self.assertEqual(len(dataset_reloaded), 5)
         self.assertEqual(type(dataset_reloaded[0]), MidiDict)
 
+    def test_split_from_file(self):
+        datasets.MidiDataset.build_to_file(
+            dir="tests/test_data",
+            save_path="tests/test_results/mididict_dataset.jsonl",
+            recur=True,
+            overwrite=True,
+        )
+
+        datasets.MidiDataset.split_from_file(
+            load_path="tests/test_results/mididict_dataset.jsonl",
+            train_val_ratio=0.7,
+            repeatable=True,
+            overwrite=True,
+        )
+
+        self.assertTrue(
+            os.path.isfile("tests/test_results/mididict_dataset_train.jsonl")
+        )
+        self.assertTrue(
+            os.path.isfile("tests/test_results/mididict_dataset_val.jsonl")
+        )
+
     def test_data_hash(self):
         mid_1 = MidiDict.from_midi("tests/test_data/pop.mid")
         mid_2 = MidiDict.from_midi("tests/test_data/pop_copy.mid")
@@ -139,6 +161,42 @@ class TestTokenizedDataset(unittest.TestCase):
         logging.info(f"tgt: {tknzr.decode(tgt)}")
 
         tokenized_dataset.close()
+
+    def test_shuffle(self):
+        MAX_SEQ_LEN = 512
+        tknzr = tokenizer.TokenizerLazy(
+            return_tensors=False,
+        )
+        midi_dataset = datasets.MidiDataset.build(
+            dir="tests/test_data",
+            recur=True,
+        )
+        tokenized_dataset = datasets.TokenizedDataset.build(
+            tokenizer=tknzr,
+            save_path="tests/test_results/dataset_buffer.jsonl",
+            midi_dataset=midi_dataset,
+            max_seq_len=MAX_SEQ_LEN,
+            overwrite=True,
+        )
+        tokenized_dataset_shuffled = tokenized_dataset.get_shuffled_dataset(
+            repeatable=True,
+            overwrite=True,
+        )
+
+        self.assertEqual(
+            len(tokenized_dataset), len(tokenized_dataset_shuffled)
+        )
+        self.assertEqual(
+            len(tokenized_dataset), len(tokenized_dataset_shuffled)
+        )
+
+        same_order = True
+        for seq1, seq2 in zip(tokenized_dataset, tokenized_dataset_shuffled):
+            for x, y in zip(seq1, seq2):
+                if x != y:
+                    same_order = False
+
+        self.assertFalse(same_order)
 
     def test_augmentation(self):
         MAX_SEQ_LEN = 512

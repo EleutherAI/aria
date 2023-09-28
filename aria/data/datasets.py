@@ -10,6 +10,7 @@ import torch
 
 from pathlib import Path
 from typing import Callable
+from copy import deepcopy
 
 from aria.config import load_config
 from aria.tokenizer import Tokenizer
@@ -60,18 +61,24 @@ class MidiDataset:
         cls,
         load_path: str,
         train_val_ratio: float = 0.95,
-        repeatible: bool = True,
+        repeatable: bool = False,
+        overwrite: bool = False,
     ):
         path = Path(load_path)
         train_save_path = path.with_name(f"{path.stem}_train{path.suffix}")
         val_save_path = path.with_name(f"{path.stem}_val{path.suffix}")
 
-        if os.path.isfile(train_save_path) is True:
-            raise FileExistsError(f"File at {train_save_path} already exists.")
-        if os.path.isfile(val_save_path) is True:
-            raise FileExistsError(f"File at {val_save_path} already exists.")
+        if not overwrite:
+            if os.path.isfile(train_save_path) is True:
+                raise FileExistsError(
+                    f"File at {train_save_path} already exists."
+                )
+            if os.path.isfile(val_save_path) is True:
+                raise FileExistsError(
+                    f"File at {val_save_path} already exists."
+                )
 
-        if repeatible:
+        if repeatable:
             random.seed(42)
 
         idx_original, idx_train, idx_val = 0, 0, 0
@@ -257,6 +264,7 @@ class TokenizedDataset(torch.utils.data.Dataset):
         self.tokenizer = tokenizer
         self._transform = None
 
+        self.file_path = file_path
         self.file_buff = open(file_path, mode="r")
         self.file_mmap = mmap.mmap(
             self.file_buff.fileno(), 0, access=mmap.ACCESS_READ
@@ -266,14 +274,8 @@ class TokenizedDataset(torch.utils.data.Dataset):
         # This logic could use a refactor (maybe use deepdict?)
         buffer = self.file_mmap.readline()
         try:
-            config = json.loads(buffer)
-            assert config["tokenizer_name"] == tokenizer.name
-            for k, v in config["tokenizer_config"].items():
-                if isinstance(v, dict):
-                    for _k, _v in v.items():
-                        assert _v == tokenizer.config[k][_k]
-                elif isinstance(v, str) or isinstance(v, int):
-                    assert v == tokenizer.config[k]
+            self.config = json.loads(buffer)
+            self._check_config()
         except AssertionError as e:
             logging.error(
                 f"Tokenizer config setting don't match those used to build {file_path}"
@@ -284,15 +286,30 @@ class TokenizedDataset(torch.utils.data.Dataset):
             raise e
 
         self.tokenizer_name = tokenizer.name
-        self.max_seq_len = config["max_seq_len"]
+        self.max_seq_len = self.config["max_seq_len"]
 
         self.index = self._build_index()
+
+    def _check_config(self):
+        config = self.config
+        tokenizer = self.tokenizer
+
+        assert config["tokenizer_name"] == tokenizer.name
+        for k, v in config["tokenizer_config"].items():
+            if isinstance(v, dict):
+                for _k, _v in v.items():
+                    assert _v == tokenizer.config[k][_k]
+            elif isinstance(v, str) or isinstance(v, int):
+                assert v == tokenizer.config[k]
 
     def close(self):
         # This is unnecessary because mmap is closed automatically when gc,
         # however using this stops ResourceWarnings.
         self.file_buff.close()
         self.file_mmap.close()
+
+    def __del__(self):
+        self.close()
 
     def __len__(self):
         return len(self.index)
@@ -361,6 +378,57 @@ class TokenizedDataset(torch.utils.data.Dataset):
         else:
             raise ValueError("Must provide function or list of functions.")
 
+    def get_shuffled_dataset(
+        self,
+        save_path: str | None = None,
+        repeatable: bool = False,
+        overwrite: bool = False,
+    ):
+        """Writes and returns a shuffled version of the dataset (self).
+
+        Note that this function will NOT change the current dataset in anyway.
+        It creates a new dataset file at save_path and returns this as a new
+        object.
+
+        Args:
+            save_path (str): Path to save the new dataset. If this is not
+                provided then the save_path will have '_shuffled' appended.
+            repeatible (bool): If True, makes the shuffling process
+                deterministic by setting a random seed.
+            overwrite (bool): If True, will overwrite the file at save_path.
+        """
+        if save_path:
+            assert (
+                self.file_path != save_path
+            ), "save_path must not overwrite the current file"
+
+        file_path = Path(self.file_path)
+        if not save_path:
+            save_path = file_path.with_name(
+                f"{file_path.stem}_shuffled{file_path.suffix}"
+            )
+        if os.path.isfile(save_path) and overwrite is False:
+            logging.warning(f"File already exists at {save_path} - aborting")
+            return self
+
+        if repeatable:
+            random.seed(42)
+        shuffled_index = deepcopy(self.index)
+        random.shuffle(shuffled_index)
+
+        with jsonlines.open(save_path, mode="w") as writer:
+            writer.write(self.config)
+            for byte_idx in shuffled_index:
+                self.file_mmap.seek(byte_idx)
+                writer.write(json.loads(self.file_mmap.readline()))
+
+        logging.info(
+            f"Shuffled copy of {self.file_path} successfully written "
+            f"to {save_path} "
+        )
+
+        return TokenizedDataset(save_path, self.tokenizer)
+
     @classmethod
     def build(
         cls,
@@ -397,10 +465,6 @@ class TokenizedDataset(torch.utils.data.Dataset):
             TokenizedDataset: Dataset saved midi_dataset and saved at save_path.
         """
 
-        # TODO:
-        # - Add make sure that the truncation ends on a dur, and doesn't
-        #   cut off or start early.
-        # - Add docstring
         def _truncate_and_stride(_tokenized_seq: list):
             prefix = []
 
@@ -506,6 +570,6 @@ class TokenizedDataset(torch.utils.data.Dataset):
                             for entry in _truncate_and_stride(tokenized_seq):
                                 writer.write(entry)
 
-        logging.info(f"finished building tokenized dataset")
+        logging.info(f"Finished building tokenized dataset")
 
         return cls(file_path=save_path, tokenizer=tokenizer)
