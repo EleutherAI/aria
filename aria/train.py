@@ -162,15 +162,14 @@ def get_dataloaders(
     )
 
     if apply_aug:
-        pass
-        # train_dataset.set_transform(
-        #     [
-        #         tokenizer.export_velocity_aug(2),
-        #         tokenizer.export_pitch_aug(4),
-        #         tokenizer.export_tempo_aug(0.15),
-        #         tokenizer.export_chord_mixup(),
-        #     ]
-        # )
+        train_dataset.set_transform(
+            [
+                tokenizer.export_velocity_aug(2),
+                tokenizer.export_pitch_aug(4),
+                tokenizer.export_tempo_aug(0.15),
+                tokenizer.export_chord_mixup(),
+            ]
+        )
 
     train_dataloader = DataLoader(
         train_dataset,
