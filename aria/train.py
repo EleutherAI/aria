@@ -253,7 +253,6 @@ def train(
         except Exception:
             pass
         else:
-            print("fail")
             lr_for_print = "{:.2e}".format(optimizer.param_groups[-1]["lr"])
 
         model.train()
