@@ -7,8 +7,8 @@ from aria.tokenizer import TokenizerLazy
 from aria.data.midi import MidiDict
 from aria.data.datasets import MidiDataset, TokenizedDataset
 
-TRAIN_DATA_PATH = "tests/test_results/testoverfit_train_dataset.jsonl"
-VAL_DATA_PATH = "tests/test_results/testoverfit_val_dataset.jsonl"
+TRAIN_DATA_PATH = "tests/test_results/testpretrain_dataset_train.jsonl"
+VAL_DATA_PATH = "tests/test_results/testpretrain_dataset_val.jsonl"
 
 
 # TODO:

@@ -1,5 +1,4 @@
 torch >= 2.0
-lightning
 accelerate 
 mido
 jsonlines

@@ -26,51 +26,55 @@ def _parse_sample_args():
 # - Move to sample.py ?
 def sample(args):
     """Entrypoint for sampling"""
-    from torch.cuda import is_available as cuda_is_available
-    from aria.training import PretrainLM
-    from aria.tokenizer import TokenizerLazy
-    from aria.sample import batch_sample_model
-    from aria.data.midi import MidiDict
+    # Commented code uses old model loading
+    raise NotImplementedError
 
-    assert cuda_is_available() is True, "CUDA device not available"
+    # from torch.cuda import is_available as cuda_is_available
+    # from aria.training import PretrainLM
+    # from aria.tokenizer import TokenizerLazy
+    # from aria.sample import batch_sample_model
+    # from aria.data.midi import MidiDict
 
-    ckpt_path = args.ckpt_path
-    midi_path = args.midi_path
-    num_variations = args.var
-    truncate_len = args.trunc
+    # assert cuda_is_available() is True, "CUDA device not available"
 
-    model = PretrainLM.load_from_checkpoint(ckpt_path).model
-    max_seq_len = model.max_seq_len
-    tokenizer = TokenizerLazy(
-        return_tensors=True,
-    )
+    # ckpt_path = args.ckpt_path
+    # midi_path = args.midi_path
+    # num_variations = args.var
+    # truncate_len = args.trunc
 
-    assert (
-        truncate_len < max_seq_len
-    ), "Truncate length longer than maximum length supported by the model."
+    # # This method of loading checkpoints needs to change
+    # model = PretrainLM.load_from_checkpoint(ckpt_path).model
+    # max_seq_len = model.max_seq_len
+    # tokenizer = TokenizerLazy(
+    #     return_tensors=True,
+    # )
 
-    # Load and format prompts
-    midi_dict = MidiDict.from_midi(mid_path=midi_path)
-    prompt_seq = tokenizer.tokenize_midi_dict(midi_dict=midi_dict)
-    prompt_seq = prompt_seq[:truncate_len]
-    prompts = [prompt_seq for _ in range(num_variations)]
+    # assert (
+    #     truncate_len < max_seq_len
+    # ), "Truncate length longer than maximum length supported by the model."
 
-    # Sample
-    results = batch_sample_model(
-        model,
-        tokenizer,
-        prompts,
-        max_seq_len,
-        max_gen_len=max_seq_len,
-    )
+    # # Load and format prompts
+    # midi_dict = MidiDict.from_midi(mid_path=midi_path)
+    # prompt_seq = tokenizer.tokenize_midi_dict(midi_dict=midi_dict)
+    # prompt_seq = prompt_seq[:truncate_len]
+    # prompts = [prompt_seq for _ in range(num_variations)]
 
-    if os.path.isdir("samples") is False:
-        os.mkdir("samples")
+    # # Sample
+    # results = batch_sample_model(
+    #     model,
+    #     tokenizer,
+    #     prompts,
+    #     max_seq_len,
+    #     max_gen_len=max_seq_len,
+    # )
 
-    for idx, tokenized_seq in enumerate(results):
-        res_midi_dict = tokenizer.detokenize_midi_dict(tokenized_seq)
-        res_midi = res_midi_dict.to_midi()
-        res_midi.save(f"samples/res_{idx + 1}.mid")
+    # if os.path.isdir("samples") is False:
+    #     os.mkdir("samples")
+
+    # for idx, tokenized_seq in enumerate(results):
+    #     res_midi_dict = tokenizer.detokenize_midi_dict(tokenized_seq)
+    #     res_midi = res_midi_dict.to_midi()
+    #     res_midi.save(f"samples/res_{idx + 1}.mid")
 
 
 def _parse_data_args():
@@ -124,7 +128,6 @@ def data(args):
         ), "must provide a load_path or a directory containing midi"
 
         config = load_config()["data"]["dataset_gen_args"]
-        # tokenizer = TokenizerLazy(max_seq_len=config["max_seq_len"])
         tokenizer = TokenizerLazy()
         if args.load_path:
             TokenizedDataset.build(

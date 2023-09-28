@@ -34,10 +34,7 @@ from aria.data.datasets import TokenizedDataset
 #   -bs 32 \
 #   -workers 8
 
-
 # TODO:
-# - Add automatic checkpointing to train
-# - Add resume functionality
 # - Add fine-tuning functionality
 # - Test that everything works on a distributed setup
 
@@ -165,27 +162,27 @@ def get_dataloaders(
     )
 
     if apply_aug:
-        train_dataset.set_transform(
-            [
-                tokenizer.export_velocity_aug(2),
-                tokenizer.export_pitch_aug(4),
-                tokenizer.export_tempo_aug(0.15),
-                tokenizer.export_chord_mixup(),
-            ]
-        )
+        pass
+        # train_dataset.set_transform(
+        #     [
+        #         tokenizer.export_velocity_aug(2),
+        #         tokenizer.export_pitch_aug(4),
+        #         tokenizer.export_tempo_aug(0.15),
+        #         tokenizer.export_chord_mixup(),
+        #     ]
+        # )
 
-    # I should probably have shuffle as false, this is because
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        shuffle=False,  # Change
+        shuffle=False,  # Perhaps change this but be careful
     )
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        shuffle=False,
+        shuffle=False,  # Same as above
     )
 
     return train_dataloader, val_dataloader
@@ -370,7 +367,7 @@ def train(
 
     if resume_step:
         logger.info(
-            f"RESUMING TRAINING FROM {resume_step} - LOGGING AS EPOCH 0"
+            f"Resuming training from step {resume_step} - logging as EPOCH 0"
         )
         skipped_dataloader = accelerator.skip_first_batches(
             dataloader=train_dataloader,
@@ -394,8 +391,9 @@ def train(
     epoch_csv.close()
 
 
-# TODO: Test that there is no difference between resuming and continuing - need
-# to account for random states.
+# NOTE: Any differences observed when resuming training are most likely the
+# result of randomness inherent to the data-augmentation. I'm currently unsure
+# how to register and restore this random state during checkpointing.
 def resume_pretrain(
     model_name: str,
     train_data_path: str,
