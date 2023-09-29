@@ -9,7 +9,7 @@ import random
 import torch
 
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 from collections import defaultdict
 from copy import deepcopy
 from multiprocessing import Pool
@@ -547,6 +547,26 @@ class TokenizedDataset(torch.utils.data.Dataset):
 
             return res
 
+        def _get_tokenized_seqs(_midi_dict_iter: Iterable):
+            for idx, _midi_dict in enumerate(_midi_dict_iter):
+                if isinstance(_midi_dict, dict):
+                    # Triggered when iter is save file reader
+                    _midi_dict = MidiDict.from_msg_dict(_midi_dict)
+
+                if idx % 50 == 0 and idx != 0:
+                    logger.info(f"Processed midi_dicts: {idx}")
+
+                try:
+                    tokenized_seq = tokenizer.tokenize_midi_dict(_midi_dict)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to tokenize midi_dict with index {idx}: {e}"
+                    )
+                else:
+                    yield from _truncate_and_stride(tokenized_seq)
+
+        logger = setup_logger()
+
         if overwrite is False and os.path.isfile(save_path) is True:
             raise FileExistsError(f"File at {save_path} already exists.")
         elif overwrite is True and os.path.isfile(save_path) is True:
@@ -578,38 +598,14 @@ class TokenizedDataset(torch.utils.data.Dataset):
             if midi_dataset:
                 if len(midi_dataset) == 0:
                     logging.warning("midi_dataset is empty")
-                for idx, midi_dict in enumerate(midi_dataset):
-                    if idx % 50 == 0 and idx != 0:
-                        logging.info(f"processed midi_dicts: {idx}")
 
-                    try:
-                        tokenized_seq = tokenizer.tokenize_midi_dict(midi_dict)
-                    except Exception as e:
-                        logging.warning(
-                            f"failed to tokenize midi_dict with index {idx}: {e}"
-                        )
-                    else:
-                        for entry in _truncate_and_stride(tokenized_seq):
-                            writer.write(entry)
+                for entry in _get_tokenized_seqs(_midi_dict_iter=midi_dataset):
+                    writer.write(entry)
 
             elif midi_dataset_path:
                 with jsonlines.open(midi_dataset_path) as reader:
-                    for idx, msg_dict in enumerate(reader):
-                        if idx % 50 == 0 and idx != 0:
-                            logging.info(f"processed midi_dicts: {idx}")
-
-                        midi_dict = MidiDict.from_msg_dict(msg_dict)
-                        try:
-                            tokenized_seq = tokenizer.tokenize_midi_dict(
-                                midi_dict
-                            )
-                        except Exception as e:
-                            logging.warning(
-                                f"failed to tokenize midi_dict with index {idx}: {e}"
-                            )
-                        else:
-                            for entry in _truncate_and_stride(tokenized_seq):
-                                writer.write(entry)
+                    for entry in _get_tokenized_seqs(_midi_dict_iter=reader):
+                        writer.write(entry)
 
         logging.info(f"Finished building tokenized dataset")
 

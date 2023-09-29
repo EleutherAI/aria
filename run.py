@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 
 import argparse
-import os
-import logging
 import sys
 
 
@@ -20,10 +18,6 @@ def _parse_sample_args():
     return argp.parse_args(sys.argv[2:])
 
 
-# TODO:
-# - Refactor this eventually so that I don't need PretrainLM to load the model
-# - Support a variety of tokenizers.
-# - Move to sample.py ?
 def sample(args):
     """Entrypoint for sampling"""
     # Commented code uses old model loading
@@ -77,88 +71,58 @@ def sample(args):
     #     res_midi.save(f"samples/res_{idx + 1}.mid")
 
 
-# TODO: Separate data commands (midi_dict, tokenized) into two different
-# commands for clarity
-def _parse_data_args():
-    argp = argparse.ArgumentParser(prog="run.py data")
-    argp.add_argument(
-        "format",
-        choices=["midi_dict", "tokenized"],
-        help="type of dataset to build",
-    )
+def _parse_midi_dataset_args():
+    argp = argparse.ArgumentParser(prog="run.py midi_dataset")
     argp.add_argument("save_path", help="path to save dataset")
 
     argp.add_argument(
         "-dir", help="directory containing midi files", required=False
     )
     argp.add_argument("-r", action="store_true", help="recursively search dirs")
-    argp.add_argument(
-        "-load_path", help="path midi_dict dataset", required=False
-    )
-    argp.add_argument(
-        "-tokenizer",
-        required=False,
-        choices=["lazy"],
-        help="specify tokenizer type",
-    )
 
     return argp.parse_args(sys.argv[2:])
 
 
-# NOTE: This must be refactored if additional tokenizers are added
-def data(args):
-    """Entrypoint for data processing"""
-    from aria.tokenizer import TokenizerLazy
+def build_midi_dataset(args):
+    """Entrypoint for building MidiDatasets from a directory"""
     from aria.data.datasets import MidiDataset
+
+    assert args.dir, "build directory must be provided"
+    MidiDataset.build_to_file(
+        dir=args.dir,
+        save_path=args.save_path,
+        recur=args.r,
+        overwrite=True,
+    )
+
+
+def _parse_tokenized_dataset_args():
+    argp = argparse.ArgumentParser(prog="run.py tokenized_dataset")
+    argp.add_argument("load_path", help="path midi_dict dataset")
+    argp.add_argument("save_path", help="path to save dataset")
+    argp.add_argument("-s", help="also produce shuffled", action="store_true")
+
+    return argp.parse_args(sys.argv[2:])
+
+
+def build_tokenized_dataset(args):
+    from aria.tokenizer import TokenizerLazy
     from aria.data.datasets import TokenizedDataset
     from aria.config import load_config
 
-    # TODO: Add asserts that files (midi files and load files)
-
-    if args.format == "midi_dict":
-        assert args.dir, "build directory must be provided"
-        MidiDataset.build_to_file(
-            dir=args.dir,
-            save_path=args.save_path,
-            recur=args.r,
-            overwrite=True,
-        )
-
-    elif args.format == "tokenized":
-        assert not (
-            args.dir is None and args.load_path is None
-        ), "must provide a load_path or a directory containing midi"
-
-        config = load_config()["data"]["dataset_gen_args"]
-        tokenizer = TokenizerLazy()
-        if args.load_path:
-            TokenizedDataset.build(
-                tokenizer=tokenizer,
-                save_path=args.save_path,
-                midi_dataset_path=args.load_path,
-                max_seq_len=config["max_seq_len"],
-                stride_len=config["stride_len"],
-                padding=True,
-                overwrite=True,
-            )
-        elif args.dir:
-            buffer_path = "midi_dataset.buffer.jsonl"
-            MidiDataset.build_to_file(
-                dir=args.dir,
-                save_path=buffer_path,
-                recur=args.r,
-                overwrite=True,
-            )
-            TokenizedDataset.build(
-                tokenizer=tokenizer,
-                save_path=args.save_path,
-                midi_dataset_path=buffer_path,
-                max_seq_len=config["max_seq_len"],
-                stride_len=config["stride_len"],
-                padding=True,
-                overwrite=True,
-            )
-            os.remove(buffer_path)
+    config = load_config()["data"]["dataset_gen_args"]
+    tokenizer = TokenizerLazy()
+    dataset = TokenizedDataset.build(
+        tokenizer=tokenizer,
+        save_path=args.save_path,
+        midi_dataset_path=args.load_path,
+        max_seq_len=config["max_seq_len"],
+        stride_len=config["stride_len"],
+        padding=True,
+        overwrite=True,
+    )
+    if args.s:
+        dataset.get_shuffled_dataset()
 
 
 def main():
@@ -167,7 +131,7 @@ def main():
     parser.add_argument(
         "command",
         help="command to run",
-        choices=("train", "sample", "data"),
+        choices=("sample", "midi_dataset", "tokenized_dataset"),
     )
 
     # parse_args defaults to [1:] for args, but you need to
@@ -180,9 +144,10 @@ def main():
         exit(1)
     elif args.command == "sample":
         sample(args=_parse_sample_args())
-    elif args.command == "data":
-        logging.basicConfig(level=logging.INFO)
-        data(args=_parse_data_args())
+    elif args.command == "midi_dataset":
+        build_midi_dataset(args=_parse_midi_dataset_args())
+    elif args.command == "tokenized_dataset":
+        build_tokenized_dataset(args=_parse_tokenized_dataset_args())
     else:
         print("Unrecognized command")
         parser.print_help()
