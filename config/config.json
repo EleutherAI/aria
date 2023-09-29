@@ -10,7 +10,7 @@
             "max_instruments":{
                 "run": true,
                 "args": {
-                    "max": 3
+                    "max": 5
                 }
             },
             "no_notes":{
@@ -20,14 +20,14 @@
             "note_frequency":{
                 "run": true,
                 "args": {
-                    "min_per_second": 1,
+                    "min_per_second": 2,
                     "max_per_second": 15
                 }
             },
             "min_length":{
                 "run": true,
                 "args": {
-                    "min_seconds": 30
+                    "min_seconds": 20
                 }
             }
         },
@@ -58,13 +58,13 @@
             "composer_filename": {
                 "run": true,
                 "args": {
-                    "composer_names": ["bach", "beethoven", "mozart"]
+                    "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"]
                 }
             },
             "composer_metamsg": {
                 "run": true,
                 "args": {
-                    "composer_names": ["bach", "beethoven", "mozart"]
+                    "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"]
                 }
             }
         },

@@ -10,14 +10,37 @@ import torch
 
 from pathlib import Path
 from typing import Callable
-from copy import deepcopy
+from collections import defaultdict
+from multiprocessing import Pool
 
 from aria.config import load_config
 from aria.tokenizer import Tokenizer
 from aria.data.midi import MidiDict, get_test_fn
 
 
-# TODO: Investigate why loads of drums tracks are appearing when drum is present
+def setup_logger():
+    # Get logger and reset all handlers
+    logger = logging.getLogger(__name__)
+    for h in logger.handlers[:]:
+        logger.removeHandler(h)
+
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        "[%(asctime)s] [%(levelname)s] %(message)s",
+    )
+
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+
+    return logger
+
+
+# TODO:
+# - Change the log setup so that it is clearer
+# - Add threading/multiprocessing to MidiDict build process
 class MidiDataset:
     """Container for datasets of MidiDict objects.
 
@@ -136,6 +159,60 @@ class MidiDataset:
         )
 
 
+def _get_mididict(path: Path):
+    # This function is only intended to be used as a process target during the
+    # multi-processing in build_mididict_dataset. It returns a tuple of the form
+    # (bool, (MidiDict, str, Path)) where the first element determines if the
+    # loaded MidiDict was succesfully preprocessed.
+
+    def _run_tests(_mid_dict: MidiDict):
+        failed_tests = []
+        for test_name, test_config in config["tests"].items():
+            if test_config["run"] is True:
+                test_fn = get_test_fn(test_name)
+                test_args = test_config["args"]
+
+                if test_fn(_mid_dict, **test_args) is False:
+                    failed_tests.append(test_name)
+
+        return failed_tests
+
+    def _preprocess_mididict(_mid_dict: MidiDict):
+        for fn_name, fn_config in config["pre_processing"].items():
+            if fn_config["run"] is True:
+                fn_args = fn_config["args"]
+                getattr(_mid_dict, fn_name)(fn_args)
+
+                try:
+                    # Note fn_args is passed as a dict, not unpacked as kwargs
+                    getattr(_mid_dict, fn_name)(fn_args)
+                except:
+                    logger.error(
+                        f"Error finding preprocessing function for {fn_name}"
+                    )
+
+        return _mid_dict
+
+    logger = logging.getLogger(__name__)
+    config = load_config()["data"]
+
+    try:
+        mid_dict = MidiDict.from_midi(mid_path=path)
+    except Exception as e:
+        logger.error(f"Failed to load MIDI at {path}: {e}")
+        return False, None
+
+    mid_hash = mid_dict.calculate_hash()
+    failed_tests = _run_tests(mid_dict)
+    if failed_tests:
+        logger.info(
+            f"MIDI at {path} failed preprocessing tests: {failed_tests}"
+        )
+        return False, None
+    else:
+        return True, (_preprocess_mididict(mid_dict), mid_hash, path)
+
+
 def build_mididict_dataset(
     dir: str,
     recur: bool = False,
@@ -161,72 +238,30 @@ def build_mididict_dataset(
             This is only returned if stream_save_path is not provided.
     """
 
-    def _run_tests(_mid_dict: MidiDict):
-        failed_tests = []
-        for test_name, test_config in config["tests"].items():
-            if test_config["run"] is True:
-                test_fn = get_test_fn(test_name)
-                test_args = test_config["args"]
+    def _get_mididicts_mp(_paths):
+        with Pool() as pool:
+            results = pool.imap(_get_mididict, _paths)
+            seen_hashes = defaultdict(list)
+            for idx, (success, result) in enumerate(results):
+                if idx % 50 == 0 and idx != 0:
+                    logger.info(f"Processed MIDI files: {idx}/{num_paths}")
 
-                if test_fn(_mid_dict, **test_args) is False:
-                    failed_tests.append(test_name)
+                if not success:
+                    continue
+                else:
+                    mid_dict, mid_hash, mid_path = result
 
-        return failed_tests
-
-    # Maybe refactor this in the same way as _run_tests
-    def _preprocess_mididict(_mid_dict: MidiDict):
-        for fn_name, fn_config in config["pre_processing"].items():
-            if fn_config["run"] is True:
-                fn_args = fn_config["args"]
-                getattr(_mid_dict, fn_name)(fn_args)
-
-                try:
-                    # Note fn_args is passed as a dict, not unpacked as kwargs
-                    getattr(_mid_dict, fn_name)(fn_args)
-                except:
-                    logging.error(
-                        f"Error finding preprocessing function for {fn_name}"
+                if seen_hashes.get(mid_hash):
+                    logger.info(
+                        f"MIDI located at '{mid_path}' is a duplicate - already"
+                        f" seen at: {seen_hashes[mid_hash]}"
                     )
+                    seen_hashes[mid_hash].append(str(mid_path))
+                else:
+                    seen_hashes[mid_hash].append(str(mid_path))
+                    yield mid_dict
 
-        return _mid_dict
-
-    def get_mididicts(_paths: list):
-        num_paths = len(_paths)
-        if num_paths == 0:
-            logging.warning(
-                "Directory contains no files matching *.mid or *.midi"
-            )
-
-        seen_hashes = {}
-        for idx, path in enumerate(_paths):
-            if idx % 50 == 0 and idx != 0:
-                logging.info(f"processed midi files: {idx}/{num_paths}")
-
-            try:
-                mid_dict = MidiDict.from_midi(mid_path=path)
-            except Exception as e:
-                logging.error(f"Failed to load file at {path}:")
-                logging.error(e)
-                continue
-
-            mid_hash = mid_dict.calculate_hash()
-            if seen_hashes.get(mid_hash, False) is True:
-                logging.info(f"File at {path} is a duplicate")
-                continue
-            else:
-                seen_hashes[mid_hash] = True
-
-            failed_tests = _run_tests(mid_dict)
-            if failed_tests:
-                logging.info(f"File at {path} failed preprocessing tests:")
-                for test_name in failed_tests:
-                    logging.info(test_name)
-            else:
-                yield _preprocess_mididict(mid_dict)
-
-        logging.info(f"finished building mididict dataset")
-
-    config = load_config()["data"]
+    logger = setup_logger()
 
     paths = []
     if recur is True:
@@ -238,12 +273,14 @@ def build_mididict_dataset(
 
     num_paths = len(paths)
     if num_paths == 0:
-        logging.warning("Directory contains no files matching *.mid or *.midi")
+        logger.warning("Directory contains no files matching *.mid or *.midi")
 
+    cnt = 0
     if stream_save_path is None:
         # Not streaming -> return entries directly
         entries = []
-        for entry in get_mididicts(paths):
+        for entry in _get_mididicts_mp(_paths=paths):
+            cnt += 1
             entries.append(entry)
 
         return entries
@@ -251,12 +288,15 @@ def build_mididict_dataset(
         # Streaming -> write to file instead of returning anything
         if overwrite is False and os.path.isfile(stream_save_path) is True:
             raise FileExistsError(f"File at {stream_save_path} already exists.")
-        elif overwrite is True and os.path.isfile(stream_save_path) is True:
-            os.remove(stream_save_path)
 
         with jsonlines.open(stream_save_path, mode="w") as writer:
-            for entry in get_mididicts(paths):
+            for entry in _get_mididicts_mp(paths):
+                cnt += 1
                 writer.write(entry.get_msg_dict())
+
+    logger.info(
+        f"Finished - added {cnt}/{len(paths)} found MIDI files to dataset."
+    )
 
 
 class TokenizedDataset(torch.utils.data.Dataset):
