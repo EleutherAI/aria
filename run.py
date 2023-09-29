@@ -77,6 +77,8 @@ def sample(args):
     #     res_midi.save(f"samples/res_{idx + 1}.mid")
 
 
+# TODO: Separate data commands (midi_dict, tokenized) into two different
+# commands for clarity
 def _parse_data_args():
     argp = argparse.ArgumentParser(prog="run.py data")
     argp.add_argument(
