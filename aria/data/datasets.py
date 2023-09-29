@@ -11,6 +11,7 @@ import torch
 from pathlib import Path
 from typing import Callable
 from collections import defaultdict
+from copy import deepcopy
 from multiprocessing import Pool
 
 from aria.config import load_config
@@ -27,7 +28,7 @@ def setup_logger():
     logger.propagate = False
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter(
-        "[%(asctime)s] [%(levelname)s] %(message)s",
+        "[%(asctime)s] %(name)s: [%(levelname)s] %(message)s",
     )
 
     ch = logging.StreamHandler()

@@ -20,7 +20,7 @@
             "note_frequency":{
                 "run": true,
                 "args": {
-                    "min_per_second": 2,
+                    "min_per_second": 1.5,
                     "max_per_second": 15
                 }
             },
