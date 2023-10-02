@@ -73,11 +73,8 @@ def sample(args):
 
 def _parse_midi_dataset_args():
     argp = argparse.ArgumentParser(prog="run.py midi_dataset")
+    argp.add_argument("dir", help="directory containing midi files")
     argp.add_argument("save_path", help="path to save dataset")
-
-    argp.add_argument(
-        "-dir", help="directory containing midi files", required=False
-    )
     argp.add_argument("-r", action="store_true", help="recursively search dirs")
 
     return argp.parse_args(sys.argv[2:])
