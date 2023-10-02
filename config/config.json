@@ -120,7 +120,7 @@
                 "num_steps": 500,
                 "min_step": 10
             },
-            "composer_names": ["beethoven", "bach", "mozart", "chopin"]
+            "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"]
         }
     }
 }
