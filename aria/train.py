@@ -28,8 +28,8 @@ from aria.data.datasets import TokenizedDataset
 # For example usage you could run the pre-training script with:
 #
 # accelerate launch [arguments] aria/train.py pretrain \
-#   -train_data data/train.jsonl \
-#   -val_data data/train.jsonl \
+#   data/train.jsonl \
+#   data/val.jsonl \
 #   -epochs 10 \
 #   -bs 32 \
 #   -workers 8
@@ -117,7 +117,7 @@ def get_pretrain_optim(
     num_epochs: int,
     steps_per_epoch: int,
 ):
-    WARMUP_STEPS = 100
+    WARMUP_STEPS = 500
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
     warmup_lrs = torch.optim.lr_scheduler.LinearLR(
@@ -165,7 +165,7 @@ def get_dataloaders(
         train_dataset.set_transform(
             [
                 tokenizer.export_velocity_aug(2),
-                tokenizer.export_pitch_aug(4),
+                tokenizer.export_pitch_aug(5),
                 tokenizer.export_tempo_aug(0.15),
                 tokenizer.export_chord_mixup(),
             ]
@@ -306,10 +306,6 @@ def train(
                         _step=step,
                     )
 
-            # break # Overfit batch
-
-        # continue # Overfit batch
-
         logger.info(
             f"EPOCH {_epoch}/{epochs}: Finished training - "
             f"average_loss={round(avg_train_loss, 4)}"
@@ -387,6 +383,28 @@ def train(
 
     loss_csv.close()
     epoch_csv.close()
+
+
+def save_model_from_cp(model_name: str, checkpoint_dir: str, save_path: str):
+    # Converts a compiled model checkpoint into one that can be loaded directly
+    logger = get_logger(__name__)
+    accelerator = accelerate.Accelerator()
+    tokenizer = TokenizerLazy(return_tensors=True)
+    model_config = ModelConfig(**load_model_config(model_name))
+    model_config.set_vocab_size(tokenizer.vocab_size)
+    model = torch.compile(TransformerLM(model_config), mode="default")
+
+    model = accelerator.prepare(model)
+    accelerator.load_state(checkpoint_dir)
+    state_dict = model.state_dict()
+    for key in list(state_dict.keys()):
+        if key.startswith("_orig_mod."):
+            new_key = key[len("_orig_mod.") :]
+            state_dict[new_key] = state_dict.pop(key)
+        else:
+            logger.warning(f"Found unexpected key: {key}")
+
+    torch.save(state_dict, save_path)
 
 
 # NOTE: Any differences observed when resuming training are most likely the

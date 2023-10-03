@@ -1,9 +1,12 @@
+import os
 import unittest
 import logging
-import os
+import torch
 
-from aria.train import pretrain, resume_pretrain
+from aria.train import pretrain, resume_pretrain, save_model_from_cp
 from aria.tokenizer import TokenizerLazy
+from aria.model import ModelConfig, TransformerLM
+from aria.config import load_model_config
 from aria.data.midi import MidiDict
 from aria.data.datasets import MidiDataset, TokenizedDataset
 
@@ -76,6 +79,26 @@ class TestTraining(unittest.TestCase):
                 "Resume checkpoint not found at "
                 "./experiments/0/checkpoints/epoch10_step50 "
                 "- skipping resume_pretrain test"
+            )
+
+        if os.path.isdir("./experiments/0/checkpoints/epoch10_step50"):
+            save_model_from_cp(
+                model_name="test",
+                checkpoint_dir="./experiments/0/checkpoints/epoch10_step50",
+                save_path="tests/test_results/model_cp.bin",
+            )
+
+            tokenizer = TokenizerLazy(return_tensors=True)
+            model_config = ModelConfig(**load_model_config("test"))
+            model_config.set_vocab_size(tokenizer.vocab_size)
+            model = TransformerLM(model_config)
+
+            model.load_state_dict(torch.load("tests/test_results/model_cp.bin"))
+        else:
+            logging.warning(
+                "Resume checkpoint not found at "
+                "./experiments/0/checkpoints/epoch10_step50 "
+                "- skipping save_model_from_cp test"
             )
 
 
