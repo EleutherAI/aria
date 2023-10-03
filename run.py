@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 import sys
 
 
@@ -8,6 +9,9 @@ def _parse_sample_args():
     argp = argparse.ArgumentParser(prog="run.py sample")
     argp.add_argument("ckpt_path", help="path to model checkpoint")
     argp.add_argument("midi_path", help="path to midi file")
+    argp.add_argument(
+        "-name", help="name of model (config)", type=str, required=True
+    )
     argp.add_argument(
         "-var", help="number of variations", type=int, required=True
     )
@@ -20,55 +24,56 @@ def _parse_sample_args():
 
 def sample(args):
     """Entrypoint for sampling"""
-    # Commented code uses old model loading
-    raise NotImplementedError
 
-    # from torch.cuda import is_available as cuda_is_available
-    # from aria.training import PretrainLM
-    # from aria.tokenizer import TokenizerLazy
-    # from aria.sample import batch_sample_model
-    # from aria.data.midi import MidiDict
+    import torch
+    from torch.cuda import is_available as cuda_is_available
+    from aria.model import TransformerLM, ModelConfig
+    from aria.config import load_model_config
+    from aria.tokenizer import TokenizerLazy
+    from aria.sample import batch_sample_model
+    from aria.data.midi import MidiDict
 
-    # assert cuda_is_available() is True, "CUDA device not available"
+    assert cuda_is_available() is True, "CUDA device not available"
 
-    # ckpt_path = args.ckpt_path
-    # midi_path = args.midi_path
-    # num_variations = args.var
-    # truncate_len = args.trunc
+    model_name = args.name
+    ckpt_path = args.ckpt_path
+    midi_path = args.midi_path
+    num_variations = args.var
+    truncate_len = args.trunc
 
-    # # This method of loading checkpoints needs to change
-    # model = PretrainLM.load_from_checkpoint(ckpt_path).model
-    # max_seq_len = model.max_seq_len
-    # tokenizer = TokenizerLazy(
-    #     return_tensors=True,
-    # )
+    # This method of loading checkpoints needs to change
+    tokenizer = TokenizerLazy(return_tensors=True)
+    model_config = ModelConfig(**load_model_config(model_name))
+    model_config.set_vocab_size(tokenizer.vocab_size)
+    model = TransformerLM(model_config).cuda()
+    model.load_state_dict(torch.load(ckpt_path))
 
-    # assert (
-    #     truncate_len < max_seq_len
-    # ), "Truncate length longer than maximum length supported by the model."
+    assert (
+        truncate_len < model_config.max_seq_len
+    ), "Truncate length longer than maximum length supported by the model."
 
-    # # Load and format prompts
-    # midi_dict = MidiDict.from_midi(mid_path=midi_path)
-    # prompt_seq = tokenizer.tokenize_midi_dict(midi_dict=midi_dict)
-    # prompt_seq = prompt_seq[:truncate_len]
-    # prompts = [prompt_seq for _ in range(num_variations)]
+    # Load and format prompts
+    midi_dict = MidiDict.from_midi(mid_path=midi_path)
+    prompt_seq = tokenizer.tokenize_midi_dict(midi_dict=midi_dict)
+    prompt_seq = prompt_seq[:truncate_len]
+    prompts = [prompt_seq for _ in range(num_variations)]
 
-    # # Sample
-    # results = batch_sample_model(
-    #     model,
-    #     tokenizer,
-    #     prompts,
-    #     max_seq_len,
-    #     max_gen_len=max_seq_len,
-    # )
+    # Sample
+    results = batch_sample_model(
+        model,
+        tokenizer,
+        prompts,
+        model_config.max_seq_len,
+        max_gen_len=model_config.max_seq_len,
+    )
 
-    # if os.path.isdir("samples") is False:
-    #     os.mkdir("samples")
+    if os.path.isdir("samples") is False:
+        os.mkdir("samples")
 
-    # for idx, tokenized_seq in enumerate(results):
-    #     res_midi_dict = tokenizer.detokenize_midi_dict(tokenized_seq)
-    #     res_midi = res_midi_dict.to_midi()
-    #     res_midi.save(f"samples/res_{idx + 1}.mid")
+    for idx, tokenized_seq in enumerate(results):
+        res_midi_dict = tokenizer.detokenize_midi_dict(tokenized_seq)
+        res_midi = res_midi_dict.to_midi()
+        res_midi.save(f"samples/res_{idx + 1}.mid")
 
 
 def _parse_midi_dataset_args():
