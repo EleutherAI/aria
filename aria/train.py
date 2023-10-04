@@ -376,6 +376,7 @@ def train(
         epoch_writer.writerow([0, avg_train_loss, avg_val_loss])
 
     for epoch in range(1, epochs + 1):
+        # Sometimes the epoch.csv isn't written to until it is closed?
         avg_train_loss = train_loop(dataloader=train_dataloader, _epoch=epoch)
         avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=epoch)
         epoch_writer.writerow([epoch, avg_train_loss, avg_val_loss])
