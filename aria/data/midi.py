@@ -94,6 +94,16 @@ class MidiDict:
         self.ticks_per_beat = ticks_per_beat
         self.metadata = metadata
 
+        # Special case that temo_msg is empty, in this case we spoof the default
+        if not self.tempo_msgs:
+            tempo_msgs = [
+                {
+                    "type": "tempo",
+                    "data": 500000,
+                    "tick": 0,
+                }
+            ]
+
         # This combines the individual dictionaries into one
         self.program_to_instrument = (
             {i: "piano" for i in range(0, 7 + 1)}
