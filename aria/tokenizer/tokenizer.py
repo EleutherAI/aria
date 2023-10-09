@@ -13,9 +13,6 @@ from aria.data.midi import MidiDict
 from aria.config import load_config
 from aria.data.midi import get_duration_ms
 
-# TODO:
-# - Write tests
-
 
 class Tokenizer:
     """Abstract Tokenizer class for tokenizing midi_dict objects.
@@ -47,6 +44,7 @@ class Tokenizer:
         ]
 
         # These must be implemented in child class (abstract params)
+        self.vocab = ()
         self.config = {}
         self.tok_to_id = {}
         self.id_to_tok = {}
@@ -58,10 +56,27 @@ class Tokenizer:
         tokens."""
         raise NotImplementedError
 
+    def tokenize(self, midi_dict: MidiDict, **kwargs):
+        """Tokenizes a MidiDict object.
+
+        This function should be overridden if additional transformations are
+        required. For instance, in fine-tuning tokenizer you may want to insert
+        additional tokens. The default behaviour is to call tokenize_midi_dict.
+        """
+        return self.tokenize_midi_dict(midi_dict)
+
     def detokenize_midi_dict(self, tokenized_seq: list):
         """Abstract method for de-tokenizing a sequence of tokens into a
         MidiDict Object."""
         raise NotImplementedError
+
+    def detokenize(self, tokenized_seq: list):
+        """Detokenizes a MidiDict object.
+
+        This function should be overridden if additional are required during
+        detokenization. The default behaviour is to call detokenize_midi_dict.
+        """
+        return self.detokenize_midi_dict(tokenized_seq)
 
     def encode(self, unencoded_seq: list):
         """Converts tokenized sequence into a list/torch.Tensor of ids."""
@@ -94,6 +109,15 @@ class Tokenizer:
             decoded_seq = [_dec_fn(idx) for idx in encoded_seq]
 
         return decoded_seq
+
+    def add_tokens_to_vocab(self, tokens: list | tuple):
+        for token in tokens:
+            assert token not in self.vocab
+
+        self.vocab = self.vocab + tuple(tokens)
+        self.tok_to_id = {tok: idx for idx, tok in enumerate(self.vocab)}
+        self.id_to_tok = {v: k for k, v in self.tok_to_id.items()}
+        self.vocab_size = len(self.vocab)
 
 
 class TokenizerLazy(Tokenizer):
@@ -153,7 +177,7 @@ class TokenizerLazy(Tokenizer):
             )
         )
 
-        self.vocab = (
+        self.add_tokens_to_vocab(
             self.special_tokens
             + self.prefix_tokens
             + self.note_tokens
@@ -162,9 +186,6 @@ class TokenizerLazy(Tokenizer):
             + self.wait_tokens
         )
 
-        self.tok_to_id = {tok: idx for idx, tok in enumerate(self.vocab)}
-        self.id_to_tok = {v: k for k, v in self.tok_to_id.items()}
-        self.vocab_size = len(self.vocab)
         self.pad_id = self.tok_to_id[self.pad_tok]
 
     def _build_pedal_intervals(self, midi_dict: MidiDict):

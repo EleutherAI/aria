@@ -54,7 +54,7 @@ def sample(args):
 
     # Load and format prompts
     midi_dict = MidiDict.from_midi(mid_path=midi_path)
-    prompt_seq = tokenizer.tokenize_midi_dict(midi_dict=midi_dict)
+    prompt_seq = tokenizer.tokenize(midi_dict=midi_dict)
     prompt_seq = prompt_seq[:truncate_len]
     prompts = [prompt_seq for _ in range(num_variations)]
 
@@ -71,7 +71,7 @@ def sample(args):
         os.mkdir("samples")
 
     for idx, tokenized_seq in enumerate(results):
-        res_midi_dict = tokenizer.detokenize_midi_dict(tokenized_seq)
+        res_midi_dict = tokenizer.detokenize(tokenized_seq)
         res_midi = res_midi_dict.to_midi()
         res_midi.save(f"samples/res_{idx + 1}.mid")
 

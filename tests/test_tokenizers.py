@@ -48,8 +48,8 @@ class TestLazyTokenizer(unittest.TestCase):
         def tokenize_detokenize(file_name: str):
             mid_path = f"tests/test_data/{file_name}"
             midi_dict = MidiDict.from_midi(mid_path=mid_path)
-            tokenized_seq = tknzr.tokenize_midi_dict(midi_dict)
-            detokenized_midi_dict = tknzr.detokenize_midi_dict(tokenized_seq)
+            tokenized_seq = tknzr.tokenize(midi_dict)
+            detokenized_midi_dict = tknzr.detokenize(tokenized_seq)
             res = detokenized_midi_dict.to_midi()
             res.save(f"tests/test_results/{file_name}")
 
@@ -99,7 +99,7 @@ class TestLazyTokenizer(unittest.TestCase):
     def test_aug_time(self):
         tknzr = tokenizer.TokenizerLazy()
         mid_dict = MidiDict.from_midi("tests/test_data/beethoven.mid")
-        tokenized_seq = tknzr.tokenize_midi_dict(mid_dict)[:4096]
+        tokenized_seq = tknzr.tokenize(mid_dict)[:4096]
 
         pitch_aug_fn = tknzr.export_pitch_aug(aug_range=5)
         velocity_aug_fn = tknzr.export_velocity_aug(aug_steps_range=2)

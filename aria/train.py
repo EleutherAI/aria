@@ -380,6 +380,7 @@ def train(
         avg_train_loss = train_loop(dataloader=train_dataloader, _epoch=epoch)
         avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=epoch)
         epoch_writer.writerow([epoch, avg_train_loss, avg_val_loss])
+        epoch_csv.flush()
         make_checkpoint(_accelerator=accelerator, _epoch=epoch)
 
     loss_csv.close()
