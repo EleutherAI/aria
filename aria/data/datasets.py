@@ -358,7 +358,7 @@ def _get_tokenized_seqs(
         _midi_dict = _entry
 
     try:
-        _tokenized_seq = tokenizer.tokenize_midi_dict(_midi_dict)
+        _tokenized_seq = tokenizer.tokenize(_midi_dict)
     except Exception as e:
         logger.error(f"Failed to tokenize midi_dict: {e}")
     else:
@@ -573,6 +573,9 @@ class TokenizedDataset(torch.utils.data.Dataset):
 
         def _get_tokenized_seqs_mp(_midi_dict_iter: Iterable):
             # Gets tokenized sequences using multiprocessing
+
+            # TokenizerLazy is the only supported tokenizer due to the truncate
+            # and stride logic in _get_tokenized_seqs
             assert isinstance(tokenizer, TokenizerLazy), "Unsupported tokenizer"
 
             with Pool() as pool:
