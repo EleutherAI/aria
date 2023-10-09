@@ -36,7 +36,7 @@ def batch_sample_model(
         prompts (List[list]): A list of prompts to sample as a batch.
         max_seq_len (int): Maximum sequence length supported by the model.
         max_gen_len (int): Maximum desired sequence length of the samples.
-        temperature (float, optional): Sampling temperature. Defaults to 0.8.
+        temperature (float, optional): Sampling temperature. Defaults to 0.75.
         top_p (float, optional): Parameter for top-p sampling. Defaults to 0.95.
 
     Returns:

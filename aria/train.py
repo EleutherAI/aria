@@ -347,10 +347,11 @@ def train(
         ), "Invalid checkpoint mode value (too small)"
 
     TRAILING_LOSS_STEPS = 15
+    PAD_ID = train_dataloader.dataset.tokenizer.pad_id
     logger = get_logger(__name__)  # Accelerate logger
     project_dir = accelerator.project_dir
 
-    loss_fn = nn.CrossEntropyLoss()
+    loss_fn = nn.CrossEntropyLoss(ignore_index=PAD_ID)
 
     loss_csv = open(os.path.join(project_dir, "loss.csv"), "w")
     loss_writer = csv.writer(loss_csv)

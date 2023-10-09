@@ -7,10 +7,6 @@ from torch import nn as nn
 from torch.nn import functional as F
 
 
-# TODO:
-# - Fix naming and docstrings
-
-
 class ModelConfig:
     def __init__(
         self,
@@ -48,7 +44,6 @@ class RotaryEmbedding(torch.nn.Module):
 
     def forward(self, x, seq_dim=1, seq_len=None):
         """Returns tuple cos, sin"""
-        # Comment out bfloat16() specific code for now
         if seq_len is None:
             seq_len = x.shape[seq_dim]
         if seq_len != self.seq_len_cached:
@@ -56,13 +51,13 @@ class RotaryEmbedding(torch.nn.Module):
             t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
             freqs = torch.einsum("i,j->ij", t, self.inv_freq)
             emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
-            # if self.precision == torch.bfloat16:
-            #     emb = emb.float()
+            if self.precision == torch.bfloat16:
+                emb = emb.float()
             self.cos_cached = emb.cos()[:, None, None, :]
             self.sin_cached = emb.sin()[:, None, None, :]
-            # if self.precision == torch.bfloat16:
-            #     self.cos_cached = self.cos_cached.bfloat16()
-            #     self.sin_cached = self.sin_cached.bfloat16()
+            if self.precision == torch.bfloat16:
+                self.cos_cached = self.cos_cached.bfloat16()
+                self.sin_cached = self.sin_cached.bfloat16()
 
         return self.cos_cached, self.sin_cached
 
