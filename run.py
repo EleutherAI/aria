@@ -63,7 +63,7 @@ def sample(args):
         model,
         tokenizer,
         prompts,
-        model_config.max_seq_len,
+        model_config=model_config.max_seq_len,
         max_gen_len=model_config.max_seq_len,
     )
 
