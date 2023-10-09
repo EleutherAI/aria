@@ -8,6 +8,8 @@ import accelerate
 
 from torch import nn as nn
 from torch.utils.data import DataLoader
+from torch.utils.flop_counter import FlopCounterMode
+from triton.testing import do_bench
 from accelerate.logging import get_logger
 from logging.handlers import RotatingFileHandler
 from tqdm import tqdm
@@ -222,6 +224,34 @@ def train(
     steps_per_checkpoint: int | None = None,
     resume_step: int | None = None,
 ):
+    def profile_flops(dataloader: DataLoader):
+        def _bench():
+            for batch in dataloader:
+                src, tgt = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
+                logits = model(src)  # (b_sz, s_len, v_sz)
+                logits = logits.transpose(1, 2)
+                loss = loss_fn(logits, tgt)
+
+                # Backwards step - omit optimizer.step()
+                accelerator.backward(loss)
+                optimizer.zero_grad()
+                break
+
+        flop_counter = FlopCounterMode(display=False)
+        logger.info("Profiling FLOP/s")
+        _bench()
+
+        with flop_counter:
+            _bench()
+        total_flops = sum(flop_counter.get_flop_counts()["Global"].values())
+        ms_per_iter = do_bench(_bench)
+        iters_per_second = 1e3 / ms_per_iter
+
+        logger.info(
+            f"{total_flops / 1e12} TF, "
+            f"{iters_per_second * total_flops / 1e12} TF/s"
+        )
+
     def make_checkpoint(_accelerator, _epoch: int, _step: int | None = None):
         if _step:
             checkpoint_dir = os.path.join(
@@ -350,8 +380,8 @@ def train(
     PAD_ID = train_dataloader.dataset.tokenizer.pad_id
     logger = get_logger(__name__)  # Accelerate logger
     project_dir = accelerator.project_dir
-
     loss_fn = nn.CrossEntropyLoss(ignore_index=PAD_ID)
+    profile_flops(dataloader=train_dataloader)
 
     loss_csv = open(os.path.join(project_dir, "loss.csv"), "w")
     loss_writer = csv.writer(loss_csv)
@@ -377,7 +407,6 @@ def train(
         epoch_writer.writerow([0, avg_train_loss, avg_val_loss])
 
     for epoch in range(1, epochs + 1):
-        # Sometimes the epoch.csv isn't written to until it is closed?
         avg_train_loss = train_loop(dataloader=train_dataloader, _epoch=epoch)
         avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=epoch)
         epoch_writer.writerow([epoch, avg_train_loss, avg_val_loss])
