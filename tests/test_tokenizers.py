@@ -7,8 +7,8 @@ from aria import tokenizer
 from aria.data.midi import MidiDict
 
 
-# TODO: Add test which reports timings for the different augmentation functions
-# on the Beethoven sonata with len 2k and 4k.
+if not os.path.isdir("tests/test_results"):
+    os.makedirs("tests/test_results")
 
 
 def get_short_seq(tknzr: tokenizer.TokenizerLazy):

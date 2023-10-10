@@ -13,6 +13,8 @@ from aria.data.datasets import MidiDataset, TokenizedDataset
 TRAIN_DATA_PATH = "tests/test_results/testpretrain_dataset_train.jsonl"
 VAL_DATA_PATH = "tests/test_results/testpretrain_dataset_val.jsonl"
 
+if not os.path.isdir("tests/test_results"):
+    os.makedirs("tests/test_results")
 
 # TODO:
 # Add test for testing that rotary embeddings are working correctly. I want to
