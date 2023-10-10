@@ -96,11 +96,21 @@ class MidiDict:
 
         # Special case that temo_msg is empty, in this case we spoof the default
         if not self.tempo_msgs:
-            tempo_msgs = [
+            self.tempo_msgs = [
                 {
                     "type": "tempo",
                     "data": 500000,
                     "tick": 0,
+                }
+            ]
+
+        if not self.instrument_msgs:
+            self.instrument_msgs = [
+                {
+                    "type": "instrument",
+                    "data": 0,
+                    "tick": 0,
+                    "channel": 0,
                 }
             ]
 
@@ -640,6 +650,39 @@ def test_note_frequency(
         return True
 
 
+def test_note_frequency_per_instrument(
+    midi_dict: MidiDict, max_per_second: float, min_per_second: float
+):
+    num_instruments = len(
+        set(
+            map(
+                lambda msg: midi_dict.program_to_instrument[msg["data"]],
+                midi_dict.instrument_msgs,
+            )
+        )
+    )
+
+    if not midi_dict.note_msgs:
+        return False
+
+    num_notes = len(midi_dict.note_msgs)
+    total_duration_ms = get_duration_ms(
+        start_tick=midi_dict.note_msgs[0]["data"]["start"],
+        end_tick=midi_dict.note_msgs[-1]["data"]["end"],
+        tempo_msgs=midi_dict.tempo_msgs,
+        ticks_per_beat=midi_dict.ticks_per_beat,
+    )
+    notes_per_second = (num_notes * 1e3) / total_duration_ms
+
+    if (
+        notes_per_second / num_instruments < min_per_second
+        or notes_per_second / num_instruments > max_per_second
+    ):
+        return False
+    else:
+        return True
+
+
 def test_no_notes(midi_dict: MidiDict):
     if len(midi_dict.note_msgs) > 0:
         return True
@@ -670,7 +713,8 @@ def get_test_fn(test_name: str):
         "max_programs": test_max_programs,
         "max_instruments": test_max_instruments,
         "no_notes": test_no_notes,
-        "note_frequency": test_note_frequency,
+        "total_note_frequency": test_note_frequency,
+        "note_frequency_per_instrument": test_note_frequency_per_instrument,
         "min_length": test_min_length,
     }
 

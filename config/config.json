@@ -4,23 +4,30 @@
             "max_programs":{
                 "run": true,
                 "args": {
-                    "max": 5
+                    "max": 6
                 }
             },
             "max_instruments":{
                 "run": true,
                 "args": {
-                    "max": 3
+                    "max": 4
                 }
             },
             "no_notes":{
                 "run": true,
                 "args": {}
             },
-            "note_frequency":{
+            "total_note_frequency":{
                 "run": true,
                 "args": {
                     "min_per_second": 1.5,
+                    "max_per_second": 25
+                }
+            },
+            "note_frequency_per_instrument":{
+                "run": true,
+                "args": {
+                    "min_per_second": 0.5,
                     "max_per_second": 15
                 }
             },
