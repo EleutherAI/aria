@@ -4,13 +4,13 @@
             "max_programs":{
                 "run": true,
                 "args": {
-                    "max": 20
+                    "max": 5
                 }
             },
             "max_instruments":{
                 "run": true,
                 "args": {
-                    "max": 5
+                    "max": 3
                 }
             },
             "no_notes":{
