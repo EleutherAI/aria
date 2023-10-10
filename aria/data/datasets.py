@@ -174,8 +174,9 @@ def _get_mididict(path: Path):
                 test_fn = get_test_fn(test_name)
                 test_args = test_config["args"]
 
-                if test_fn(_mid_dict, **test_args) is False:
-                    failed_tests.append(test_name)
+                test_res, val = test_fn(_mid_dict, **test_args)
+                if test_res is False:
+                    failed_tests.append((test_name, val))
 
         return failed_tests
 
@@ -208,7 +209,7 @@ def _get_mididict(path: Path):
     failed_tests = _run_tests(mid_dict)
     if failed_tests:
         logger.info(
-            f"MIDI at {path} failed preprocessing tests: {failed_tests}"
+            f"MIDI at {path} failed preprocessing tests: {failed_tests} "
         )
         return False, None
     else:

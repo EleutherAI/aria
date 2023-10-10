@@ -13,10 +13,6 @@
                     "max": 4
                 }
             },
-            "no_notes":{
-                "run": true,
-                "args": {}
-            },
             "total_note_frequency":{
                 "run": true,
                 "args": {

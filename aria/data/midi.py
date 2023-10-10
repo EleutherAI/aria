@@ -610,9 +610,9 @@ def test_max_programs(midi_dict: MidiDict, max: int):
     )
 
     if len(present_programs) <= max:
-        return True
+        return True, len(present_programs)
     else:
-        return False
+        return False, len(present_programs)
 
 
 def test_max_instruments(midi_dict: MidiDict, max: int):
@@ -624,16 +624,16 @@ def test_max_instruments(midi_dict: MidiDict, max: int):
     )
 
     if len(present_instruments) <= max:
-        return True
+        return True, len(present_instruments)
     else:
-        return False
+        return False, len(present_instruments)
 
 
 def test_note_frequency(
     midi_dict: MidiDict, max_per_second: float, min_per_second: float
 ):
     if not midi_dict.note_msgs:
-        return False
+        return False, 0.0
 
     num_notes = len(midi_dict.note_msgs)
     total_duration_ms = get_duration_ms(
@@ -645,9 +645,9 @@ def test_note_frequency(
     notes_per_second = (num_notes * 1e3) / total_duration_ms
 
     if notes_per_second < min_per_second or notes_per_second > max_per_second:
-        return False
+        return False, notes_per_second
     else:
-        return True
+        return True, notes_per_second
 
 
 def test_note_frequency_per_instrument(
@@ -674,20 +674,14 @@ def test_note_frequency_per_instrument(
     )
     notes_per_second = (num_notes * 1e3) / total_duration_ms
 
+    note_freq_per_instrument = notes_per_second / num_instruments
     if (
-        notes_per_second / num_instruments < min_per_second
-        or notes_per_second / num_instruments > max_per_second
+        note_freq_per_instrument < min_per_second
+        or note_freq_per_instrument > max_per_second
     ):
-        return False
+        return False, note_freq_per_instrument
     else:
-        return True
-
-
-def test_no_notes(midi_dict: MidiDict):
-    if len(midi_dict.note_msgs) > 0:
-        return True
-    else:
-        return False
+        return True, note_freq_per_instrument
 
 
 def test_min_length(midi_dict: MidiDict, min_seconds: int):
@@ -702,9 +696,9 @@ def test_min_length(midi_dict: MidiDict, min_seconds: int):
     )
 
     if total_duration_ms / 1e3 < min_seconds:
-        return False
+        return False, total_duration_ms / 1e3
     else:
-        return True
+        return True, total_duration_ms / 1e3
 
 
 def get_test_fn(test_name: str):
@@ -712,7 +706,6 @@ def get_test_fn(test_name: str):
     name_to_fn = {
         "max_programs": test_max_programs,
         "max_instruments": test_max_instruments,
-        "no_notes": test_no_notes,
         "total_note_frequency": test_note_frequency,
         "note_frequency_per_instrument": test_note_frequency_per_instrument,
         "min_length": test_min_length,
