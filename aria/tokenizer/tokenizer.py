@@ -756,7 +756,7 @@ class TokenizerLazy(Tokenizer):
     def export_chord_mixup(self):
         # Chord mix up will randomly reorder concurrent notes. A concurrent
         # notes are those which are not separated by a 'wait' token.
-        def chord_mixup(src: list):
+        def chord_mixup(src: list, unk_tok: str):
             stack = []
             for idx, tok in enumerate(src):
                 if isinstance(tok, str):
@@ -764,8 +764,10 @@ class TokenizerLazy(Tokenizer):
                 else:
                     tok_type = tok[0]
 
-                if tok_type == "special" or tok_type == "prefix":
-                    # Skip special tok, reset stack to be safe
+                if (
+                    tok_type == "special" or tok_type == "prefix"
+                ) and tok != unk_tok:
+                    # Skip special tok (when not unk), reset stack to be safe
                     stack = []
                 elif tok_type == "wait" and len(stack) <= 1:
                     # Reset stack as it only contains one note
@@ -778,7 +780,14 @@ class TokenizerLazy(Tokenizer):
 
                     while stack:
                         entry = stack.pop()
-                        if entry["note"][0] == "drum":
+                        if entry["note"] == unk_tok:
+                            # This can happen if the note token has its pitch
+                            # augmented out of the valid range. In this case we
+                            # do not want to index it as it is not a note token
+                            src[_idx] = entry["note"]
+                            src[_idx + 1] = entry["dur"]
+                            _idx += 2
+                        elif entry["note"][0] == "drum":
                             # Drum case doesn't require a duration token
                             src[_idx] = entry["note"]
                             _idx += 1
@@ -796,4 +805,7 @@ class TokenizerLazy(Tokenizer):
 
             return src
 
-        return chord_mixup
+        return functools.partial(
+            chord_mixup,
+            unk_tok=self.unk_tok,
+        )

@@ -166,10 +166,10 @@ def get_dataloaders(
     if apply_aug:
         train_dataset.set_transform(
             [
+                tokenizer.export_chord_mixup(),
                 tokenizer.export_velocity_aug(2),
                 tokenizer.export_pitch_aug(5),
                 tokenizer.export_tempo_aug(0.15),
-                tokenizer.export_chord_mixup(),
             ]
         )
 
@@ -249,7 +249,7 @@ def train(
 
         logger.info(
             f"{total_flops / 1e12} TF, "
-            f"{iters_per_second * total_flops / 1e12} TF/s"
+            f"{iters_per_second * total_flops / 1e12} TF/s (not warm)"
         )
 
     def make_checkpoint(_accelerator, _epoch: int, _step: int | None = None):

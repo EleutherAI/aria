@@ -8,6 +8,9 @@ from aria import tokenizer
 from aria.data import datasets
 from aria.data.midi import MidiDict
 
+if not os.path.isdir("tests/test_results"):
+    os.makedirs("tests/test_results")
+
 
 def get_short_seq():
     return [
