@@ -663,7 +663,7 @@ def test_note_frequency_per_instrument(
     )
 
     if not midi_dict.note_msgs:
-        return False
+        return False, 0.0
 
     num_notes = len(midi_dict.note_msgs)
     total_duration_ms = get_duration_ms(
@@ -686,7 +686,7 @@ def test_note_frequency_per_instrument(
 
 def test_min_length(midi_dict: MidiDict, min_seconds: int):
     if not midi_dict.note_msgs:
-        return False
+        return False, 0.0
 
     total_duration_ms = get_duration_ms(
         start_tick=midi_dict.note_msgs[0]["data"]["start"],
