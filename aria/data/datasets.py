@@ -363,6 +363,8 @@ def _get_tokenized_seqs(
     except Exception as e:
         logger.error(f"Failed to tokenize midi_dict: {e}")
     else:
+        if tokenizer.unk_tok in _tokenized_seq:
+            logger.warning("Unknown token seen while tokenizing midi_dict")
         return _truncate_and_stride(_tokenized_seq)
 
 

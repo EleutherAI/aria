@@ -4,13 +4,13 @@
             "max_programs":{
                 "run": true,
                 "args": {
-                    "max": 6
+                    "max": 7
                 }
             },
             "max_instruments":{
                 "run": true,
                 "args": {
-                    "max": 4
+                    "max": 5
                 }
             },
             "total_note_frequency":{
