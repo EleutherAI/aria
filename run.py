@@ -30,7 +30,7 @@ def sample(args):
     from aria.model import TransformerLM, ModelConfig
     from aria.config import load_model_config
     from aria.tokenizer import TokenizerLazy
-    from aria.sample import batch_sample_model
+    from aria.sample import greedy_sample
     from aria.data.midi import MidiDict
 
     assert cuda_is_available() is True, "CUDA device not available"
@@ -59,11 +59,11 @@ def sample(args):
     prompts = [prompt_seq for _ in range(num_variations)]
 
     # Sample
-    results = batch_sample_model(
+    results = greedy_sample(
         model,
         tokenizer,
         prompts,
-        model_config=model_config.max_seq_len,
+        max_seq_len=model_config.max_seq_len,
         max_gen_len=model_config.max_seq_len,
     )
 
