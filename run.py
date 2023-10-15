@@ -82,6 +82,7 @@ def _parse_midi_dataset_args():
     argp.add_argument("dir", help="directory containing midi files")
     argp.add_argument("save_path", help="path to save dataset")
     argp.add_argument("-r", action="store_true", help="recursively search dirs")
+    argp.add_argument("--split", type=float, help="create train/val split")
 
     return argp.parse_args(sys.argv[2:])
 
@@ -97,6 +98,13 @@ def build_midi_dataset(args):
         recur=args.r,
         overwrite=True,
     )
+
+    if args.split:
+        assert 0.0 < args.split < 1.0, "Invalid range give for --split"
+        MidiDataset.split_from_file(
+            load_path=args.save_path,
+            train_val_ratio=args.split,
+        )
 
 
 def _parse_tokenized_dataset_args():
