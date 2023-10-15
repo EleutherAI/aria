@@ -82,7 +82,9 @@ def _parse_midi_dataset_args():
     argp.add_argument("dir", help="directory containing midi files")
     argp.add_argument("save_path", help="path to save dataset")
     argp.add_argument("-r", action="store_true", help="recursively search dirs")
-    argp.add_argument("--split", type=float, help="create train/val split")
+    argp.add_argument(
+        "--split", type=float, help="create train/val split", default=0.95
+    )
 
     return argp.parse_args(sys.argv[2:])
 
