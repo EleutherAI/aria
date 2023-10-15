@@ -7,11 +7,9 @@ import sys
 
 def _parse_sample_args():
     argp = argparse.ArgumentParser(prog="run.py sample")
+    argp.add_argument("model", help="name of model config file")
     argp.add_argument("ckpt_path", help="path to model checkpoint")
     argp.add_argument("midi_path", help="path to midi file")
-    argp.add_argument(
-        "-name", help="name of model (config)", type=str, required=True
-    )
     argp.add_argument(
         "-var", help="number of variations", type=int, required=True
     )
@@ -35,7 +33,7 @@ def sample(args):
 
     assert cuda_is_available() is True, "CUDA device not available"
 
-    model_name = args.name
+    model_name = args.model
     ckpt_path = args.ckpt_path
     midi_path = args.midi_path
     num_variations = args.var
@@ -54,6 +52,7 @@ def sample(args):
 
     # Load and format prompts
     midi_dict = MidiDict.from_midi(mid_path=midi_path)
+    print(f"Extracted metadata: {midi_dict.metadata}")
     prompt_seq = tokenizer.tokenize(midi_dict=midi_dict)
     prompt_seq = prompt_seq[:truncate_len]
     prompts = [prompt_seq for _ in range(num_variations)]
@@ -74,6 +73,8 @@ def sample(args):
         res_midi_dict = tokenizer.detokenize(tokenized_seq)
         res_midi = res_midi_dict.to_midi()
         res_midi.save(f"samples/res_{idx + 1}.mid")
+
+    print("Results saved to samples/")
 
 
 def _parse_midi_dataset_args():

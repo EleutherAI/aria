@@ -73,7 +73,7 @@
         },
         "dataset_gen_args": {
             "max_seq_len": 2048,
-            "stride_len": 1024
+            "stride_len": 256
         }
     },
 

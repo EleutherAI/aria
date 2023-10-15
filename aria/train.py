@@ -173,9 +173,9 @@ def get_dataloaders(
         train_dataset.set_transform(
             [
                 tokenizer.export_chord_mixup(),
-                tokenizer.export_velocity_aug(2),
-                tokenizer.export_pitch_aug(5),
-                tokenizer.export_tempo_aug(0.15),
+                tokenizer.export_velocity_aug(1),
+                tokenizer.export_pitch_aug(4),
+                tokenizer.export_tempo_aug(0.1),
             ]
         )
 
