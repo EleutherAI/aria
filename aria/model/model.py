@@ -224,6 +224,9 @@ class Transformer(nn.Module):
 
         assert src.shape[1] <= self.model_config.max_seq_len, "Too long."
 
+        # NOTE: If you want to use gradient checkpointing then you must
+        # remove torch.compile from the train script as this is not currently
+        # supported.
         # Implements gradient checkpoints on Encoder Layers.
         if self.model_config.grad_checkpoint is True:
             for layer in self.encode_layers:
@@ -238,6 +241,7 @@ class Transformer(nn.Module):
                     create_custom_forward(layer),
                     hidden_states,
                     preserve_rng_state=True,
+                    use_reentrant=True,
                 )
 
         else:

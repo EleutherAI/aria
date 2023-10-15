@@ -119,12 +119,18 @@ def get_pretrain_optim(
     num_epochs: int,
     steps_per_epoch: int,
 ):
-    WARMUP_STEPS = 500
-    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    WARMUP_STEPS = 1000
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=3e-4,
+        weight_decay=0.1,
+        betas=(0.9, 0.95),
+        eps=1e-5,
+    )
 
     warmup_lrs = torch.optim.lr_scheduler.LinearLR(
         optimizer,
-        start_factor=0.00001,
+        start_factor=0.000001,
         end_factor=1,
         total_iters=WARMUP_STEPS,
     )
@@ -376,7 +382,7 @@ def train(
             steps_per_checkpoint > 1
         ), "Invalid checkpoint mode value (too small)"
 
-    TRAILING_LOSS_STEPS = 15
+    TRAILING_LOSS_STEPS = 200
     PAD_ID = train_dataloader.dataset.tokenizer.pad_id
     logger = get_logger(__name__)  # Accelerate logger
     project_dir = accelerator.project_dir
@@ -478,8 +484,8 @@ def resume_pretrain(
         f"model_name={model_name}, "
         f"epochs={epochs}, "
         f"batch_size={batch_size}, "
-        f"num_workers={num_workers}"
-        f"checkpoint_dir={checkpoint_dir}"
+        f"num_workers={num_workers}, "
+        f"checkpoint_dir={checkpoint_dir}, "
         f"resume_step={resume_step}"
     )
     if steps_per_checkpoint:
