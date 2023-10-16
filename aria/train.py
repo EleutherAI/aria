@@ -123,7 +123,7 @@ def get_pretrain_optim(
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=3e-4,
-        weight_decay=0.1,
+        weight_decay=0.01,
         betas=(0.9, 0.95),
         eps=1e-5,
     )
@@ -174,8 +174,8 @@ def get_dataloaders(
             [
                 tokenizer.export_chord_mixup(),
                 tokenizer.export_velocity_aug(1),
-                tokenizer.export_pitch_aug(4),
-                tokenizer.export_tempo_aug(0.1),
+                tokenizer.export_pitch_aug(5),
+                tokenizer.export_tempo_aug(0.15),
             ]
         )
 

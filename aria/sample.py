@@ -26,8 +26,8 @@ def greedy_sample(
     max_seq_len: int,
     max_gen_len: int,
     force_end=False,
-    temperature: float = 0.75,
-    top_p: float = 0.9,
+    temperature: float = 0.85,
+    top_p: float = 0.95,
 ):
     """Performs greedy (top_p) autoregressive sampling on a batch of prompts.
 
@@ -56,7 +56,7 @@ def greedy_sample(
 
     if force_end:
         assert (
-            total_len - max_prompt_size > 110
+            total_len - max_prompt_size > 130
         ), "prompt too long to use force_end=True"
 
     tokens = torch.full((bsz, total_len), pad_id).cuda()
@@ -67,8 +67,8 @@ def greedy_sample(
     input_text_mask = tokens != pad_id
     start_pos = min_prompt_size
     for cur_pos in range(start_pos, total_len):
-        print(cur_pos)
         logits = model.forward(tokens[:, :cur_pos])[:, -1, :]
+
         if temperature > 0:
             probs = torch.softmax(logits / temperature, dim=-1)
             next_token = sample_top_p(probs, top_p)
@@ -81,14 +81,18 @@ def greedy_sample(
         )
 
         # Insert dim tokens
-        if force_end and cur_pos >= total_len - 110:
+        if force_end and cur_pos >= total_len - 130:
             for _idx in range(bsz):
                 if (
                     dim_tok_inserted[_idx] is False
                     and tokenizer.id_to_tok[next_token[_idx].item()][0] != "dur"
                 ):
                     next_token[_idx] = tokenizer.tok_to_id[tokenizer.dim_tok]
-                    dim_tok_inserted[_idx] = True
+
+        # Update dim_tok_inserted
+        for _idx in range(bsz):
+            if next_token[_idx] == tokenizer.tok_to_id[tokenizer.dim_tok]:
+                dim_tok_inserted[_idx] = True
 
         tokens[:, cur_pos] = next_token
 

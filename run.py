@@ -16,6 +16,8 @@ def _parse_sample_args():
     argp.add_argument(
         "-trunc", help="length to truncated prompt", type=int, required=True
     )
+    argp.add_argument("-e", action="store_true", help="enable force end")
+    argp.add_argument("-l", type=int, help="generation length")
 
     return argp.parse_args(sys.argv[2:])
 
@@ -38,6 +40,7 @@ def sample(args):
     midi_path = args.midi_path
     num_variations = args.var
     truncate_len = args.trunc
+    force_end = args.e
 
     # This method of loading checkpoints needs to change
     tokenizer = TokenizerLazy(return_tensors=True)
@@ -45,6 +48,11 @@ def sample(args):
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerLM(model_config).cuda()
     model.load_state_dict(torch.load(ckpt_path))
+
+    if args.l and 0 < args.l < model.max_seq_len:
+        max_gen_len = args.l
+    else:
+        max_gen_len = model.max_seq_len
 
     assert (
         truncate_len < model_config.max_seq_len
@@ -62,8 +70,9 @@ def sample(args):
         model,
         tokenizer,
         prompts,
+        force_end=force_end,
         max_seq_len=model_config.max_seq_len,
-        max_gen_len=model_config.max_seq_len,
+        max_gen_len=max_gen_len,
     )
 
     if os.path.isdir("samples") is False:
@@ -102,7 +111,7 @@ def build_midi_dataset(args):
     )
 
     if args.split:
-        assert 0.0 < args.split < 1.0, "Invalid range give for --split"
+        assert 0.0 < args.split < 1.0, "Invalid range given for --split"
         MidiDataset.split_from_file(
             load_path=args.save_path,
             train_val_ratio=args.split,
