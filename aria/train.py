@@ -244,6 +244,11 @@ def train(
                 break
 
         flop_counter = FlopCounterMode(display=False)
+        logger.info(
+            f"Model has "
+            f"{'{:,}'.format(sum(p.numel() for p in model.parameters() if p.requires_grad))} "
+            "parameters"
+        )
         logger.info("Profiling FLOP/s")
         _bench()
 
