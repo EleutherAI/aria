@@ -7,17 +7,17 @@ import sys
 
 def _parse_sample_args():
     argp = argparse.ArgumentParser(prog="run.py sample")
+    argp.add_argument("model", help="name of model config file")
     argp.add_argument("ckpt_path", help="path to model checkpoint")
     argp.add_argument("midi_path", help="path to midi file")
-    argp.add_argument(
-        "-name", help="name of model (config)", type=str, required=True
-    )
     argp.add_argument(
         "-var", help="number of variations", type=int, required=True
     )
     argp.add_argument(
         "-trunc", help="length to truncated prompt", type=int, required=True
     )
+    argp.add_argument("-e", action="store_true", help="enable force end")
+    argp.add_argument("-l", type=int, help="generation length")
 
     return argp.parse_args(sys.argv[2:])
 
@@ -30,16 +30,17 @@ def sample(args):
     from aria.model import TransformerLM, ModelConfig
     from aria.config import load_model_config
     from aria.tokenizer import TokenizerLazy
-    from aria.sample import batch_sample_model
+    from aria.sample import greedy_sample
     from aria.data.midi import MidiDict
 
     assert cuda_is_available() is True, "CUDA device not available"
 
-    model_name = args.name
+    model_name = args.model
     ckpt_path = args.ckpt_path
     midi_path = args.midi_path
     num_variations = args.var
     truncate_len = args.trunc
+    force_end = args.e
 
     # This method of loading checkpoints needs to change
     tokenizer = TokenizerLazy(return_tensors=True)
@@ -48,23 +49,30 @@ def sample(args):
     model = TransformerLM(model_config).cuda()
     model.load_state_dict(torch.load(ckpt_path))
 
+    if args.l and 0 < args.l < model.max_seq_len:
+        max_gen_len = args.l
+    else:
+        max_gen_len = model.max_seq_len
+
     assert (
         truncate_len < model_config.max_seq_len
     ), "Truncate length longer than maximum length supported by the model."
 
     # Load and format prompts
     midi_dict = MidiDict.from_midi(mid_path=midi_path)
+    print(f"Extracted metadata: {midi_dict.metadata}")
     prompt_seq = tokenizer.tokenize(midi_dict=midi_dict)
     prompt_seq = prompt_seq[:truncate_len]
     prompts = [prompt_seq for _ in range(num_variations)]
 
     # Sample
-    results = batch_sample_model(
+    results = greedy_sample(
         model,
         tokenizer,
         prompts,
-        model_config=model_config.max_seq_len,
-        max_gen_len=model_config.max_seq_len,
+        force_end=force_end,
+        max_seq_len=model_config.max_seq_len,
+        max_gen_len=max_gen_len,
     )
 
     if os.path.isdir("samples") is False:
@@ -75,12 +83,17 @@ def sample(args):
         res_midi = res_midi_dict.to_midi()
         res_midi.save(f"samples/res_{idx + 1}.mid")
 
+    print("Results saved to samples/")
+
 
 def _parse_midi_dataset_args():
     argp = argparse.ArgumentParser(prog="run.py midi_dataset")
     argp.add_argument("dir", help="directory containing midi files")
     argp.add_argument("save_path", help="path to save dataset")
     argp.add_argument("-r", action="store_true", help="recursively search dirs")
+    argp.add_argument(
+        "--split", type=float, help="create train/val split", required=False
+    )
 
     return argp.parse_args(sys.argv[2:])
 
@@ -96,6 +109,13 @@ def build_midi_dataset(args):
         recur=args.r,
         overwrite=True,
     )
+
+    if args.split:
+        assert 0.0 < args.split < 1.0, "Invalid range given for --split"
+        MidiDataset.split_from_file(
+            load_path=args.save_path,
+            train_val_ratio=args.split,
+        )
 
 
 def _parse_tokenized_dataset_args():

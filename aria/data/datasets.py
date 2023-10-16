@@ -89,6 +89,7 @@ class MidiDataset:
         repeatable: bool = False,
         overwrite: bool = False,
     ):
+        logger = setup_logger()
         path = Path(load_path)
         train_save_path = path.with_name(f"{path.stem}_train{path.suffix}")
         val_save_path = path.with_name(f"{path.stem}_val{path.suffix}")
@@ -107,6 +108,8 @@ class MidiDataset:
             random.seed(42)
 
         idx_original, idx_train, idx_val = 0, 0, 0
+
+        logger.info(f"Creating train/val split with ratio {train_val_ratio}")
         with (
             jsonlines.open(load_path) as dataset,
             jsonlines.open(train_save_path, mode="w") as train_dataset,
@@ -121,7 +124,7 @@ class MidiDataset:
                     idx_val += 1
                     val_dataset.write(entry)
 
-        logging.info(
+        logger.info(
             f"Succesfully split into train ({idx_train}) and validation ({idx_val}) sets"
         )
 
@@ -506,6 +509,7 @@ class TokenizedDataset(torch.utils.data.Dataset):
                 deterministic by setting a random seed.
             overwrite (bool): If True, will overwrite the file at save_path.
         """
+        logger = setup_logger()
         if save_path:
             assert (
                 self.file_path != save_path
@@ -525,6 +529,7 @@ class TokenizedDataset(torch.utils.data.Dataset):
         shuffled_index = deepcopy(self.index)
         random.shuffle(shuffled_index)
 
+        logger.info(f"Creating shuffled version of dataset at {self.file_path}")
         with jsonlines.open(save_path, mode="w") as writer:
             writer.write(self.config)
             for byte_idx in shuffled_index:

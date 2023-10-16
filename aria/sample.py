@@ -19,14 +19,15 @@ from aria.tokenizer import Tokenizer
 
 
 @torch.autocast(device_type="cuda", dtype=torch.float16)
-def batch_sample_model(
+def greedy_sample(
     model: TransformerLM,
     tokenizer: Tokenizer,
     prompts: List[list],
     max_seq_len: int,
     max_gen_len: int,
-    temperature: float = 0.75,
-    top_p: float = 0.9,
+    force_end=False,
+    temperature: float = 0.85,
+    top_p: float = 0.95,
 ):
     """Performs greedy (top_p) autoregressive sampling on a batch of prompts.
 
@@ -53,31 +54,53 @@ def batch_sample_model(
     max_prompt_size = max([len(t) for t in prompts])
     total_len = min(max_seq_len, max_gen_len + max_prompt_size)
 
+    if force_end:
+        assert (
+            total_len - max_prompt_size > 130
+        ), "prompt too long to use force_end=True"
+
     tokens = torch.full((bsz, total_len), pad_id).cuda()
     for idx, unencoded_seq in enumerate(prompts):
         tokens[idx, : len(unencoded_seq)] = tokenizer.encode(unencoded_seq)
 
+    dim_tok_inserted = [False for _ in range(bsz)]
     input_text_mask = tokens != pad_id
     start_pos = min_prompt_size
     for cur_pos in range(start_pos, total_len):
         logits = model.forward(tokens[:, :cur_pos])[:, -1, :]
+
         if temperature > 0:
             probs = torch.softmax(logits / temperature, dim=-1)
             next_token = sample_top_p(probs, top_p)
         else:
             next_token = torch.argmax(logits, dim=-1)
         next_token = next_token.reshape(-1)
-        # only replace token if prompt has already been generated
+        # Only replace token if prompt has already been generated
         next_token = torch.where(
             input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
         )
+
+        # Insert dim tokens
+        if force_end and cur_pos >= total_len - 130:
+            for _idx in range(bsz):
+                if (
+                    dim_tok_inserted[_idx] is False
+                    and tokenizer.id_to_tok[next_token[_idx].item()][0] != "dur"
+                ):
+                    next_token[_idx] = tokenizer.tok_to_id[tokenizer.dim_tok]
+
+        # Update dim_tok_inserted
+        for _idx in range(bsz):
+            if next_token[_idx] == tokenizer.tok_to_id[tokenizer.dim_tok]:
+                dim_tok_inserted[_idx] = True
+
         tokens[:, cur_pos] = next_token
 
     decoded = []
     for idx, seq in enumerate(tokens.tolist()):
-        # cut to max gen len
+        # Cut to max gen len
         seq = seq[: len(prompts[idx]) + max_gen_len]
-        # cut to eos tok if any
+        # Cut to eos tok if any
         try:
             seq = seq[: seq.index(eos_id)]
         except ValueError:
