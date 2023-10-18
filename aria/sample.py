@@ -18,6 +18,10 @@ from aria.tokenizer import Tokenizer
 # - Enable sampling sequences longer than max_seq_len by truncating
 
 
+# Some good settings:
+# temp=0.85, top_p=0.9, cfg_gamma=1.4
+
+
 @torch.autocast(device_type="cuda", dtype=torch.float16)
 def greedy_sample(
     model: TransformerLM,
@@ -26,9 +30,9 @@ def greedy_sample(
     max_seq_len: int,
     max_gen_len: int,
     force_end=False,
-    temperature: float = 0.8,
-    top_p: float = 0.95,
-    cfg_gamma: float | None = None,
+    temperature: float = 0.85,
+    top_p: float = 0.9,
+    cfg_gamma: float | None = 1.2,
 ):
     """Performs greedy (top_p) autoregressive sampling on a batch of prompts.
 
@@ -65,6 +69,8 @@ def greedy_sample(
             total_len - max_prompt_size > 130
         ), "prompt too long to use force_end=True"
 
+    print(f"Using hyperparams: temp={temperature}, top_p={top_p}, gamma={cfg_gamma}, gen_len={max_gen_len}")
+
     tokens = torch.full((bsz, total_len), pad_id).cuda()
     for idx, unencoded_seq in enumerate(prompts):
         tokens[idx, : len(unencoded_seq)] = tokenizer.encode(unencoded_seq)
@@ -74,7 +80,7 @@ def greedy_sample(
     start_pos = min_prompt_size
     for cur_pos in range(start_pos, total_len):
         logits = model.forward(tokens[:, :cur_pos])[:, -1, :]
-        if cfg_gamma:
+        if cfg_gamma and max_prompt_size < curr_pos:
             uncond_logits = model.forward(tokens[:, max_prompt_size:cur_pos])[
                 :, -1, :
             ]

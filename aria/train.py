@@ -175,7 +175,7 @@ def get_dataloaders(
                 tokenizer.export_chord_mixup(),
                 tokenizer.export_velocity_aug(1),
                 tokenizer.export_pitch_aug(5),
-                tokenizer.export_tempo_aug(0.15),
+                tokenizer.export_tempo_aug(0.2),
             ]
         )
 
