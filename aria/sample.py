@@ -26,8 +26,9 @@ def greedy_sample(
     max_seq_len: int,
     max_gen_len: int,
     force_end=False,
-    temperature: float = 0.85,
+    temperature: float = 0.8,
     top_p: float = 0.95,
+    cfg_gamma: float | None = None,
 ):
     """Performs greedy (top_p) autoregressive sampling on a batch of prompts.
 
@@ -54,6 +55,11 @@ def greedy_sample(
     max_prompt_size = max([len(t) for t in prompts])
     total_len = min(max_seq_len, max_gen_len + max_prompt_size)
 
+    if cfg_gamma:
+        assert (
+            min_prompt_size == max_prompt_size
+        ), "CFG not supported with varying prompts"
+
     if force_end:
         assert (
             total_len - max_prompt_size > 130
@@ -68,6 +74,11 @@ def greedy_sample(
     start_pos = min_prompt_size
     for cur_pos in range(start_pos, total_len):
         logits = model.forward(tokens[:, :cur_pos])[:, -1, :]
+        if cfg_gamma:
+            uncond_logits = model.forward(tokens[:, max_prompt_size:cur_pos])[
+                :, -1, :
+            ]
+            logits = uncond_logits + cfg_gamma * (logits - uncond_logits)
 
         if temperature > 0:
             probs = torch.softmax(logits / temperature, dim=-1)
