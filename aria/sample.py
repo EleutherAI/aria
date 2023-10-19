@@ -69,7 +69,9 @@ def greedy_sample(
             total_len - max_prompt_size > 130
         ), "prompt too long to use force_end=True"
 
-    print(f"Using hyperparams: temp={temperature}, top_p={top_p}, gamma={cfg_gamma}, gen_len={max_gen_len}")
+    print(
+        f"Using hyperparams: temp={temperature}, top_p={top_p}, gamma={cfg_gamma}, gen_len={max_gen_len}"
+    )
 
     tokens = torch.full((bsz, total_len), pad_id).cuda()
     for idx, unencoded_seq in enumerate(prompts):
@@ -80,7 +82,7 @@ def greedy_sample(
     start_pos = min_prompt_size
     for cur_pos in range(start_pos, total_len):
         logits = model.forward(tokens[:, :cur_pos])[:, -1, :]
-        if cfg_gamma and max_prompt_size < curr_pos:
+        if cfg_gamma and max_prompt_size < cur_pos:
             uncond_logits = model.forward(tokens[:, max_prompt_size:cur_pos])[
                 :, -1, :
             ]

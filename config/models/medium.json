@@ -5,5 +5,5 @@
     "ff_mult": 4,
     "drop_p": 0.1,
     "max_seq_len": 2048,
-    "grad_checkpoint": true
+    "grad_checkpoint": false
 }
