@@ -9,11 +9,8 @@ setup(
     version="0.0.1",
     description="",
     author="",
-    packages=find_packages(),
-    data_files=[
-        ("config", ["config/*.json"]),
-        ("config/models", ["config/models/*.json"]),
-    ],
+    packages=find_packages() + ["config"],
+    include_package_data=True,
     install_requires=[
         str(r)
         for r in pkg_resources.parse_requirements(
