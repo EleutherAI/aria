@@ -10,6 +10,10 @@ setup(
     description="",
     author="",
     packages=find_packages(),
+    data_files=[
+        ("config", ["config/*.json"]),
+        ("config/models", ["config/models/*.json"]),
+    ],
     install_requires=[
         str(r)
         for r in pkg_resources.parse_requirements(
