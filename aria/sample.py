@@ -32,7 +32,7 @@ def greedy_sample(
     force_end=False,
     temperature: float = 0.85,
     top_p: float = 0.9,
-    cfg_gamma: float | None = 1.2,
+    cfg_gamma: float | None = 1.3,
 ):
     """Performs greedy (top_p) autoregressive sampling on a batch of prompts.
 
