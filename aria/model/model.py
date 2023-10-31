@@ -105,7 +105,7 @@ class FusedEncoderBlock(nn.Module):
         model_config (ModelConfig): Model config settings.
     """
 
-    def __init__(self, model_config: ModelConfig):
+    def __init__(self, model_config: ModelConfig, use_yarn=False):
         super().__init__()
 
         self.drop_p = model_config.drop_p
@@ -114,7 +114,15 @@ class FusedEncoderBlock(nn.Module):
         self.max_seq_len = model_config.max_seq_len
 
         # Positional embeddings
-        self.rotary_emb = RotaryEmbedding(self.d_head)
+        if use_yarn:
+            # todo: need more testing on this
+            self.rotary_emb = DynamicYaRNScaledRotaryEmbedding(self.d_head,
+                                                               max_position_embeddings=8192,
+                                                               original_max_position_embeddings=2048,
+                                                               beta_fast = 16,
+                                                               beta_slow = 2)
+        else:
+            self.rotary_emb = RotaryEmbedding(self.d_head)
 
         # Attention
         self.mixed_qkv = nn.Linear(

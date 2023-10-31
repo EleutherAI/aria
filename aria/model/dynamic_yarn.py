@@ -1,3 +1,5 @@
+# Taken from https://github.com/jquesnelle/yarn/blob/master/scaled_rope/LlamaDynamicYaRNScaledRotaryEmbedding.py
+
 import torch
 import math
 
