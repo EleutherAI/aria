@@ -31,35 +31,45 @@ class ModelConfig:
 
 
 # Taken from GPT-NeoX see:
-# https://github.com/EleutherAI/gpt-neox/blob/main/megatron/model/positional_embeddings.py
+# https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt_neox/modeling_gpt_neox.py
 class RotaryEmbedding(torch.nn.Module):
-    def __init__(self, dim, base=10000, precision=torch.half):
+    def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
         super().__init__()
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        if device is None: # todo: maybe we don't need this...
+            device = "cuda" if torch.cuda.is_available() else None
+
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float().to(device) / self.dim))
         self.register_buffer("inv_freq", inv_freq)
-        self.seq_len_cached = None
-        self.cos_cached = None
-        self.sin_cached = None
-        self.precision = precision
 
-    def forward(self, x, seq_dim=1, seq_len=None):
-        """Returns tuple cos, sin"""
-        if seq_len is None:
-            seq_len = x.shape[seq_dim]
-        if seq_len != self.seq_len_cached:
-            self.seq_len_cached = seq_len
-            t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
-            freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-            emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
-            if self.precision == torch.bfloat16:
-                emb = emb.float()
-            self.cos_cached = emb.cos()[:, None, None, :]
-            self.sin_cached = emb.sin()[:, None, None, :]
-            if self.precision == torch.bfloat16:
-                self.cos_cached = self.cos_cached.bfloat16()
-                self.sin_cached = self.sin_cached.bfloat16()
+        # Build here to make `torch.jit.trace` work.
+        self._set_cos_sin_cache(
+            seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
+        )
 
-        return self.cos_cached, self.sin_cached
+    def _set_cos_sin_cache(self, seq_len, device, dtype):
+        self.max_seq_len_cached = seq_len
+        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype)
+
+        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
+        # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
+        self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
+        #self.cos_cached = emb.cos().to(dtype)
+        #self.sin_cached = emb.sin().to(dtype)
+
+    def forward(self, x, seq_len=None):
+        # x: [bs, num_attention_heads, seq_len, head_size]
+        if seq_len > self.max_seq_len_cached:
+            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
+
+        return (
+            self.cos_cached[:seq_len].to(dtype=x.dtype),
+            self.sin_cached[:seq_len].to(dtype=x.dtype),
+        )
 
 
 def rotate_half(x):
@@ -71,8 +81,10 @@ def rotate_half(x):
 
 
 @torch.jit.script
-def apply_rotary_pos_emb(q, k, cos, sin):
+def apply_rotary_pos_emb(q, k, cos, sin, past_len: int = 0):
     """Returns tuple (xq, xk). Expects shape (s_len, b_sz, n_head, d_head)."""
+    cos = cos[past_len:past_len + q.size(0), None, None]
+    sin = sin[past_len:past_len + q.size(0), None, None]
     return (q * cos) + (rotate_half(q) * sin), (k * cos) + (
         rotate_half(k) * sin
     )
@@ -132,13 +144,14 @@ class FusedEncoderBlock(nn.Module):
         self.norm1 = nn.LayerNorm(model_config.d_model)
         self.norm2 = nn.LayerNorm(model_config.d_model)
 
-    def forward(self, x: torch.Tensor):
-        x = x + self._att_block(self.norm1(x))
+    def forward(self, x: torch.Tensor, use_cache=False, past_kv=None):
+        att, kv = self._att_block(self.norm1(x), use_cache=use_cache, past_kv=past_kv)
+        x = x + att
         x = x + self._ff_block(self.norm2(x))
 
-        return x
+        return x, kv
 
-    def _att_block(self, x: torch.Tensor):
+    def _att_block(self, x: torch.Tensor, use_cache=False, past_kv=None):
         batch_size, seq_len, _ = x.shape
         mixed_qkv = self.mixed_qkv(x)
         xq, xk, xv = mixed_qkv.chunk(3, -1)
@@ -148,13 +161,18 @@ class FusedEncoderBlock(nn.Module):
         xk = xk.view(batch_size, seq_len, self.n_heads, self.d_head)
         xv = xv.view(batch_size, seq_len, self.n_heads, self.d_head)
 
+        past_len = 0 if past_kv is None else past_kv[0].size(1)
         # apply_rotary_post_emb expects: (s_len, b_sz, n_head, d_head)
-        cos, sin = self.rotary_emb(x=xv, seq_dim=1, seq_len=seq_len)
+        cos, sin = self.rotary_emb(x=xv, seq_len=seq_len + past_len)
         xq, xk = xq.transpose(0, 1), xk.transpose(0, 1)
-        xq, xk = apply_rotary_pos_emb(q=xq, k=xk, cos=cos, sin=sin)
+        xq, xk = apply_rotary_pos_emb(q=xq, k=xk, cos=cos, sin=sin, past_len=past_len)
         xq, xk = xq.transpose(0, 1), xk.transpose(0, 1)
         # xq, xk: (b_sz, s_len, n_head, d_head)
-
+        if past_kv is not None:
+            assert len(past_kv) == 2
+            xk = torch.concat([past_kv[0], xk], axis=1)
+            xv = torch.concat([past_kv[1], xv], axis=1)
+        kv = (xk, xv)
         # Reshape for attention calculation: (b_sz, n_head, s_len, d_head)
         xq = xq.transpose(1, 2)
         xk = xk.transpose(1, 2)
@@ -168,19 +186,31 @@ class FusedEncoderBlock(nn.Module):
 
         # Using beta torch functionality (subject to change)
         # See - https://shorturl.at/jtI17
-        att = F.scaled_dot_product_attention(
-            query=xq,
-            key=xk,
-            value=xv,
-            dropout_p=att_dropout,
-            is_causal=True,
-        )
+        if past_kv is None:
+            att = F.scaled_dot_product_attention(
+                query=xq,
+                key=xk,
+                value=xv,
+                dropout_p=att_dropout,
+                is_causal=True,
+            )
+        else:
+            assert xq.size(2) == 1
+            mask = torch.ones(1, xk.size(2), dtype=bool, device=xk.device)
+            att = F.scaled_dot_product_attention(
+                query=xq,
+                key=xk,
+                value=xv,
+                dropout_p=att_dropout,
+                is_causal=False,
+                attn_mask=mask,
+            )
 
         # Reshape for out: (b_sz, s_len, n_head, d_head)
         out = att.transpose(1, 2).contiguous()
         out = out.view(batch_size, seq_len, self.n_heads * self.d_head)
 
-        return self.resid_dropout(self.att_proj_linear(out))
+        return self.resid_dropout(self.att_proj_linear(out)), kv if use_cache else None
 
     def _ff_block(self, x: torch.Tensor):
         x = self.ff_linear_2(self.ff_activation(self.ff_linear_1(x)))
@@ -209,7 +239,7 @@ class Transformer(nn.Module):
         for _ in range(model_config.n_layers):
             self.encode_layers.append(FusedEncoderBlock(model_config))
 
-    def forward(self, src: torch.Tensor):
+    def forward(self, src: torch.Tensor, use_cache=False, past_kv=None):
         """Forward pass of Transformer.
 
         Args:
@@ -245,10 +275,13 @@ class Transformer(nn.Module):
                 )
 
         else:
-            for layer in self.encode_layers:
-                hidden_states = layer(hidden_states)
+            new_past_kv = []
+            past_kv = [None] * len(self.encode_layers) if past_kv is None else past_kv
+            for layer, _kv in zip(self.encode_layers, past_kv):
+                hidden_states, kv = layer(hidden_states, use_cache=use_cache, past_kv=_kv)
+                new_past_kv.append(kv)
 
-        return self.out_layer_norm(hidden_states)
+        return self.out_layer_norm(hidden_states), new_past_kv if use_cache else None
 
 
 class TransformerLM(nn.Module):
@@ -267,7 +300,7 @@ class TransformerLM(nn.Module):
             model_config.d_model, model_config.vocab_size, bias=False
         )
 
-    def forward(self, src: torch.Tensor):
+    def forward(self, src: torch.Tensor, use_cache=False, past_kv=None):
         """Forward pass of Transformer decoder with LM head.
 
         Args:
@@ -278,6 +311,10 @@ class TransformerLM(nn.Module):
             torch.tensor: Forward pass of src through Transformer and LM head.
                 Has shape (batch_size, seq_len, vocab_size).
         """
-        logits = self.lm_head(self.model(src))
+        hidden, past_kv = self.model(src, use_cache=use_cache, past_kv=past_kv)
+        logits = self.lm_head(hidden)
 
-        return logits
+        if use_cache:
+            return logits, past_kv
+        else:
+            return logits
