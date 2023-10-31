@@ -114,9 +114,16 @@ def greedy_sample(
     )
 
     neg_min_len = min(total_len, min(len(a) for a in neg_prompts))
-    neg_max_len = max(total_len, max(len(a) for a in neg_prompts))  # only used when alpha is not None
+    neg_max_len = max(total_len, max(len(a) for a in neg_prompts))
+    neg_prompt_tensors = torch.stack(
+        [
+            torch.concat(
+                [torch.fill(neg_max_len - len(neg_seq), pad_id), tokenizer.encode(neg_seq)]
+            ) for neg_seq in neg_prompts
+        ], axis=0
+    ).cuda()
     neg_len = neg_min_len if neg_prompt_len is None else min(neg_min_len, neg_prompt_len)
-    neg_tokens = torch.tensor([tokenizer.encode(neg_seq)[:neg_len] for neg_seq in neg_prompts]).cuda()
+    neg_tokens = neg_prompt_tensors[:, :neg_len]
 
     tokens = torch.full((bsz, total_len), pad_id).cuda()
     for idx, (unencoded_seq, neg_seq) in enumerate(zip(prompts, neg_prompts)):
@@ -170,9 +177,8 @@ def greedy_sample(
 
             tokens[:, cur_pos] = next_token
             if alpha is not None and cur_pos < neg_max_len and cur_pos < (1 - alpha) * total_len + alpha * start_pos:
-                mask = torch.tensor([cur_pos < len(neg_seq) for neg_seq in neg_prompts]).to(next_token.device)
-                _neg_tokens = torch.tensor([neg_seq[cur_pos] if cur_pos < len(neg_seq) else pad_id for neg_seq in neg_prompts]).to(next_token.device)
-                neg_previous_token = torch.where(mask, _neg_tokens, next_token)
+                _neg_tokens = neg_prompt_tensors[:, cur_pos]
+                neg_previous_token = torch.where(_neg_tokens != pad_id, _neg_tokens, next_token)
             else:
                 neg_previous_token = next_token
 
