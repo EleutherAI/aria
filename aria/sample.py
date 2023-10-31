@@ -7,6 +7,7 @@
 # This software may be used and distributed according to the terms of the GNU
 # General Public License version 3.
 
+import math
 import torch
 
 from typing import List
@@ -32,7 +33,7 @@ def _get_cfg_coeff(cfg_gamma, cfg_mode, cur_pos, start_pos, total_len):
             return cfg_gamma * 2 * (1 - p) + (2 * p - 1)
     elif cfg_mode == "sine":
         p = (cur_pos - start_pos) / (total_len - start_pos)
-        return (cfg_gamma - 1) * torch.sin(p * 3.14159) + 1
+        return (cfg_gamma - 1) * math.sin(p * 3.14159) + 1
     else:
         raise ValueError(f"Unknown cfg_mode: {cfg_mode}")
 
@@ -118,7 +119,7 @@ def greedy_sample(
     neg_prompt_tensors = torch.stack(
         [
             torch.concat(
-                [torch.fill(neg_max_len - len(neg_seq), pad_id), tokenizer.encode(neg_seq)]
+                [torch.full((neg_max_len - len(neg_seq),), pad_id), tokenizer.encode(neg_seq)]
             ) for neg_seq in neg_prompts
         ], axis=0
     ).cuda()
@@ -145,7 +146,12 @@ def greedy_sample(
             if cfg_gamma is not None and max_prompt_size < cur_pos:
                 coeff = _get_cfg_coeff(cfg_gamma, cfg_mode, cur_pos, start_pos, total_len)
 
-                neg_tok = neg_tokens if cur_pos == start_pos else (neg_previous_token or tokens[:, cur_pos-1:cur_pos])
+                if cur_pos == start_pos:
+                    neg_tok = neg_tokens
+                elif neg_previous_token is None:
+                    neg_tok = tokens[:, cur_pos-1:cur_pos]
+                else:
+                    neg_tok = neg_previous_token[:, None]
                 uncond_logits, cfg_kv = model.forward(neg_tok, use_cache=True, past_kv=cfg_kv)
                 uncond_logits = uncond_logits[:, -1, :]
                 logits = uncond_logits + coeff * (logits - uncond_logits)
@@ -176,8 +182,8 @@ def greedy_sample(
                     dim_tok_inserted[_idx] = True
 
             tokens[:, cur_pos] = next_token
-            if alpha is not None and cur_pos < neg_max_len and cur_pos < (1 - alpha) * total_len + alpha * start_pos:
-                _neg_tokens = neg_prompt_tensors[:, cur_pos]
+            if alpha is not None and cur_pos - start_pos < neg_max_len - neg_len and cur_pos < (1 - alpha) * total_len + alpha * start_pos:
+                _neg_tokens = neg_prompt_tensors[:, cur_pos - start_pos + neg_len]
                 neg_previous_token = torch.where(_neg_tokens != pad_id, _neg_tokens, next_token)
             else:
                 neg_previous_token = next_token
