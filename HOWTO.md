@@ -4,27 +4,50 @@ Here, we will provide some code snippets demonstrating the core functionality an
 
 ## Quick Overview
 
-The `run.py` script acts as the entry point for some of the basic functionality of Aria. It has two commands.
+The `run.py` script acts as the entry point for some of the basic functionality of Aria.
 
-### Data
+### Building datasets
 
-The `data` command can be used to build datasets (MidiDict & Tokenized). You must provide the name of the tokenizer you wish to use (currently, the only option is 'lazy'). For more information about the data formats and types of datasets, refer to the DATA section of this document. To view the list of arguments, run the following command:
+The `midi-dataset` command can be used to build a MidiDataset file from a directory containing MIDI files. MidiDatasets contain MidiDict objects, a pre-processed form of MIDI ready to be tokenized. The save file adheres to the jsonl file format. To generate a MidiDataset, run:
+
+`python run.py midi-dataset -r <dir-containing-midi> <save-path>`
+
+If you also want to generate a train-val split, specify the desired train-val ratio using the flag `--split`.
+
+Given a MidiDataset file, you can create a TokenizedDataset using the the `tokenized-dataset` command. This tokenizes, truncates, and strides the MidiDict objects into a format ready to be fed into the model. The resulting file is used as a input for the training script. You must set the truncation (typically this is the max-context length supported by the model) and stride settings in the `config/config.json` file (under `data: dataset_gen_args`). To use this command, run:
+
+`run.py tokenized_dataset <midi-dataset-load_path> <save_path>`
+
+If you want to additionally create a shuffled version of the resulting dataset, use the `-s` flag.
+
+### Training 
+
+The training script (located at `aria/train.py`) is implemented using huggingface-accelerate. Pre-training can be launched via the command line with:
 
 ```
-python run.py data -h
+accelerate launch [accelerate-args] aria/train.py pretrain \
+  <model-config-name> \
+  <train-data-path> \
+  <val-data-path> \
+  -epochs <epochs> \
+  -bs <batch-size> \
+  -workers <workers>
 ```
 
-### Sampling
+Note that the model config files are stored in the `config/models` directory, you should provide the name (i.e. excluding the .json) corresponding to the model you wish to train. You can dictate the project directory (the location that logs/statistics/checkpoints are stored) using the optional `-pdir` flag. For more information on launching scripts with huggingface-accelerate see the [launch docs](https://huggingface.co/docs/accelerate/basic_tutorials/launch). 
 
-The `sample` command provides an easy way to perform autoregressive sampling. To use this, you need to have pre-downloaded model weights (feel free to message me on Discord about where you can get these). This functionality is currently implemented using PyTorch Lightning. You need to provide a path to the `model.ckpt` file. The sample command works by tokenizing the prompt MIDI file, truncating it (according to -trunc), and then using the result as a prompt for top-p autoregressive sampling. To view the list of arguments, run the following command:
+The train script can also be used to fine-tune from a pre-trained checkpoint, as well as resuming either pre-training or fine-tuning runs. For more details on this functionality, run the command
 
-```
-python run.py sample -h
-```
+`python aria/train.py finetune -h`
+`python aria/train.py resume -h`
+
+Note that when using `resume`, you should triple check that you have set the batch-size and resume-step correctly. There are no internal checks that this is the case.
 
 ## Data
 
-### MIDI
+NOTE: This following sections are outdated but may still be useful.
+
+### MIDI 
 
 Since we are attempting to model symbolic music, we need to start with RAW data that can be easily parsed into a symbolic (and sequential) form. As others have done in the past, we have chosen MIDI for this purpose. MIDI files are both ubiquitous and relatively simple to parse into a format understandable by a Transformer. To learn more about MIDI, asking ChatGPT (or GPT-Neox) is genuinely a good idea. The simple explanation is that MIDI encodes a piece of music as a series of note-on and note-off messages. Each message contains information, including the note pitch, note velocity (volume), and the number of *ticks* to wait before processing the next message. These messages are sent over a specific MIDI *channel*, which itself contains information like the type of instrument.
 

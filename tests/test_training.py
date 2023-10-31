@@ -3,7 +3,7 @@ import unittest
 import logging
 import torch
 
-from aria.train import pretrain, resume_pretrain, save_model_from_cp
+from aria.train import train, resume_train, save_model_from_cp
 from aria.tokenizer import TokenizerLazy
 from aria.model import ModelConfig, TransformerLM
 from aria.config import load_model_config
@@ -54,7 +54,7 @@ class TestTraining(unittest.TestCase):
         if os.path.isdir("./experiments/0"):
             logging.warning("Experiment logs present at ./experiments/0")
 
-        pretrain(
+        train(
             model_name="test",
             train_data_path=TRAIN_DATA_PATH,
             val_data_path=VAL_DATA_PATH,
@@ -65,7 +65,7 @@ class TestTraining(unittest.TestCase):
         )
 
         if os.path.isdir("./experiments/0/checkpoints/epoch10_step50"):
-            resume_pretrain(
+            resume_train(
                 model_name="test",
                 train_data_path=TRAIN_DATA_PATH,
                 val_data_path=VAL_DATA_PATH,

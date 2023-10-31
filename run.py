@@ -42,7 +42,6 @@ def sample(args):
     truncate_len = args.trunc
     force_end = args.e
 
-    # This method of loading checkpoints needs to change
     tokenizer = TokenizerLazy(return_tensors=True)
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
@@ -153,7 +152,7 @@ def main():
     parser.add_argument(
         "command",
         help="command to run",
-        choices=("sample", "midi_dataset", "tokenized_dataset"),
+        choices=("sample", "midi-dataset", "tokenized-dataset"),
     )
 
     # parse_args defaults to [1:] for args, but you need to
@@ -166,9 +165,9 @@ def main():
         exit(1)
     elif args.command == "sample":
         sample(args=_parse_sample_args())
-    elif args.command == "midi_dataset":
+    elif args.command == "midi-dataset":
         build_midi_dataset(args=_parse_midi_dataset_args())
-    elif args.command == "tokenized_dataset":
+    elif args.command == "tokenized-dataset":
         build_tokenized_dataset(args=_parse_tokenized_dataset_args())
     else:
         print("Unrecognized command")
