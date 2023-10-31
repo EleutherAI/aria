@@ -182,7 +182,7 @@ def greedy_sample(
                     dim_tok_inserted[_idx] = True
 
             tokens[:, cur_pos] = next_token
-            if alpha is not None and cur_pos - start_pos < neg_max_len - neg_len and cur_pos < (1 - alpha) * total_len + alpha * start_pos:
+            if alpha is not None and cur_pos - start_pos < neg_max_len - neg_len and cur_pos < alpha * total_len + (1 - alpha) * start_pos:
                 _neg_tokens = neg_prompt_tensors[:, cur_pos - start_pos + neg_len]
                 neg_previous_token = torch.where(_neg_tokens != pad_id, _neg_tokens, next_token)
             else:
