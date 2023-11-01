@@ -36,8 +36,6 @@ class ModelConfig:
 class RotaryEmbedding(torch.nn.Module):
     def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
         super().__init__()
-        if device is None: # todo: maybe we don't need this...
-            device = "cuda" if torch.cuda.is_available() else None
 
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings

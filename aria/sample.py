@@ -149,9 +149,9 @@ def greedy_sample(
                 if cur_pos == start_pos:
                     neg_tok = neg_tokens
                 elif neg_previous_token is None:
-                    neg_tok = tokens[:, cur_pos-1:cur_pos]
+                    neg_tok = tokens[:, (cur_pos - start_pos) + neg_len - 1].unsqueeze(1)
                 else:
-                    neg_tok = neg_previous_token[:, None]
+                    neg_tok = neg_previous_token.unsqueeze(1)
                 uncond_logits, cfg_kv = model.forward(neg_tok, use_cache=True, past_kv=cfg_kv)
                 uncond_logits = uncond_logits[:, -1, :]
                 logits = uncond_logits + coeff * (logits - uncond_logits)
@@ -182,7 +182,7 @@ def greedy_sample(
                     dim_tok_inserted[_idx] = True
 
             tokens[:, cur_pos] = next_token
-            if alpha is not None and cur_pos - start_pos < neg_max_len - neg_len and cur_pos < alpha * total_len + (1 - alpha) * start_pos:
+            if alpha is not None and cur_pos - start_pos < min(neg_max_len - neg_len, alpha * (total_len - start_pos)):
                 _neg_tokens = neg_prompt_tensors[:, cur_pos - start_pos + neg_len]
                 neg_previous_token = torch.where(_neg_tokens != pad_id, _neg_tokens, next_token)
             else:
