@@ -5,6 +5,7 @@ import torch.utils.checkpoint
 
 from torch import nn as nn
 from torch.nn import functional as F
+from aria.model.dynamic_yarn import DynamicYaRNScaledRotaryEmbedding
 
 
 class ModelConfig:
@@ -58,8 +59,6 @@ class RotaryEmbedding(torch.nn.Module):
         emb = torch.cat((freqs, freqs), dim=-1)
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
-        #self.cos_cached = emb.cos().to(dtype)
-        #self.sin_cached = emb.sin().to(dtype)
 
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
@@ -115,7 +114,14 @@ class FusedEncoderBlock(nn.Module):
 
         # Positional embeddings
         if use_yarn:
-            # todo: need more testing on this
+            # todo: Need more testing on this; Will also need to expose the YaRN parameters on config level later
+            # Notes on YaRN parameters:
+            # - the scaling factor "s" (or `scale` in code) from the paper is implied as:
+            #   max_position_embeddings / original_max_position_embeddings.
+            # - the beta slow/fast determines the "ramp" between PI and NTK and 2/16 is the default for Llama-2.
+            # - the temperature "t" (or `mscale` in code) of attention score is not exposed here.
+            #   It is not a constant and depends on the scaling factor. 0.1*ln(s) + 1.0 is the default for
+            #   Llama-2 but it varies slightly across different models.
             self.rotary_emb = DynamicYaRNScaledRotaryEmbedding(self.d_head,
                                                                max_position_embeddings=8192,
                                                                original_max_position_embeddings=2048,
