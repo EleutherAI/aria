@@ -1,22 +1,30 @@
-# Taken from https://github.com/jquesnelle/yarn/blob/master/scaled_rope/LlamaDynamicYaRNScaledRotaryEmbedding.py
+"""Dynamic Yarn"""
+
+# https://github.com/jquesnelle/yarn/blob/master/scaled_rope/LlamaDynamicYaRNScaledRotaryEmbedding.py
 
 import torch
 import math
 
 
 # Inverse dim formula to find dim based on number of rotations
-def find_correction_dim(num_rotations, dim, base=10000, max_position_embeddings=2048):
-    return (dim * math.log(max_position_embeddings / (num_rotations * 2 * math.pi))) / (
-        2 * math.log(base)
-    )
+def find_correction_dim(
+    num_rotations, dim, base=10000, max_position_embeddings=2048
+):
+    return (
+        dim * math.log(max_position_embeddings / (num_rotations * 2 * math.pi))
+    ) / (2 * math.log(base))
 
 
 # Find dim range bounds based on rotations
 def find_correction_range(
     low_rot, high_rot, dim, base=10000, max_position_embeddings=2048
 ):
-    low = math.floor(find_correction_dim(low_rot, dim, base, max_position_embeddings))
-    high = math.ceil(find_correction_dim(high_rot, dim, base, max_position_embeddings))
+    low = math.floor(
+        find_correction_dim(low_rot, dim, base, max_position_embeddings)
+    )
+    high = math.ceil(
+        find_correction_dim(high_rot, dim, base, max_position_embeddings)
+    )
     return max(low, 0), min(high, dim - 1)  # Clamp values just in case
 
 
@@ -62,7 +70,8 @@ class DynamicYaRNScaledRotaryEmbedding(torch.nn.Module):
 
         if finetuned:
             self.yarn(
-                self.max_position_embeddings / self.original_max_position_embeddings,
+                self.max_position_embeddings
+                / self.original_max_position_embeddings,
                 device,
             )
         else:
@@ -80,7 +89,8 @@ class DynamicYaRNScaledRotaryEmbedding(torch.nn.Module):
             dtype=self.inv_freq.dtype,
         )
         freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        # Different from paper, but it uses a different permutation in order to
+        # obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
         dtype = torch.get_default_dtype()
 
@@ -93,24 +103,32 @@ class DynamicYaRNScaledRotaryEmbedding(torch.nn.Module):
 
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
-        # This `if` block is unlikely to be run after we build sin/cos in `__init__`. Keep the logic here just in case.
+        # This `if` block is unlikely to be run after we build sin/cos in
+        # `__init__`. Keep the logic here just in case.
         if seq_len > self.max_seq_len_cached:
             self.max_seq_len_cached = seq_len
 
             self.yarn(seq_len / self.original_max_position_embeddings, x.device)
 
             t = torch.arange(
-                self.max_seq_len_cached, device=x.device, dtype=self.inv_freq.dtype
+                self.max_seq_len_cached,
+                device=x.device,
+                dtype=self.inv_freq.dtype,
             )
             freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-            # Different from paper, but it uses a different permutation in order to obtain the same calculation
+            # Different from paper, but it uses a different permutation in order
+            # to obtain the same calculation
             emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
 
             self.register_buffer(
-                "cos_cached", (emb.cos() * self.mscale).to(x.dtype), persistent=False
+                "cos_cached",
+                (emb.cos() * self.mscale).to(x.dtype),
+                persistent=False,
             )
             self.register_buffer(
-                "sin_cached", (emb.sin() * self.mscale).to(x.dtype), persistent=False
+                "sin_cached",
+                (emb.sin() * self.mscale).to(x.dtype),
+                persistent=False,
             )
         return (
             self.cos_cached[:seq_len, ...].to(dtype=x.dtype),

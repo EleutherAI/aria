@@ -119,11 +119,20 @@ def greedy_sample(
     neg_prompt_tensors = torch.stack(
         [
             torch.concat(
-                [torch.full((neg_max_len - len(neg_seq),), pad_id), tokenizer.encode(neg_seq)]
-            ) for neg_seq in neg_prompts
-        ], axis=0
+                [
+                    torch.full((neg_max_len - len(neg_seq),), pad_id),
+                    tokenizer.encode(neg_seq),
+                ]
+            )
+            for neg_seq in neg_prompts
+        ],
+        axis=0,
     ).cuda()
-    neg_len = neg_min_len if neg_prompt_len is None else min(neg_min_len, neg_prompt_len)
+    neg_len = (
+        neg_min_len
+        if neg_prompt_len is None
+        else min(neg_min_len, neg_prompt_len)
+    )
     neg_tokens = neg_prompt_tensors[:, :neg_len]
 
     tokens = torch.full((bsz, total_len), pad_id).cuda()
@@ -140,19 +149,31 @@ def greedy_sample(
 
     with torch.inference_mode():
         for cur_pos in range(start_pos, total_len):
-            token = tokens[:, :start_pos] if cur_pos == start_pos else tokens[:, cur_pos-1:cur_pos]
-            logits, past_kv = model.forward(token, use_cache=True, past_kv=past_kv)
+            token = (
+                tokens[:, :start_pos]
+                if cur_pos == start_pos
+                else tokens[:, cur_pos - 1 : cur_pos]
+            )
+            logits, past_kv = model.forward(
+                token, use_cache=True, past_kv=past_kv
+            )
             logits = logits[:, -1, :]
             if cfg_gamma is not None and max_prompt_size < cur_pos:
-                coeff = _get_cfg_coeff(cfg_gamma, cfg_mode, cur_pos, start_pos, total_len)
+                coeff = _get_cfg_coeff(
+                    cfg_gamma, cfg_mode, cur_pos, start_pos, total_len
+                )
 
                 if cur_pos == start_pos:
                     neg_tok = neg_tokens
                 elif neg_previous_token is None:
-                    neg_tok = tokens[:, (cur_pos - start_pos) + neg_len - 1].unsqueeze(1)
+                    neg_tok = tokens[
+                        :, (cur_pos - start_pos) + neg_len - 1
+                    ].unsqueeze(1)
                 else:
                     neg_tok = neg_previous_token.unsqueeze(1)
-                uncond_logits, cfg_kv = model.forward(neg_tok, use_cache=True, past_kv=cfg_kv)
+                uncond_logits, cfg_kv = model.forward(
+                    neg_tok, use_cache=True, past_kv=cfg_kv
+                )
                 uncond_logits = uncond_logits[:, -1, :]
                 logits = uncond_logits + coeff * (logits - uncond_logits)
 
@@ -172,9 +193,12 @@ def greedy_sample(
                 for _idx in range(bsz):
                     if (
                         dim_tok_inserted[_idx] is False
-                        and tokenizer.id_to_tok[next_token[_idx].item()][0] != "dur"
+                        and tokenizer.id_to_tok[next_token[_idx].item()][0]
+                        != "dur"
                     ):
-                        next_token[_idx] = tokenizer.tok_to_id[tokenizer.dim_tok]
+                        next_token[_idx] = tokenizer.tok_to_id[
+                            tokenizer.dim_tok
+                        ]
 
             # Update dim_tok_inserted
             for _idx in range(bsz):
@@ -182,13 +206,17 @@ def greedy_sample(
                     dim_tok_inserted[_idx] = True
 
             tokens[:, cur_pos] = next_token
-            if alpha is not None and cur_pos - start_pos < min(neg_max_len - neg_len, alpha * (total_len - start_pos)):
-                _neg_tokens = neg_prompt_tensors[:, cur_pos - start_pos + neg_len]
-                neg_previous_token = torch.where(_neg_tokens != pad_id, _neg_tokens, next_token)
+            if alpha is not None and cur_pos - start_pos < min(
+                neg_max_len - neg_len, alpha * (total_len - start_pos)
+            ):
+                _neg_tokens = neg_prompt_tensors[
+                    :, cur_pos - start_pos + neg_len
+                ]
+                neg_previous_token = torch.where(
+                    _neg_tokens != pad_id, _neg_tokens, next_token
+                )
             else:
                 neg_previous_token = next_token
-
-
 
     decoded = []
     for idx, seq in enumerate(tokens.tolist()):
