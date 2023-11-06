@@ -11,6 +11,11 @@ setup(
     author="",
     packages=find_packages() + ["config"],
     include_package_data=True,
+    entry_points={
+        "console_scripts": [
+            "aria=aria.run:main",
+        ],
+    },
     install_requires=[
         str(r)
         for r in pkg_resources.parse_requirements(

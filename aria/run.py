@@ -6,7 +6,7 @@ import sys
 
 
 def _parse_sample_args():
-    argp = argparse.ArgumentParser(prog="run.py sample")
+    argp = argparse.ArgumentParser(prog="aria sample")
     argp.add_argument("model", help="name of model config file")
     argp.add_argument("ckpt_path", help="path to model checkpoint")
     argp.add_argument("midi_path", help="path to midi file")
@@ -88,7 +88,7 @@ def sample(args):
 
 
 def _parse_midi_dataset_args():
-    argp = argparse.ArgumentParser(prog="run.py midi_dataset")
+    argp = argparse.ArgumentParser(prog="aria midi_dataset")
     argp.add_argument("dir", help="directory containing midi files")
     argp.add_argument("save_path", help="path to save dataset")
     argp.add_argument("-r", action="store_true", help="recursively search dirs")
@@ -120,7 +120,7 @@ def build_midi_dataset(args):
 
 
 def _parse_tokenized_dataset_args():
-    argp = argparse.ArgumentParser(prog="run.py tokenized_dataset")
+    argp = argparse.ArgumentParser(prog="aria tokenized_dataset")
     argp.add_argument("load_path", help="path midi_dict dataset")
     argp.add_argument("save_path", help="path to save dataset")
     argp.add_argument("-s", help="also produce shuffled", action="store_true")
@@ -148,7 +148,7 @@ def build_tokenized_dataset(args):
 
 def main():
     # Nested argparse inspired by - https://shorturl.at/kuKW0
-    parser = argparse.ArgumentParser(usage="run.py <command> [<args>]")
+    parser = argparse.ArgumentParser(usage="aria <command> [<args>]")
     parser.add_argument(
         "command",
         help="command to run",
