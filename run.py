@@ -138,8 +138,6 @@ def build_tokenized_dataset(args):
         save_path=args.save_path,
         midi_dataset_path=args.load_path,
         max_seq_len=config["max_seq_len"],
-        stride_len=config["stride_len"],
-        padding=True,
         overwrite=True,
     )
     if args.s:
