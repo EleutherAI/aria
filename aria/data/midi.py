@@ -408,6 +408,7 @@ def dict_to_midi(mid_data: dict):
 
     # Add all messages (not ordered) to one track
     track = mido.MidiTrack()
+    end_msgs = defaultdict(list)
     for msg_list in mid_data.values():
         for msg in msg_list:
             if msg["type"] == "tempo":
@@ -447,13 +448,27 @@ def dict_to_midi(mid_data: dict):
                     )
                 )
                 # Note off
+                end_msgs[(msg["channel"], msg["data"]["pitch"])].append(
+                    (msg["data"]["start"], msg["data"]["end"])
+                )
+
+    # Only add end messages that don't interfere with other notes
+    for k, v in end_msgs.items():
+        channel, pitch = k
+        for start, end in v:
+            add = True
+            for _start, _end in v:
+                if start < _start < end < _end:
+                    add = False
+
+            if add is True:
                 track.append(
                     mido.Message(
                         "note_on",
-                        note=msg["data"]["pitch"],
+                        note=pitch,
                         velocity=0,
-                        channel=msg["channel"],
-                        time=msg["data"]["end"],
+                        channel=channel,
+                        time=end,
                     )
                 )
 

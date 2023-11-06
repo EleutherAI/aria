@@ -61,6 +61,7 @@ class TestLazyTokenizer(unittest.TestCase):
         tokenize_detokenize("bach.mid")
         tokenize_detokenize("expressive.mid")
         tokenize_detokenize("pop.mid")
+        tokenize_detokenize("beethoven_moonlight.mid")
 
     def test_aug(self):
         tknzr = tokenizer.TokenizerLazy(return_tensors=False)
