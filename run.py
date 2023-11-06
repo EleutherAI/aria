@@ -32,6 +32,7 @@ def sample(args):
     from aria.tokenizer import TokenizerLazy
     from aria.sample import greedy_sample
     from aria.data.midi import MidiDict
+    from aria.utils import midi_to_audio
 
     assert cuda_is_available() is True, "CUDA device not available"
 
@@ -81,6 +82,7 @@ def sample(args):
         res_midi_dict = tokenizer.detokenize(tokenized_seq)
         res_midi = res_midi_dict.to_midi()
         res_midi.save(f"samples/res_{idx + 1}.mid")
+        midi_to_audio(f"samples/res_{idx + 1}.mid")
 
     print("Results saved to samples/")
 
