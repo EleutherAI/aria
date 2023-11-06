@@ -305,55 +305,9 @@ def build_mididict_dataset(
     )
 
 
-def _get_tokenized_seqs(
-    _entry: MidiDict | dict,
-    tokenizer: Tokenizer,
-    max_seq_len: int,
-    stride_len: int,
-    padding: bool,
-):
+def _get_tokenized_seqs(_entry: MidiDict | dict, tokenizer: Tokenizer):
     # This function is only intended to be used as a process target during the
     # multi-processing in TokenizedDataset.build
-    def _truncate_and_stride(_tokenized_seq: list):
-        prefix = []
-
-        while _tokenized_seq:
-            tok = _tokenized_seq[0]
-            if tok != tokenizer.bos_tok and tok[0] == "prefix":
-                prefix.append(_tokenized_seq.pop(0))
-            else:
-                break
-
-        seq_len = len(_tokenized_seq)
-        prefix_len = len(prefix)
-
-        res = []
-        idx = 0
-        # No padding needed here
-        while idx + max_seq_len - prefix_len < seq_len:
-            res.append(
-                prefix + _tokenized_seq[idx : idx + max_seq_len - prefix_len]
-            )
-            idx += stride_len
-
-            # Checks that next start note will not be cutoff midway
-            while idx < seq_len:
-                # Break loop when a non 'wait' or 'dur' is seen
-                if _tokenized_seq[idx] in tokenizer.special_tokens:
-                    break
-                elif _tokenized_seq[idx][0] in {"wait", "dur"}:
-                    idx += 1
-                else:
-                    break
-
-        # Add the last sequence
-        _seq = prefix + _tokenized_seq[idx : idx + max_seq_len - prefix_len]
-        if padding is True:
-            _seq += [tokenizer.pad_tok] * (max_seq_len - len(_seq))
-        res.append(_seq)
-
-        return res
-
     logger = logging.getLogger(__name__)
 
     if isinstance(_entry, dict):
@@ -368,7 +322,7 @@ def _get_tokenized_seqs(
     else:
         if tokenizer.unk_tok in _tokenized_seq:
             logger.warning("Unknown token seen while tokenizing midi_dict")
-        return _truncate_and_stride(_tokenized_seq)
+        return _tokenized_seq
 
 
 class TokenizedDataset(torch.utils.data.Dataset):
@@ -568,10 +522,6 @@ class TokenizedDataset(torch.utils.data.Dataset):
                 dynamically loading MidiDict objects from a MidiDataset save
                 file. If both midi_dataset and midi_dataset_path are provided,
                 midi_dataset will be preffered.
-            padding (bool, optional): If True, pad the sequences so that they
-                have length=max_seq_len. Defaults to True.
-            stride_len (int, optional): If provided, will stride the sequences
-                according to the provided length. Defaults to None.
             overwrite (bool, optional): If True, will overwrite a previous file
                 located at save_path. Defaults to False.
 
@@ -588,19 +538,12 @@ class TokenizedDataset(torch.utils.data.Dataset):
 
             with Pool() as pool:
                 results = pool.imap(
-                    functools.partial(
-                        _get_tokenized_seqs,
-                        tokenizer=tokenizer,
-                        max_seq_len=max_seq_len,
-                        stride_len=stride_len,
-                        padding=padding,
-                    ),
+                    functools.partial(_get_tokenized_seqs, tokenizer=tokenizer),
                     _midi_dict_iter,
                 )
 
-                for idx, tokenized_seqs in enumerate(results):
-                    if tokenized_seqs:
-                        yield from tokenized_seqs
+                for idx, tokenized_seq in enumerate(results):
+                    yield tokenized_seq
 
                     if idx % 50 == 0 and idx != 0:
                         logger.info(f"Processed MidiDicts: {idx}")
@@ -645,10 +588,16 @@ class TokenizedDataset(torch.utils.data.Dataset):
                 if len(midi_dataset) == 0:
                     logging.warning("midi_dataset is empty")
 
+                buffer = []
                 for entry in _get_tokenized_seqs_mp(
                     _midi_dict_iter=midi_dataset
                 ):
-                    writer.write(entry)
+                    buffer += entry
+                    while len(buffer) >= max_seq_len:
+                        writer.write(buffer[:max_seq_len])
+                        buffer = buffer[max_seq_len:]
+                buffer += [tokenizer.pad_tok] * (max_seq_len - len(buffer))
+                writer.write(buffer[:max_seq_len])
 
             elif midi_dataset_path:
                 logger.info(
@@ -659,8 +608,14 @@ class TokenizedDataset(torch.utils.data.Dataset):
                     f"stride_len={stride_len} "
                 )
                 with jsonlines.open(midi_dataset_path) as reader:
+                    buffer = []
                     for entry in _get_tokenized_seqs_mp(_midi_dict_iter=reader):
-                        writer.write(entry)
+                        buffer += entry
+                        while len(buffer) >= max_seq_len:
+                            writer.write(buffer[:max_seq_len])
+                            buffer = buffer[max_seq_len:]
+                    buffer += [tokenizer.pad_tok] * (max_seq_len - len(buffer))
+                    writer.write(buffer[:max_seq_len])
 
         logging.info(
             f"Finished building, saved tokenized dataset to {save_path}"
