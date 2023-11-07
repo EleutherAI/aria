@@ -1,5 +1,5 @@
 """Includes (PyTorch) transformer model and config classes."""
-
+from dataclasses import dataclass
 import torch
 import torch.utils.checkpoint
 
@@ -8,24 +8,38 @@ from torch.nn import functional as F
 from aria.model.dynamic_yarn import DynamicYaRNScaledRotaryEmbedding
 
 
+@dataclass
+class YaRNConfig:
+    """Config for Dynamic YaRN rotary embeddings.
+
+    Args:
+        beta_fast (int): Fast beta value.
+        beta_slow (int): Slow beta value.
+        scale (int): Scaling factor.
+        mscale (int): Temperature scaling factor.
+    """
+    beta_fast: int = 16
+    beta_slow: int = 2
+    scale: int = 1.0
+    mscale_coeff: int = 0.1
+    base: float = 10000.0
+
+
+@dataclass
 class ModelConfig:
-    def __init__(
-        self,
-        d_model: int,
-        n_heads: int,
-        n_layers: int,
-        ff_mult: int,
-        drop_p: float,
-        max_seq_len: int,
-        grad_checkpoint: bool,
-    ):
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.n_layers = n_layers
-        self.ff_mult = ff_mult
-        self.drop_p = drop_p
-        self.max_seq_len = max_seq_len
-        self.grad_checkpoint = grad_checkpoint
+    d_model: int
+    n_heads: int
+    n_layers: int
+    ff_mult: int
+    drop_p: float
+    max_seq_len: int
+    grad_checkpoint: bool
+    yarn_config: dict | YaRNConfig | None = None
+
+    def __post_init__(self):
+        if self.yarn_config is not None and isinstance(self.yarn_config, dict):
+            self.yarn_config = YaRNConfig(**self.yarn_config)
+
 
     def set_vocab_size(self, vocab_size: int):
         self.vocab_size = vocab_size
@@ -120,7 +134,7 @@ class FusedEncoderBlock(nn.Module):
         model_config (ModelConfig): Model config settings.
     """
 
-    def __init__(self, model_config: ModelConfig, use_yarn=False):
+    def __init__(self, model_config: ModelConfig):
         super().__init__()
 
         self.drop_p = model_config.drop_p
@@ -129,9 +143,8 @@ class FusedEncoderBlock(nn.Module):
         self.max_seq_len = model_config.max_seq_len
 
         # Positional embeddings
-        if use_yarn:
-            # TODO: Need more testing on this; Will also need to expose the YaRN
-            # parameters on config level later
+        if model_config.yarn_config is not None:
+            # TODO: Need more testing on this;
             # Notes on YaRN parameters:
             # - the scaling factor "s" (or `scale` in code) from the paper is
             #   implied as:
@@ -142,12 +155,15 @@ class FusedEncoderBlock(nn.Module):
             #   not exposed here. It is not a constant and depends on the
             #   scaling factor. 0.1*ln(s) + 1.0 is the default for Llama-2 but
             #   it varies slightly across different models.
+            cfg = model_config.yarn_config
             self.rotary_emb = DynamicYaRNScaledRotaryEmbedding(
                 self.d_head,
-                max_position_embeddings=8192,
-                original_max_position_embeddings=2048,
-                beta_fast=16,
-                beta_slow=2,
+                max_position_embeddings=round(self.max_seq_len * cfg.scale),
+                original_max_position_embeddings=self.max_seq_len,
+                beta_fast=cfg.beta_fast,
+                beta_slow=cfg.beta_slow,
+                base=cfg.base,
+                mscale_coeff=cfg.mscale_coeff,
             )
         else:
             self.rotary_emb = RotaryEmbedding(self.d_head)
