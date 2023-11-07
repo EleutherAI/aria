@@ -31,10 +31,12 @@ def midi_to_audio(mid_path: str, soundfont_path: str | None = None):
             else:
                 print(f"Failed to download patch: RESPONSE {res.status_code}")
                 return
-            soundfont_path = SOUNDFONT_PATH
         else:
             print("Aborting mp3 conversion")
             return
+
+    if soundfont_path is None:
+        soundfont_path = SOUNDFONT_PATH
 
     if mid_path.endswith(".mid") or mid_path.endswith(".midi"):
         base_path, _ = os.path.splitext(mid_path)
