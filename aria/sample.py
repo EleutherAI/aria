@@ -11,6 +11,7 @@ import math
 import torch
 
 from typing import List
+from tqdm import tqdm
 
 from aria.model import TransformerLM
 from aria.tokenizer import Tokenizer
@@ -49,7 +50,7 @@ def greedy_sample(
     prompts: List[list],
     max_seq_len: int,
     max_gen_len: int,
-    cfg_gamma: float | None = 1.2,
+    cfg_gamma: float | None = 1.4,
     cfg_mode: str | None = None,
     neg_prompts: List[list] | None = None,
     neg_prompt_len: int | None = None,
@@ -148,7 +149,13 @@ def greedy_sample(
     neg_previous_token = None
 
     with torch.inference_mode():
-        for cur_pos in range(start_pos, total_len):
+        for cur_pos in (
+            pbar := tqdm(
+                range(start_pos, total_len),
+                total=total_len - start_pos,
+                leave=False,
+            )
+        ):
             token = (
                 tokens[:, :start_pos]
                 if cur_pos == start_pos
