@@ -37,10 +37,10 @@ def linear_ramp_mask(min, max, dim):
     return ramp_func
 
 
-def get_mscale(scale=1):
+def get_mscale(scale=1, coeff=0.1):
     if scale <= 1:
         return 1.0
-    return 0.1 * math.log(scale) + 1.0
+    return coeff * math.log(scale) + 1.0
 
 
 class DynamicYaRNScaledRotaryEmbedding(torch.nn.Module):
@@ -52,6 +52,7 @@ class DynamicYaRNScaledRotaryEmbedding(torch.nn.Module):
         original_max_position_embeddings=2048,
         extrapolation_factor=1,
         attn_factor=1,
+        mscale_coeff=0.1,
         beta_fast=32,
         beta_slow=1,
         finetuned=False,
@@ -65,6 +66,7 @@ class DynamicYaRNScaledRotaryEmbedding(torch.nn.Module):
         self.original_max_position_embeddings = original_max_position_embeddings
         self.extrapolation_factor = extrapolation_factor
         self.attn_factor = attn_factor
+        self.mscale_coeff = mscale_coeff
         self.beta_fast = beta_fast
         self.beta_slow = beta_slow
 
@@ -159,5 +161,5 @@ class DynamicYaRNScaledRotaryEmbedding(torch.nn.Module):
 
         self.register_buffer("inv_freq", inv_freq)
         self.mscale = float(
-            get_mscale(scale) * self.attn_factor
+            get_mscale(scale, self.mscale_coeff) * self.attn_factor
         )  # Get n-d magnitude scaling corrected for interpolation

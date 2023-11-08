@@ -98,14 +98,6 @@ def greedy_sample(
     max_prompt_size = max([len(t) for t in prompts])
     total_len = min(max_seq_len, max_gen_len + max_prompt_size)
 
-    if cfg_gamma is not None:
-        # todo: maybe it already works with varying prompts
-        assert (
-            min_prompt_size == max_prompt_size
-        ), "CFG not supported with varying prompts"
-        if neg_prompts is None:
-            neg_prompts = [prompts[-1] for _ in range(bsz)]
-
     if force_end:
         assert (
             total_len - max_prompt_size > 130
@@ -115,29 +107,37 @@ def greedy_sample(
         f"Using hyperparams: temp={temperature}, top_p={top_p}, gamma={cfg_gamma}, gen_len={max_gen_len}"
     )
 
-    neg_min_len = min(total_len, min(len(a) for a in neg_prompts))
-    neg_max_len = max(total_len, max(len(a) for a in neg_prompts))
-    neg_prompt_tensors = torch.stack(
-        [
-            torch.concat(
-                [
-                    torch.full((neg_max_len - len(neg_seq),), pad_id),
-                    tokenizer.encode(neg_seq),
-                ]
-            )
-            for neg_seq in neg_prompts
-        ],
-        axis=0,
-    ).cuda()
-    neg_len = (
-        neg_min_len
-        if neg_prompt_len is None
-        else min(neg_min_len, neg_prompt_len)
-    )
-    neg_tokens = neg_prompt_tensors[:, :neg_len]
+    if cfg_gamma is not None:
+        # todo: maybe it already works with varying prompts
+        assert (
+            min_prompt_size == max_prompt_size
+        ), "CFG not supported with varying prompts"
+        if neg_prompts is None:
+            neg_prompts = [prompts[-1] for _ in range(bsz)]
+
+        neg_min_len = min(total_len, min(len(a) for a in neg_prompts))
+        neg_max_len = max(total_len, max(len(a) for a in neg_prompts))
+        neg_prompt_tensors = torch.stack(
+            [
+                torch.concat(
+                    [
+                        torch.full((neg_max_len - len(neg_seq),), pad_id),
+                        tokenizer.encode(neg_seq),
+                    ]
+                )
+                for neg_seq in neg_prompts
+            ],
+            axis=0,
+        ).cuda()
+        neg_len = (
+            neg_min_len
+            if neg_prompt_len is None
+            else min(neg_min_len, neg_prompt_len)
+        )
+        neg_tokens = neg_prompt_tensors[:, :neg_len]
 
     tokens = torch.full((bsz, total_len), pad_id).cuda()
-    for idx, (unencoded_seq, neg_seq) in enumerate(zip(prompts, neg_prompts)):
+    for idx, unencoded_seq in enumerate(prompts):
         tokens[idx, : len(unencoded_seq)] = tokenizer.encode(unencoded_seq)
 
     dim_tok_inserted = [False for _ in range(bsz)]
