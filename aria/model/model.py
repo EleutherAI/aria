@@ -10,18 +10,22 @@ from aria.model.dynamic_yarn import DynamicYaRNScaledRotaryEmbedding
 
 @dataclass
 class YaRNConfig:
-    """Config for Dynamic YaRN rotary embeddings.
+    """
+    Config for Dynamic YaRN rotary embeddings.
+    The default values are manually tuned for a "large" model (~400M params) we trained.
 
     Args:
         beta_fast (int): Fast beta value.
-        beta_slow (int): Slow beta value.
-        scale (int): Scaling factor.
-        mscale (int): Temperature scaling factor.
+        beta_slow (int): Slow beta value. Along with beta_fast they determine
+            the "ramp" between PI and NTK.
+        scale (int): Scaling factor. In the paper, it is denoted by `s`.
+        mscale_coeff (int): Temperature scaling factor t follows `a ln s + 1.0`,
+            and the coefficient `a` is this `mscale_coeff` here.
     """
     beta_fast: int = 16
-    beta_slow: int = 2
+    beta_slow: int = 1
     scale: int = 1.0
-    mscale_coeff: int = 0.1
+    mscale_coeff: int = 0.07
     base: float = 10000.0
 
 
@@ -145,16 +149,6 @@ class FusedEncoderBlock(nn.Module):
         # Positional embeddings
         if model_config.yarn_config is not None:
             # TODO: Need more testing on this;
-            # Notes on YaRN parameters:
-            # - the scaling factor "s" (or `scale` in code) from the paper is
-            #   implied as:
-            #       max_position_embeddings / original_max_position_embeddings.
-            # - the beta slow/fast determines the "ramp" between PI and NTK and
-            #   2/16 is the default for Llama-2.
-            # - the temperature "t" (or `mscale` in code) of attention score is
-            #   not exposed here. It is not a constant and depends on the
-            #   scaling factor. 0.1*ln(s) + 1.0 is the default for Llama-2 but
-            #   it varies slightly across different models.
             cfg = model_config.yarn_config
             self.rotary_emb = DynamicYaRNScaledRotaryEmbedding(
                 self.d_head,
