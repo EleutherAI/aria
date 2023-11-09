@@ -1,5 +1,5 @@
 """Utils for data/MIDI processing."""
-
+import functools
 import hashlib
 import json
 import re
@@ -114,8 +114,10 @@ class MidiDict:
                 }
             ]
 
+    @functools.cached_property
+    def program_to_instrument(self):
         # This combines the individual dictionaries into one
-        self.program_to_instrument = (
+        return (
             {i: "piano" for i in range(0, 7 + 1)}
             | {i: "chromatic" for i in range(8, 15 + 1)}
             | {i: "organ" for i in range(16, 23 + 1)}
