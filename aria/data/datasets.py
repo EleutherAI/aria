@@ -52,14 +52,14 @@ class MidiDataset:
         entries (list[MidiDict]): MidiDict objects to be stored.
     """
 
-    def __init__(self, entries: list[MidiDict]):
+    def __init__(self, entries: list[MidiDict] | Iterable):
         self.entries = entries
 
     def __len__(self):
-        return len(self.entries)
+        return len(list(self.entries))
 
     def __getitem__(self, ind: int):
-        return self.entries[ind]
+        return list(self.entries)[ind]
 
     def __iter__(self):
         yield from self.entries
@@ -74,12 +74,12 @@ class MidiDataset:
     @classmethod
     def load(cls, load_path: str):
         """Loads dataset from JSON file."""
-        midi_dicts = []
-        with jsonlines.open(load_path) as reader:
-            for entry in reader:
-                midi_dicts.append(MidiDict.from_msg_dict(entry))
+        def _load():
+            with jsonlines.open(load_path) as reader:
+                for entry in reader:
+                    yield MidiDict.from_msg_dict(entry)
 
-        return cls(midi_dicts)
+        return cls(_load())
 
     @classmethod
     def split_from_file(
