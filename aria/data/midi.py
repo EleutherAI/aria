@@ -1,5 +1,4 @@
 """Utils for data/MIDI processing."""
-import functools
 import hashlib
 import json
 import re
