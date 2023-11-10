@@ -310,8 +310,8 @@ def _get_tokenized_seqs(_entry: MidiDict | dict, tokenizer: Tokenizer):
     # multi-processing in TokenizedDataset.build
     logger = logging.getLogger(__name__)
 
-    if isinstance(_entry, dict):
-        _midi_dict = MidiDict.from_msg_dict(_entry)
+    if isinstance(_entry, str):
+        _midi_dict = MidiDict.from_msg_dict(json.loads(_entry.rstrip()))
     else:
         _midi_dict = _entry
 
@@ -543,7 +543,8 @@ class TokenizedDataset(torch.utils.data.Dataset):
                 )
 
                 for idx, tokenized_seq in enumerate(results):
-                    yield tokenized_seq
+                    if tokenized_seq:
+                        yield tokenized_seq
 
                     if idx % 50 == 0 and idx != 0:
                         logger.info(f"Processed MidiDicts: {idx}")
@@ -607,9 +608,9 @@ class TokenizedDataset(torch.utils.data.Dataset):
                     f"padding={padding} "
                     f"stride_len={stride_len} "
                 )
-                with jsonlines.open(midi_dataset_path) as reader:
+                with open(midi_dataset_path, "r") as f:
                     buffer = []
-                    for entry in _get_tokenized_seqs_mp(_midi_dict_iter=reader):
+                    for entry in _get_tokenized_seqs_mp(_midi_dict_iter=f):
                         buffer += entry
                         while len(buffer) >= max_seq_len:
                             writer.write(buffer[:max_seq_len])

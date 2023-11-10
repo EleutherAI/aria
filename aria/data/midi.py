@@ -316,7 +316,9 @@ def _extract_track_data(track: mido.MidiTrack):
                 if len(notes_to_close) > 0 and len(notes_to_keep) > 0:
                     # Note-on on the same tick but we already closed
                     # some previous notes -> it will continue, keep it.
-                    last_note_on[(message.note, message.channel)] = notes_to_keep
+                    last_note_on[
+                        (message.note, message.channel)
+                    ] = notes_to_keep
                 else:
                     # Remove the last note on for this instrument
                     del last_note_on[(message.note, message.channel)]
@@ -402,7 +404,9 @@ def dict_to_midi(mid_data: dict):
     }, "Invalid json/dict."
 
     ticks_per_beat = mid_data.pop("ticks_per_beat")
-    mid_data = {k: v for k, v in mid_data.items() if k not in {"meta_msgs", "metadata"}}
+    mid_data = {
+        k: v for k, v in mid_data.items() if k not in {"meta_msgs", "metadata"}
+    }
 
     # Add all messages (not ordered) to one track
     track = mido.MidiTrack()
@@ -411,7 +415,9 @@ def dict_to_midi(mid_data: dict):
         for msg in msg_list:
             if msg["type"] == "tempo":
                 track.append(
-                    mido.MetaMessage("set_tempo", tempo=msg["data"], time=msg["tick"])
+                    mido.MetaMessage(
+                        "set_tempo", tempo=msg["data"], time=msg["tick"]
+                    )
                 )
             elif msg["type"] == "pedal":
                 track.append(
@@ -561,7 +567,9 @@ def _match_composer(text: str, composer_name: str):
         return False
 
 
-def meta_composer_filename(mid: mido.MidiFile, msg_data: dict, composer_names: list):
+def meta_composer_filename(
+    mid: mido.MidiFile, msg_data: dict, composer_names: list
+):
     file_name = pathlib.Path(mid.filename).stem
     matched_names = set()
     for name in composer_names:
@@ -576,7 +584,9 @@ def meta_composer_filename(mid: mido.MidiFile, msg_data: dict, composer_names: l
         return {}
 
 
-def meta_composer_metamsg(mid: mido.MidiFile, msg_data: dict, composer_names: list):
+def meta_composer_metamsg(
+    mid: mido.MidiFile, msg_data: dict, composer_names: list
+):
     matched_names = set()
     for msg in msg_data["meta_msgs"]:
         for name in composer_names:
@@ -600,7 +610,9 @@ def get_metadata_fn(metadata_proc_name: str):
 
     fn = name_to_fn.get(metadata_proc_name, None)
     if fn is None:
-        logging.error(f"Error finding metadata function for {metadata_proc_name}")
+        logging.error(
+            f"Error finding metadata function for {metadata_proc_name}"
+        )
     else:
         return fn
 
