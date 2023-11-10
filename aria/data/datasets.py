@@ -57,10 +57,14 @@ class MidiDataset:
         self.entries = entries
 
     def __len__(self):
-        return len(list(self.entries))
+        if not isinstance(self.entries, list):
+            self.entries = list(self.entries)
+        return len(self.entries)
 
     def __getitem__(self, ind: int):
-        return list(self.entries)[ind]
+        if not isinstance(self.entries, list):
+            self.entries = list(self.entries)
+        return self.entries[ind]
 
     def __iter__(self):
         yield from self.entries
@@ -564,11 +568,11 @@ class TokenizedDataset(torch.utils.data.Dataset):
 
             with tqdm.tqdm() as t:
                 while True:
-                    try:
-                        result = oq.get(timeout=1000)
+                    if not oq.empty():
+                        result = oq.get()
                         t.update(1)
                         yield result
-                    except oq.Empty:
+                    else:
                         if not any(proc.is_alive() for proc in workers):
                             break
 

@@ -5,6 +5,7 @@ import logging
 from aria import tokenizer
 from aria.data import datasets
 from aria.data.midi import MidiDict
+from aria.data import jsonl_zst
 
 if not os.path.isdir("tests/test_results"):
     os.makedirs("tests/test_results")
@@ -243,6 +244,23 @@ class TestTokenizedDataset(unittest.TestCase):
         )
 
         tokenized_dataset.close()
+
+
+class TestReaderWriter(unittest.TestCase):
+    def test_jsonl_zst(self):
+        data = [{"a": i, "b": i+1} for i in range(0, 100, 4)]
+        filename = "tests/test_results/test.jsonl.zst"
+        # if test.jsonl.zst exists, delete it
+        if os.path.isfile(filename):
+            os.remove(filename)
+        with jsonl_zst.open(filename, "w") as f:
+            for d in data:
+                f.write(d)
+        with jsonl_zst.open(filename, "r") as f:
+            for d, d2 in zip(data, f):
+                self.assertEqual(d, d2)
+        # Remove the file
+        os.remove(filename)
 
 
 if __name__ == "__main__":
