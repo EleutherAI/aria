@@ -13,11 +13,12 @@ from pathlib import Path
 from typing import Callable, Iterable
 from collections import defaultdict
 from copy import deepcopy
-from multiprocessing import Pool
+from multiprocessing import Pool, Process, Queue
 
 from aria.config import load_config
 from aria.tokenizer import Tokenizer, TokenizerLazy
 from aria.data.midi import MidiDict, get_test_fn
+import tqdm
 
 
 def setup_logger():
@@ -529,6 +530,13 @@ class TokenizedDataset(torch.utils.data.Dataset):
             TokenizedDataset: Dataset saved midi_dataset and saved at save_path.
         """
 
+        def _worker(input_queue, output_queue, tokenizer):
+            while True:
+                item = input_queue.get()
+                if item is None:
+                    break
+                output_queue.put(_get_tokenized_seqs(item, tokenizer))
+
         def _get_tokenized_seqs_mp(_midi_dict_iter: Iterable):
             # Gets tokenized sequences using multiprocessing
 
@@ -536,17 +544,33 @@ class TokenizedDataset(torch.utils.data.Dataset):
             # and stride logic in _get_tokenized_seqs
             assert isinstance(tokenizer, TokenizerLazy), "Unsupported tokenizer"
 
-            with Pool() as pool:
-                results = pool.imap(
-                    functools.partial(_get_tokenized_seqs, tokenizer=tokenizer),
-                    _midi_dict_iter,
-                )
+            iq = Queue()
+            oq = Queue()
 
-                for idx, tokenized_seq in enumerate(results):
-                    yield tokenized_seq
+            _num_proc = os.cpu_count()
+            workers = [Process(target=functools.partial(_worker, tokenizer=tokenizer), args=(iq, oq)) for _ in
+                       range(_num_proc)]
+            for w in workers:
+                w.start()
 
-                    if idx % 50 == 0 and idx != 0:
-                        logger.info(f"Processed MidiDicts: {idx}")
+            def _enqueue(iq):
+                for midi_dict in _midi_dict_iter:
+                    iq.put(midi_dict)
+                for i in range(_num_proc):
+                    iq.put(None)
+
+            enqueue = Process(target=_enqueue, args=(iq,))
+            enqueue.start()
+
+            with tqdm.tqdm() as t:
+                while True:
+                    try:
+                        result = oq.get(timeout=1000)
+                        t.update(1)
+                        yield result
+                    except oq.Empty:
+                        if not any(proc.is_alive() for proc in workers):
+                            break
 
         logger = setup_logger()
 
