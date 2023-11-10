@@ -114,8 +114,9 @@ class MidiDict:
                 }
             ]
 
-    @functools.cached_property
-    def program_to_instrument(self):
+    @classmethod
+    @property
+    def program_to_instrument(cls):
         # This combines the individual dictionaries into one
         return (
             {i: "piano" for i in range(0, 7 + 1)}
