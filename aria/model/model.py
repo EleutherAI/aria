@@ -320,7 +320,7 @@ class Transformer(nn.Module):
 
                     return custom_forward
 
-                hidden_states = torch.utils.checkpoint.checkpoint(
+                hidden_states, _ = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(layer),
                     hidden_states,
                     preserve_rng_state=True,
