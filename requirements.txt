@@ -3,5 +3,3 @@ accelerate
 mido
 jsonlines
 pydub
-bitsandbytes
-scipy
