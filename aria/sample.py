@@ -124,7 +124,7 @@ def greedy_sample(
                 torch.concat(
                     [
                         torch.full((neg_max_len - len(neg_seq),), pad_id, device=device),
-                        tokenizer.encode(neg_seq),
+                        tokenizer.encode(neg_seq).to(device),
                     ]
                 )
                 for neg_seq in neg_prompts
@@ -140,7 +140,7 @@ def greedy_sample(
 
     tokens = torch.full((bsz, total_len), pad_id, device=device)
     for idx, unencoded_seq in enumerate(prompts):
-        tokens[idx, : len(unencoded_seq)] = tokenizer.encode(unencoded_seq)
+        tokens[idx, : len(unencoded_seq)] = tokenizer.encode(unencoded_seq).to(device)
 
     dim_tok_inserted = [False for _ in range(bsz)]
     input_text_mask = tokens != pad_id
