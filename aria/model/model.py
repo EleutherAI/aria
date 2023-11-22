@@ -22,6 +22,7 @@ class YaRNConfig:
         mscale_coeff (int): Temperature scaling factor t follows `a ln s + 1.0`,
             and the coefficient `a` is this `mscale_coeff` here.
     """
+
     beta_fast: int = 16
     beta_slow: int = 1
     scale: int = 1.0
@@ -43,7 +44,6 @@ class ModelConfig:
     def __post_init__(self):
         if self.yarn_config is not None and isinstance(self.yarn_config, dict):
             self.yarn_config = YaRNConfig(**self.yarn_config)
-
 
     def set_vocab_size(self, vocab_size: int):
         self.vocab_size = vocab_size
@@ -320,7 +320,7 @@ class Transformer(nn.Module):
 
                     return custom_forward
 
-                hidden_states = torch.utils.checkpoint.checkpoint(
+                hidden_states, _ = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(layer),
                     hidden_states,
                     preserve_rng_state=True,

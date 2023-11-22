@@ -124,6 +124,7 @@ def _parse_tokenized_dataset_args():
     argp.add_argument("load_path", help="path midi_dict dataset")
     argp.add_argument("save_path", help="path to save dataset")
     argp.add_argument("-s", help="also produce shuffled", action="store_true")
+    argp.add_argument("-l", help="max sequence length", type=int)
 
     return argp.parse_args(sys.argv[2:])
 
@@ -131,15 +132,13 @@ def _parse_tokenized_dataset_args():
 def build_tokenized_dataset(args):
     from aria.tokenizer import TokenizerLazy
     from aria.data.datasets import TokenizedDataset
-    from aria.config import load_config
 
-    config = load_config()["data"]["dataset_gen_args"]
     tokenizer = TokenizerLazy()
     dataset = TokenizedDataset.build(
         tokenizer=tokenizer,
         save_path=args.save_path,
         midi_dataset_path=args.load_path,
-        max_seq_len=config["max_seq_len"],
+        max_seq_len=args.l,
         overwrite=True,
     )
     if args.s:

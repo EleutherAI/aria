@@ -70,9 +70,6 @@
                     "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"]
                 }
             }
-        },
-        "dataset_gen_args": {
-            "max_seq_len": 2048
         }
     },
 

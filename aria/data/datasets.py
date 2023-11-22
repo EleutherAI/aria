@@ -13,11 +13,12 @@ from pathlib import Path
 from typing import Callable, Iterable
 from collections import defaultdict
 from copy import deepcopy
-from multiprocessing import Pool
+from multiprocessing import Pool, Process, Queue
 
 from aria.config import load_config
 from aria.tokenizer import Tokenizer, TokenizerLazy
 from aria.data.midi import MidiDict, get_test_fn
+import tqdm
 
 
 def setup_logger():
@@ -52,13 +53,17 @@ class MidiDataset:
         entries (list[MidiDict]): MidiDict objects to be stored.
     """
 
-    def __init__(self, entries: list[MidiDict]):
+    def __init__(self, entries: list[MidiDict] | Iterable):
         self.entries = entries
 
     def __len__(self):
+        if not isinstance(self.entries, list):
+            self.entries = list(self.entries)
         return len(self.entries)
 
     def __getitem__(self, ind: int):
+        if not isinstance(self.entries, list):
+            self.entries = list(self.entries)
         return self.entries[ind]
 
     def __iter__(self):
@@ -72,14 +77,18 @@ class MidiDataset:
                 writer.write(midi_dict.get_msg_dict())
 
     @classmethod
-    def load(cls, load_path: str):
+    def load(cls, load_path: str, stream=True):
         """Loads dataset from JSON file."""
-        midi_dicts = []
-        with jsonlines.open(load_path) as reader:
-            for entry in reader:
-                midi_dicts.append(MidiDict.from_msg_dict(entry))
 
-        return cls(midi_dicts)
+        def _load():
+            with jsonlines.open(load_path) as reader:
+                for entry in reader:
+                    yield MidiDict.from_msg_dict(entry)
+
+        if stream == False:
+            return cls(list(_load()))
+        else:
+            return cls(_load())
 
     @classmethod
     def split_from_file(
@@ -529,6 +538,13 @@ class TokenizedDataset(torch.utils.data.Dataset):
             TokenizedDataset: Dataset saved midi_dataset and saved at save_path.
         """
 
+        def _worker(input_queue, output_queue, tokenizer):
+            while True:
+                item = input_queue.get()
+                if item is None:
+                    break
+                output_queue.put(_get_tokenized_seqs(item, tokenizer))
+
         def _get_tokenized_seqs_mp(_midi_dict_iter: Iterable):
             # Gets tokenized sequences using multiprocessing
 
@@ -536,18 +552,38 @@ class TokenizedDataset(torch.utils.data.Dataset):
             # and stride logic in _get_tokenized_seqs
             assert isinstance(tokenizer, TokenizerLazy), "Unsupported tokenizer"
 
-            with Pool() as pool:
-                results = pool.imap(
-                    functools.partial(_get_tokenized_seqs, tokenizer=tokenizer),
-                    _midi_dict_iter,
+            iq = Queue()
+            oq = Queue()
+
+            _num_proc = os.cpu_count()
+            workers = [
+                Process(
+                    target=functools.partial(_worker, tokenizer=tokenizer),
+                    args=(iq, oq),
                 )
+                for _ in range(_num_proc)
+            ]
+            for w in workers:
+                w.start()
 
-                for idx, tokenized_seq in enumerate(results):
-                    if tokenized_seq:
-                        yield tokenized_seq
+            def _enqueue(iq):
+                for midi_dict in _midi_dict_iter:
+                    iq.put(midi_dict)
+                for i in range(_num_proc):
+                    iq.put(None)
 
-                    if idx % 50 == 0 and idx != 0:
-                        logger.info(f"Processed MidiDicts: {idx}")
+            enqueue = Process(target=_enqueue, args=(iq,))
+            enqueue.start()
+
+            with tqdm.tqdm() as t:
+                while True:
+                    if not oq.empty():
+                        result = oq.get()
+                        t.update(1)
+                        yield result
+                    else:
+                        if not any(proc.is_alive() for proc in workers):
+                            break
 
         logger = setup_logger()
 
