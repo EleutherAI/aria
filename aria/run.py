@@ -124,7 +124,7 @@ def _parse_tokenized_dataset_args():
     argp.add_argument("load_path", help="path midi_dict dataset")
     argp.add_argument("save_path", help="path to save dataset")
     argp.add_argument("-s", help="also produce shuffled", action="store_true")
-    argp.add_argument("-l", help="max sequence length", type=int, default=2048)
+    argp.add_argument("-l", help="max sequence length", type=int)
 
     return argp.parse_args(sys.argv[2:])
 

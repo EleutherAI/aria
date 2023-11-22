@@ -77,14 +77,18 @@ class MidiDataset:
                 writer.write(midi_dict.get_msg_dict())
 
     @classmethod
-    def load(cls, load_path: str):
+    def load(cls, load_path: str, stream=True):
         """Loads dataset from JSON file."""
+
         def _load():
             with jsonlines.open(load_path) as reader:
                 for entry in reader:
                     yield MidiDict.from_msg_dict(entry)
 
-        return cls(_load())
+        if stream == False:
+            return cls(list(_load()))
+        else:
+            return cls(_load())
 
     @classmethod
     def split_from_file(
@@ -552,8 +556,13 @@ class TokenizedDataset(torch.utils.data.Dataset):
             oq = Queue()
 
             _num_proc = os.cpu_count()
-            workers = [Process(target=functools.partial(_worker, tokenizer=tokenizer), args=(iq, oq)) for _ in
-                       range(_num_proc)]
+            workers = [
+                Process(
+                    target=functools.partial(_worker, tokenizer=tokenizer),
+                    args=(iq, oq),
+                )
+                for _ in range(_num_proc)
+            ]
             for w in workers:
                 w.start()
 
