@@ -43,7 +43,6 @@ def _get_cfg_coeff(cfg_gamma, cfg_mode, cur_pos, start_pos, total_len):
 # temp=0.85, top_p=0.9, cfg_gamma=1.4
 
 
-@torch.autocast(device_type="cuda", dtype=torch.float16)
 def greedy_sample(
     model: TransformerLM,
     tokenizer: Tokenizer,
@@ -128,7 +127,7 @@ def greedy_sample(
                 for neg_seq in neg_prompts
             ],
             axis=0,
-        ).cuda()
+        )
         neg_len = (
             neg_min_len
             if neg_prompt_len is None
@@ -136,7 +135,7 @@ def greedy_sample(
         )
         neg_tokens = neg_prompt_tensors[:, :neg_len]
 
-    tokens = torch.full((bsz, total_len), pad_id).cuda()
+    tokens = torch.full((bsz, total_len), pad_id)
     for idx, unencoded_seq in enumerate(prompts):
         tokens[idx, : len(unencoded_seq)] = tokenizer.encode(unencoded_seq)
 
