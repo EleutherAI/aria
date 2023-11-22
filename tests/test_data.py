@@ -248,7 +248,7 @@ class TestTokenizedDataset(unittest.TestCase):
 
 class TestReaderWriter(unittest.TestCase):
     def test_jsonl_zst(self):
-        data = [{"a": i, "b": i+1} for i in range(0, 100, 4)]
+        data = [{"a": i, "b": i + 1} for i in range(0, 100, 4)]
         filename = "tests/test_results/test.jsonl.zst"
         # if test.jsonl.zst exists, delete it
         if os.path.isfile(filename):

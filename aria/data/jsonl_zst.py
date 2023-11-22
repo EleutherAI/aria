@@ -18,7 +18,7 @@ class Reader:
         self.path = path
 
     def __iter__(self):
-        with builtins.open(self.path, 'rb') as fh:
+        with builtins.open(self.path, "rb") as fh:
             cctx = zstandard.ZstdDecompressor()
             reader = io.BufferedReader(cctx.stream_reader(fh))
             yield from jsonlines.Reader(reader)
@@ -36,13 +36,13 @@ class Writer:
         self.path = path
 
     def __enter__(self):
-        self.fh = builtins.open(self.path, 'wb')
+        self.fh = builtins.open(self.path, "wb")
         self.cctx = zstandard.ZstdCompressor()
         self.compressor = self.cctx.stream_writer(self.fh)
         return self
 
     def write(self, obj):
-        self.compressor.write(json.dumps(obj).encode('UTF-8') + b'\n')
+        self.compressor.write(json.dumps(obj).encode("UTF-8") + b"\n")
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.compressor.flush(zstandard.FLUSH_FRAME)
@@ -62,9 +62,9 @@ def open(path: str, mode: str = "r"):
     Returns:
         Reader or Writer: Reader if mode is 'r', Writer if mode is 'w'.
     """
-    if mode == 'r':
+    if mode == "r":
         yield Reader(path)
-    elif mode == 'w':
+    elif mode == "w":
         with Writer(path) as writer:
             yield writer
     else:
