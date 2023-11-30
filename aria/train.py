@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from torch.utils.flop_counter import FlopCounterMode
 from triton.testing import do_bench
 from accelerate.logging import get_logger
+from safetensors.torch import load_file
 from logging.handlers import RotatingFileHandler
 from tqdm import tqdm
 
@@ -469,28 +470,6 @@ def _train(
     epoch_csv.close()
 
 
-def save_model_from_cp(model_name: str, checkpoint_dir: str, save_path: str):
-    # Converts a compiled model checkpoint into one that can be loaded directly
-    logger = get_logger(__name__)
-    accelerator = accelerate.Accelerator()
-    tokenizer = TokenizerLazy(return_tensors=True)
-    model_config = ModelConfig(**load_model_config(model_name))
-    model_config.set_vocab_size(tokenizer.vocab_size)
-    model = torch.compile(TransformerLM(model_config), mode="default")
-
-    model = accelerator.prepare(model)
-    accelerator.load_state(checkpoint_dir)
-    state_dict = model.state_dict()
-    for key in list(state_dict.keys()):
-        if key.startswith("_orig_mod."):
-            new_key = key[len("_orig_mod.") :]
-            state_dict[new_key] = state_dict.pop(key)
-        else:
-            logger.warning(f"Found unexpected key: {key}")
-
-    torch.save(state_dict, save_path)
-
-
 # NOTE: Any differences observed when resuming training are most likely the
 # result of randomness inherent to the data-augmentation. I'm currently unsure
 # how to register and restore this random state during checkpointing.
@@ -706,6 +685,38 @@ def train(
         scheduler=scheduler,
         steps_per_checkpoint=steps_per_checkpoint,
     )
+
+
+def convert_cp_from_safetensors(checkpoint_path: str, save_path: str):
+    d = load_file(checkpoint_path)
+    key = list(d.keys())[0]
+    gap = len(key.split(".")[0])
+    d = {s[gap + 1 :]: v for s, v in d.items()}
+    torch.save(d, save_path)
+
+
+def convert_cp_from_accelerate(
+    model_name: str, checkpoint_dir: str, save_path: str
+):
+    # Converts a compiled model checkpoint into one that can be loaded directly
+    logger = get_logger(__name__)
+    accelerator = accelerate.Accelerator()
+    tokenizer = TokenizerLazy(return_tensors=True)
+    model_config = ModelConfig(**load_model_config(model_name))
+    model_config.set_vocab_size(tokenizer.vocab_size)
+    model = torch.compile(TransformerLM(model_config), mode="default")
+
+    model = accelerator.prepare(model)
+    accelerator.load_state(checkpoint_dir)
+    state_dict = model.state_dict()
+    for key in list(state_dict.keys()):
+        if key.startswith("_orig_mod."):
+            new_key = key[len("_orig_mod.") :]
+            state_dict[new_key] = state_dict.pop(key)
+        else:
+            logger.warning(f"Found unexpected key: {key}")
+
+    torch.save(state_dict, save_path)
 
 
 def parse_resume_args():
