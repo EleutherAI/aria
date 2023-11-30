@@ -3,7 +3,7 @@ import unittest
 import logging
 import torch
 
-from aria.train import train, resume_train, save_model_from_cp
+from aria.train import train, resume_train, convert_cp_from_accelerate
 from aria.tokenizer import TokenizerLazy
 from aria.model import ModelConfig, TransformerLM
 from aria.config import load_model_config
@@ -84,7 +84,7 @@ class TestTraining(unittest.TestCase):
             )
 
         if os.path.isdir("./experiments/0/checkpoints/epoch10_step50"):
-            save_model_from_cp(
+            convert_cp_from_accelerate(
                 model_name="test",
                 checkpoint_dir="./experiments/0/checkpoints/epoch10_step50",
                 save_path="tests/test_results/model_cp.bin",

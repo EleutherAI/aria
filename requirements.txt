@@ -3,3 +3,4 @@ accelerate
 mido
 jsonlines
 pydub
+safetensors
