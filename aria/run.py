@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import pathlib
+import warnings
 
 
 def _parse_sample_args():
@@ -112,6 +113,10 @@ def sample(args):
     model = TransformerLM(model_config).to(device)
     model.load_state_dict(model_state)
     if args.q:
+        if device.type != 'cpu':
+            warnings.warn("Quantization is not supported on CUDA devices. Using CPU instead.")
+            device = torch.device("cpu")
+
         from torch.ao.quantization import get_default_qconfig_mapping
         from torch.quantization.quantize_fx import prepare_fx, convert_fx
         qconfig_mapping = get_default_qconfig_mapping()
