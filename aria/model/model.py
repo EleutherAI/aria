@@ -311,7 +311,7 @@ class Transformer(nn.Module):
         # remove torch.compile from the train script as this is not currently
         # supported.
         # Implements gradient checkpoints on Encoder Layers.
-        if self.model_config.grad_checkpoint is True:
+        if self.model_config.grad_checkpoint is True and not use_cache:
             for layer in self.encode_layers:
 
                 def create_custom_forward(module):
@@ -326,7 +326,6 @@ class Transformer(nn.Module):
                     preserve_rng_state=True,
                     use_reentrant=True,
                 )
-
         else:
             new_past_kv = []
             past_kv = (

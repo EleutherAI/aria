@@ -43,13 +43,13 @@ def _get_cfg_coeff(cfg_gamma, cfg_mode, cur_pos, start_pos, total_len):
 # temp=0.85, top_p=0.9, cfg_gamma=1.4
 
 
-@torch.autocast(device_type="cuda", dtype=torch.float16)
 def greedy_sample(
     model: TransformerLM,
     tokenizer: Tokenizer,
     prompts: List[list],
     max_seq_len: int,
     max_gen_len: int,
+    device: torch.device | None = None,
     cfg_gamma: float | None = 1.4,
     cfg_mode: str | None = None,
     neg_prompts: List[list] | None = None,
@@ -67,6 +67,7 @@ def greedy_sample(
         prompts (List[list]): A list of prompts to sample as a batch.
         max_seq_len (int): Maximum sequence length supported by the model.
         max_gen_len (int): Maximum desired sequence length of the samples.
+        device (torch.device, optional): Device to use. Defaults to None.
         cfg_gamma (float, optional): CFG gamma parameter. Defaults to 1.2.
             This parameter *determines* whether parameters related to CFG are used.
             None: No CFG or interpolation. `cfg_mode, neg_prompts, neg_prompt_len, alpha` are ignored.
@@ -88,6 +89,7 @@ def greedy_sample(
         List[list]: The list of samples, decoded by the tokenizer.
     """
     assert tokenizer.return_tensors is True, "tokenizer must return tensors."
+    device = device or torch.device("cuda")
     model.eval()
 
     pad_id = tokenizer.pad_id
@@ -121,14 +123,16 @@ def greedy_sample(
             [
                 torch.concat(
                     [
-                        torch.full((neg_max_len - len(neg_seq),), pad_id),
-                        tokenizer.encode(neg_seq),
+                        torch.full(
+                            (neg_max_len - len(neg_seq),), pad_id, device=device
+                        ),
+                        tokenizer.encode(neg_seq).to(device),
                     ]
                 )
                 for neg_seq in neg_prompts
             ],
             axis=0,
-        ).cuda()
+        )
         neg_len = (
             neg_min_len
             if neg_prompt_len is None
@@ -136,9 +140,11 @@ def greedy_sample(
         )
         neg_tokens = neg_prompt_tensors[:, :neg_len]
 
-    tokens = torch.full((bsz, total_len), pad_id).cuda()
+    tokens = torch.full((bsz, total_len), pad_id, device=device)
     for idx, unencoded_seq in enumerate(prompts):
-        tokens[idx, : len(unencoded_seq)] = tokenizer.encode(unencoded_seq)
+        tokens[idx, : len(unencoded_seq)] = tokenizer.encode(unencoded_seq).to(
+            device
+        )
 
     dim_tok_inserted = [False for _ in range(bsz)]
     input_text_mask = tokens != pad_id
