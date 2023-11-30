@@ -1,0 +1,19 @@
+name: Lint
+
+on: [push, pull_request]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: psf/black@stable
+        with:
+          options: "--check --verbose --line-length 80"
+          src: "./aria"
+      - name: Check formatting result
+        run: |
+          if [ $? -ne 0 ]; then
+            echo "Formatting check failed. Please run 'make format' to fix formatting issues."
+            exit 1
+          fi
