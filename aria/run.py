@@ -14,10 +14,16 @@ def _parse_sample_args():
     argp.add_argument("-c", help="path to model checkpoint")
     argp.add_argument("-p", help="path to midi file")
     argp.add_argument(
-        "-var", help="number of variations", type=int, default=1,
+        "-var",
+        help="number of variations",
+        type=int,
+        default=1,
     )
     argp.add_argument(
-        "-trunc", help="length to truncated prompt", type=int, default=200,
+        "-trunc",
+        help="length to truncated prompt",
+        type=int,
+        default=200,
     )
     argp.add_argument("-e", action="store_true", help="enable force end")
     argp.add_argument("-l", type=int, help="generation length", default=1024)
@@ -76,7 +82,9 @@ def _get_ckpt_path(ckpt_path: str | None) -> str:
 
 def _get_midi_path(midi_path: str | None) -> str:
     if midi_path is None:
-        midis = list(pathlib.Path(".").glob("*.mid")) + list(pathlib.Path(".").glob("*.midi"))
+        midis = list(pathlib.Path(".").glob("*.mid")) + list(
+            pathlib.Path(".").glob("*.midi")
+        )
         midi_path = _show_popup("Choose a midi-file", midis)
     return midi_path
 
@@ -96,12 +104,18 @@ def sample(args):
     if not cuda_is_available():
         print("CUDA device is not available. Using CPU instead.")
     else:
-        greedy_sample = torch.autocast(device_type="cuda", dtype=torch.float16)(greedy_sample)
-    device = torch.device("cuda") if cuda_is_available() else torch.device("cpu")
+        greedy_sample = torch.autocast(device_type="cuda", dtype=torch.float16)(
+            greedy_sample
+        )
+    device = (
+        torch.device("cuda") if cuda_is_available() else torch.device("cpu")
+    )
 
     ckpt_path = _get_ckpt_path(args.c)  # let user input path if not provided
     model_state = torch.load(ckpt_path, map_location=device)
-    model_name = _get_model_name(args.m, model_state)  # infer model name if not provided
+    model_name = _get_model_name(
+        args.m, model_state
+    )  # infer model name if not provided
 
     num_variations = args.var
     truncate_len = args.trunc
@@ -113,27 +127,54 @@ def sample(args):
     model = TransformerLM(model_config).to(device)
     model.load_state_dict(model_state)
     if args.q:
-        if device.type != 'cpu':
-            warnings.warn("Quantization is not supported on CUDA devices. Using CPU instead.")
+        if device.type != "cpu":
+            warnings.warn(
+                "Quantization is not supported on CUDA devices. Using CPU instead."
+            )
             device = torch.device("cpu")
 
         from torch.ao.quantization import get_default_qconfig_mapping
         from torch.quantization.quantize_fx import prepare_fx, convert_fx
+
         qconfig_mapping = get_default_qconfig_mapping()
 
         def _quantize(module, key, input_shape):
             inp = torch.randn(input_shape, dtype=torch.float, device=device)
-            m = prepare_fx(getattr(module, key), qconfig_mapping, example_inputs=inp)
+            m = prepare_fx(
+                getattr(module, key), qconfig_mapping, example_inputs=inp
+            )
             m = convert_fx(m)
             setattr(module, key, m)
 
         for i in range(len(model.model.encode_layers)):
-            _quantize(model.model.encode_layers[i], "mixed_qkv", input_shape=(1, 2048, model_config.n_heads))
-            _quantize(model.model.encode_layers[i], "att_proj_linear", input_shape=(1, 2048, model_config.n_heads))
-            _quantize(model.model.encode_layers[i], "ff_linear_1", input_shape=(1, 2048, model_config.n_heads))
-            _quantize(model.model.encode_layers[i], "ff_linear_2", input_shape=(1, 2048, model_config.n_heads * model_config.ff_mult))
+            _quantize(
+                model.model.encode_layers[i],
+                "mixed_qkv",
+                input_shape=(1, 2048, model_config.n_heads),
+            )
+            _quantize(
+                model.model.encode_layers[i],
+                "att_proj_linear",
+                input_shape=(1, 2048, model_config.n_heads),
+            )
+            _quantize(
+                model.model.encode_layers[i],
+                "ff_linear_1",
+                input_shape=(1, 2048, model_config.n_heads),
+            )
+            _quantize(
+                model.model.encode_layers[i],
+                "ff_linear_2",
+                input_shape=(
+                    1,
+                    2048,
+                    model_config.n_heads * model_config.ff_mult,
+                ),
+            )
 
-    midi_path = _get_midi_path(args.p)  # let user input midi path if not provided
+    midi_path = _get_midi_path(
+        args.p
+    )  # let user input midi path if not provided
 
     if args.l and 0 < args.l < model.max_seq_len:
         max_gen_len = args.l

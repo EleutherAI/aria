@@ -1,4 +1,7 @@
 test:
 	python -m unittest tests/test_*.py
 
-PHONY: test
+style:
+	black --line-length 80 aria
+
+PHONY: test style
