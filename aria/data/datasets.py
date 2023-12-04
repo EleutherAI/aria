@@ -316,358 +316,13 @@ def build_mididict_dataset(
     )
 
 
-def _get_tokenized_seqs(_entry: MidiDict | dict, tokenizer: Tokenizer):
-    # This function is only intended to be used as a process target during the
-    # multi-processing in TokenizedDataset.build
-    logger = logging.getLogger(__name__)
-
-    if isinstance(_entry, str):
-        _midi_dict = MidiDict.from_msg_dict(json.loads(_entry.rstrip()))
-    else:
-        _midi_dict = _entry
-
-    try:
-        _tokenized_seq = tokenizer.tokenize(_midi_dict)
-    except Exception as e:
-        logger.error(f"Failed to tokenize midi_dict: {e}")
-    else:
-        if tokenizer.unk_tok in _tokenized_seq:
-            logger.warning("Unknown token seen while tokenizing midi_dict")
-        return _tokenized_seq
-
-
-class TokenizedDataset(torch.utils.data.Dataset):
-    def __init__(self, file_path: str, tokenizer: Tokenizer):
-        raise NotImplementedError  # Depreciated
-
-        self.tokenizer = tokenizer
-        self._transform = None
-
-        self.file_path = file_path
-        self.file_buff = open(file_path, mode="r")
-        self.file_mmap = mmap.mmap(
-            self.file_buff.fileno(), 0, access=mmap.ACCESS_READ
-        )
-
-        # Check self.tokenizers is the same as the one used to generate file
-        # This logic could use a refactor (maybe use deepdict?)
-        buffer = self.file_mmap.readline()
-        try:
-            self.config = json.loads(buffer)
-            self._check_config()
-        except AssertionError as e:
-            logging.error(
-                f"Tokenizer config setting don't match those used to build {file_path}"
-            )
-            raise e
-        except Exception as e:
-            logging.error("Processing tokenizer config resulted in an error")
-            raise e
-
-        self.tokenizer_name = tokenizer.name
-        self.max_seq_len = self.config["max_seq_len"]
-
-        self.index = self._build_index()
-
-    def _check_config(self):
-        config = self.config
-        tokenizer = self.tokenizer
-
-        assert config["tokenizer_name"] == tokenizer.name
-        for k, v in config["tokenizer_config"].items():
-            if isinstance(v, dict):
-                for _k, _v in v.items():
-                    assert _v == tokenizer.config[k][_k]
-            elif isinstance(v, str) or isinstance(v, int):
-                assert v == tokenizer.config[k]
-
-    def close(self):
-        # This is unnecessary because mmap is closed automatically when gc,
-        # however using this stops ResourceWarnings.
-        self.file_buff.close()
-        self.file_mmap.close()
-
-    def __del__(self):
-        self.close()
-
-    def __len__(self):
-        return len(self.index)
-
-    def __getitem__(self, idx: int):
-        def _format(tok):
-            # This is required because json formats tuples into lists
-            if isinstance(tok, list):
-                return tuple(tok)
-            return tok
-
-        self.file_mmap.seek(self.index[idx])
-        seq = json.loads(self.file_mmap.readline())  # Load raw seq
-        seq = [_format(tok) for tok in seq]  # Format into hashable
-        if self._transform:
-            seq = self._transform(seq)  # Data augmentation
-
-        src = seq
-        tgt = seq[1:] + [self.tokenizer.pad_tok]
-
-        return self.tokenizer.encode(src), self.tokenizer.encode(tgt)
-
-    def _build_index(self):
-        # Skip first line containing config
-        self.file_mmap.seek(0)
-        self.file_mmap.readline()
-
-        index = []
-        while True:
-            pos = self.file_mmap.tell()
-            line_buffer = self.file_mmap.readline()
-            if line_buffer == b"":
-                break
-            else:
-                index.append(pos)
-
-        logging.debug(f"Finished indexing {len(index)} sequences")
-
-        return index
-
-    # This is a bit gross - maybe refactor this
-    def set_transform(self, transform: Callable | list[Callable]):
-        """Sets data augmentation transformation functions.
-
-        Args:
-            transform (Callable | list[Callable]): Transformation function(s).
-                Provided functions are expected to be list[str | tuple] ->
-                list[str | tuple].
-        """
-        if isinstance(transform, Callable):
-            self._transform = transform
-        elif isinstance(transform, list):
-            # Check validity
-            for fn in transform:
-                assert isinstance(fn, Callable), "Invalid function"
-
-            # Define new transformation function (apply fn in order)
-            def _new_transform(x):
-                for fn in transform:
-                    x = fn(x)
-                return x
-
-            self._transform = _new_transform
-        else:
-            raise ValueError("Must provide function or list of functions.")
-
-    def get_shuffled_dataset(
-        self,
-        save_path: str | None = None,
-        repeatable: bool = False,
-        overwrite: bool = False,
-    ):
-        """Writes and returns a shuffled version of the dataset (self).
-
-        Note that this function will NOT change the current dataset in anyway.
-        It creates a new dataset file at save_path and returns this as a new
-        object.
-
-        Args:
-            save_path (str): Path to save the new dataset. If this is not
-                provided then the save_path will have '_shuffled' appended.
-            repeatible (bool): If True, makes the shuffling process
-                deterministic by setting a random seed.
-            overwrite (bool): If True, will overwrite the file at save_path.
-        """
-        logger = setup_logger()
-        if save_path:
-            assert (
-                self.file_path != save_path
-            ), "save_path must not overwrite the current file"
-
-        file_path = Path(self.file_path)
-        if not save_path:
-            save_path = file_path.with_name(
-                f"{file_path.stem}_shuffled{file_path.suffix}"
-            )
-        if os.path.isfile(save_path) and overwrite is False:
-            logging.warning(f"File already exists at {save_path} - aborting")
-            return self
-
-        if repeatable:
-            random.seed(42)
-        shuffled_index = deepcopy(self.index)
-        random.shuffle(shuffled_index)
-
-        logger.info(f"Creating shuffled version of dataset at {self.file_path}")
-        with jsonlines.open(save_path, mode="w") as writer:
-            writer.write(self.config)
-            for byte_idx in shuffled_index:
-                self.file_mmap.seek(byte_idx)
-                writer.write(json.loads(self.file_mmap.readline()))
-
-        logging.info(
-            f"Shuffled copy of {self.file_path} successfully written "
-            f"to {save_path} "
-        )
-
-        return TokenizedDataset(save_path, self.tokenizer)
-
-    @classmethod
-    def build(
-        cls,
-        tokenizer: Tokenizer,
-        save_path: str,
-        max_seq_len: int,
-        midi_dataset: MidiDataset = None,
-        midi_dataset_path: str = None,
-        padding: bool = True,
-        stride_len: int = None,
-        overwrite: bool = False,
-    ):
-        """Builds and returns a TokenizedDataset.
-
-        Args:
-            tokenizer (Tokenizer): Tokenizer to use to tokenize the MidiDicts.
-            save_path (str): Save path for datasets file.
-            max_seq_len (int): Maximum sequence length used to split the
-                tokenized sequences.
-            midi_dataset (MidiDataset, optional): If provided, build dataset
-                directly from a MidiDataset object.
-            midi_dataset_path (str, optional): If provided, build dataset by
-                dynamically loading MidiDict objects from a MidiDataset save
-                file. If both midi_dataset and midi_dataset_path are provided,
-                midi_dataset will be preffered.
-            overwrite (bool, optional): If True, will overwrite a previous file
-                located at save_path. Defaults to False.
-
-        Returns:
-            TokenizedDataset: Dataset saved midi_dataset and saved at save_path.
-        """
-
-        def _worker(input_queue, output_queue, tokenizer):
-            while True:
-                item = input_queue.get()
-                if item is None:
-                    break
-                output_queue.put(_get_tokenized_seqs(item, tokenizer))
-
-        def _get_tokenized_seqs_mp(_midi_dict_iter: Iterable):
-            # Gets tokenized sequences using multiprocessing
-
-            # TokenizerLazy is the only supported tokenizer due to the truncate
-            # and stride logic in _get_tokenized_seqs
-            assert isinstance(tokenizer, TokenizerLazy), "Unsupported tokenizer"
-
-            iq = Queue()
-            oq = Queue()
-
-            _num_proc = os.cpu_count()
-            workers = [
-                Process(
-                    target=functools.partial(_worker, tokenizer=tokenizer),
-                    args=(iq, oq),
-                )
-                for _ in range(_num_proc)
-            ]
-            for w in workers:
-                w.start()
-
-            def _enqueue(iq):
-                for midi_dict in _midi_dict_iter:
-                    iq.put(midi_dict)
-                for i in range(_num_proc):
-                    iq.put(None)
-
-            enqueue = Process(target=_enqueue, args=(iq,))
-            enqueue.start()
-
-            with tqdm.tqdm() as t:
-                while True:
-                    if not oq.empty():
-                        result = oq.get()
-                        t.update(1)
-                        yield result
-                    else:
-                        if not any(proc.is_alive() for proc in workers):
-                            break
-
-        logger = setup_logger()
-
-        if overwrite is False and os.path.isfile(save_path) is True:
-            raise FileExistsError(f"File at {save_path} already exists.")
-        elif overwrite is True and os.path.isfile(save_path) is True:
-            os.remove(save_path)
-
-        if midi_dataset is None and midi_dataset_path is None:
-            raise ValueError(
-                "Must provide either midi_dataset or midi_dataset_path."
-            )
-
-        assert max_seq_len > 0, "max_seq_len must be greater than 0"
-        if stride_len:
-            assert 0 < stride_len <= max_seq_len, "Invalid stride_len"
-        else:
-            stride_len = max_seq_len
-
-        with jsonlines.open(save_path, mode="w") as writer:
-            # Write tokenizer info into json on first line
-            writer.write(
-                {
-                    "tokenizer_config": tokenizer.config,
-                    "tokenizer_name": tokenizer.name,
-                    "max_seq_len": max_seq_len,
-                    "padding": padding,
-                    "stride_len": stride_len,
-                }
-            )
-
-            if midi_dataset:
-                logger.info(
-                    f"Building tokenized dataset with config: "
-                    f"max_seq_len={max_seq_len} "
-                    f"padding={padding} "
-                    f"stride_len={stride_len} "
-                )
-                if len(midi_dataset) == 0:
-                    logging.warning("midi_dataset is empty")
-
-                buffer = []
-                for entry in _get_tokenized_seqs_mp(
-                    _midi_dict_iter=midi_dataset
-                ):
-                    buffer += entry
-                    while len(buffer) >= max_seq_len:
-                        writer.write(buffer[:max_seq_len])
-                        buffer = buffer[max_seq_len:]
-                buffer += [tokenizer.pad_tok] * (max_seq_len - len(buffer))
-                writer.write(buffer[:max_seq_len])
-
-            elif midi_dataset_path:
-                logger.info(
-                    f"Building tokenized dataset from file at "
-                    f"{midi_dataset_path} with config: "
-                    f"max_seq_len={max_seq_len} "
-                    f"padding={padding} "
-                    f"stride_len={stride_len} "
-                )
-                with open(midi_dataset_path, "r") as f:
-                    buffer = []
-                    for entry in _get_tokenized_seqs_mp(_midi_dict_iter=f):
-                        buffer += entry
-                        while len(buffer) >= max_seq_len:
-                            writer.write(buffer[:max_seq_len])
-                            buffer = buffer[max_seq_len:]
-                    buffer += [tokenizer.pad_tok] * (max_seq_len - len(buffer))
-                    writer.write(buffer[:max_seq_len])
-
-        logging.info(
-            f"Finished building, saved tokenized dataset to {save_path}"
-        )
-
-        return cls(file_path=save_path, tokenizer=tokenizer)
-
-
 class TrainingDataset(torch.utils.data.Dataset):
     def __init__(self, tokenizer: Tokenizer):
         self.tokenizer = tokenizer
+        self.logger = setup_logger()
         self._transform = None
         self.config = None
+        self.max_seq_len = None
 
         self.file_buff = None
         self.file_mmap = None
@@ -727,12 +382,17 @@ class TrainingDataset(torch.utils.data.Dataset):
         buffer = self.file_mmap.readline()
         try:
             self.config = json.loads(buffer)
+            self.max_seq_len = self.config["max_seq_len"]
             _check_config()
         except AssertionError as e:
-            logging.error("Tokenizer config setting don't match those in file")
+            self.logger.error(
+                "Tokenizer config setting don't match those in file"
+            )
             raise e
         except Exception as e:
-            logging.error("Processing tokenizer config resulted in an error")
+            self.logger.error(
+                "Processing tokenizer config resulted in an error"
+            )
             raise e
 
     def _build_index(self):
@@ -749,7 +409,7 @@ class TrainingDataset(torch.utils.data.Dataset):
             else:
                 index.append(pos)
 
-        logging.debug(f"Finished indexing {len(index)} sequences")
+        self.logger.debug(f"Finished indexing {len(index)} sequences")
 
         return index
 
@@ -784,8 +444,6 @@ def get_seqs(
     midi_dict_iter: Iterable,
 ):
     def _get_seqs(_entry: MidiDict | dict, _tokenizer: Tokenizer):
-        logger = logging.getLogger(__name__)
-
         if isinstance(_entry, str):
             _midi_dict = MidiDict.from_msg_dict(json.loads(_entry.rstrip()))
         else:
@@ -810,6 +468,7 @@ def get_seqs(
     # TokenizerLazy is the only supported tokenizer due to the truncate
     # and stride logic in _get_tokenized_seqs
     assert isinstance(tokenizer, TokenizerLazy), "Unsupported tokenizer"
+    logger = setup_logger()
 
     iq = Queue()
     oq = Queue()
@@ -860,8 +519,11 @@ class PretrainingDataset(TrainingDataset):
             idx = self.curr_epoch + 1
 
         if idx >= self.num_epochs:
-            logging.warning(f"epoch file doesn't exist for {idx}, aborting")
-            return
+            _idx = idx % self.num_epochs
+            self.logger.warning(
+                f"epoch file doesn't exist for {idx}, resetting to epoch={_idx}"
+            )
+            idx = _idx
 
         self.close()
         self.file_buff = open(self.epoch_files[idx], mode="r")
@@ -870,6 +532,7 @@ class PretrainingDataset(TrainingDataset):
         )
         self.index = self._build_index()
         self.curr_epoch = idx
+        self.logger.info(f"Initiated epoch {idx} of PretrainingDataset")
 
     def _get_epoch_files(self):
         """Validates and returns a sorted list of epoch dataset files."""
@@ -886,12 +549,15 @@ class PretrainingDataset(TrainingDataset):
         present_epochs = []
         for file_name in file_names:
             if not re.match(r"^epoch\d+\.jsonl$", file_name):
-                logging.warning(f"Found file with unexpected name: {file_name}")
+                self.logger.warning(
+                    f"Found file with unexpected name: {file_name}"
+                )
             else:
                 present_epochs.append(
                     int(re.match(r"^epoch(\d+)\.jsonl$", file_name).group(1))
                 )
         self.num_epochs = len(present_epochs)
+        assert self.num_epochs >= 1, f"no epoch files found in {self.dir_path}"
         assert set(present_epochs) == set(
             range(self.num_epochs)
         ), "epoch files missing"
@@ -984,7 +650,7 @@ class PretrainingDataset(TrainingDataset):
             )
             midi_dataset.shuffle()
 
-        logging.info(
+        logger.info(
             f"Finished building, saved PretrainingDataset to {save_dir}"
         )
 
@@ -1008,7 +674,7 @@ class FinetuningDataset(TrainingDataset):
 
     # Do nothing in this case
     def init_epoch(self, idx: int | None = None):
-        pass
+        self.logger.info(f"Successful initiated epoch {idx} - no changes")
 
     @classmethod
     def build(
@@ -1104,7 +770,7 @@ class FinetuningDataset(TrainingDataset):
 
         _build(_midi_dataset=midi_dataset)
 
-        logging.info(
+        logger.info(
             f"Finished building, saved PretrainingDataste to {save_path}"
         )
 

@@ -14,6 +14,10 @@ from aria.config import load_config
 from aria.data.midi import get_duration_ms
 
 
+# TODO: PITCH AUG BREAKS WHEN TOKENIZED SEQS ARE NOT IMPLEMENTED WITH PADDING
+#       AKA CONCAT SEQUENCES
+
+
 class Tokenizer:
     """Abstract Tokenizer class for tokenizing midi_dict objects.
 
