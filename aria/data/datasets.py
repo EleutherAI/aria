@@ -643,7 +643,7 @@ class PretrainingDataset(TrainingDataset):
                 "as intended when building different epochs."
             )
         for idx in range(num_epochs):
-            logger.info(f"Building epoch {idx+1}/{num_epochs}...")
+            logger.info(f"Building epoch {idx}/{num_epochs - 1}...")
             _build_epoch(
                 _save_path=os.path.join(save_dir, f"epoch{idx}.jsonl"),
                 _midi_dataset=midi_dataset,
@@ -674,7 +674,7 @@ class FinetuningDataset(TrainingDataset):
 
     # Do nothing in this case
     def init_epoch(self, idx: int | None = None):
-        self.logger.info(f"Successful initiated epoch {idx} - no changes")
+        self.logger.info(f"Successful initiated epoch {idx}")
 
     @classmethod
     def build(
@@ -740,7 +740,7 @@ class FinetuningDataset(TrainingDataset):
                     }
                 )
                 logger.info(
-                    f"Building tokenized dataset with config: "
+                    f"Building FinetuningDataset with config: "
                     f"tokenizer_name=tokenizer.name"
                     f"max_seq_len={max_seq_len} "
                     f"stride_len={stride_len}"
