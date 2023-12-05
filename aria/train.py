@@ -31,9 +31,24 @@ from aria.data.datasets import PretrainingDataset, FinetuningDataset
 # For example usage you could run the pre-training script with:
 #
 # accelerate launch [arguments] aria/train.py pretrain \
-#   data/train.jsonl \
-#   data/val.jsonl \
+#   small \
+#   data/train \
+#   data/val \
 #   -epochs 10 \
+#   -bs 32 \
+#   -workers 8
+#
+# You could resume a run from an accelerate checkpoint with:
+#
+# accelerate launch [arguments] aria/train.py resume \
+#   small \
+#   pretrain \
+#   data/train \
+#   data/val \
+#   -cdir models/epoch5_step0 \
+#   -rstep 0 \
+#   -repoch 5 \
+#   -epochs 5 \
 #   -bs 32 \
 #   -workers 8
 
