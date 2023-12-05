@@ -257,7 +257,7 @@ def _parse_pretrain_dataset_args():
     return argp.parse_args(sys.argv[2:])
 
 
-def build_tokenized_dataset(args):
+def build_pretraining_dataset(args):
     from aria.tokenizer import TokenizerLazy
     from aria.data.datasets import PretrainingDataset
 
@@ -318,9 +318,9 @@ def main():
     elif args.command == "midi-dataset":
         build_midi_dataset(args=_parse_midi_dataset_args())
     elif args.command == "pretrain-dataset":
-        build_tokenized_dataset(args=_parse_pretrain_dataset_args())
+        build_pretraining_dataset(args=_parse_pretrain_dataset_args())
     elif args.command == "finetune-dataset":
-        build_tokenized_dataset(args=_parse_finetune_dataset_args())
+        build_finetune_dataset(args=_parse_finetune_dataset_args())
     else:
         print("Unrecognized command")
         parser.print_help()
