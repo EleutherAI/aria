@@ -452,7 +452,8 @@ def get_seqs(
         try:
             _tokenized_seq = _tokenizer.tokenize(_midi_dict)
         except Exception as e:
-            logger.error(f"Failed to tokenize midi_dict: {e}")
+            logger.info(f"Skipping midi_dict: {e}")
+            return
         else:
             if _tokenizer.unk_tok in _tokenized_seq:
                 logger.warning("Unknown token seen while tokenizing midi_dict")
@@ -601,7 +602,8 @@ class PretrainingDataset(TrainingDataset):
 
                 buffer = []
                 for entry in get_seqs(tokenizer, _midi_dataset):
-                    buffer += entry
+                    if entry is not None:
+                        buffer += entry
                     while len(buffer) >= max_seq_len:
                         writer.write(buffer[:max_seq_len])
                         buffer = buffer[max_seq_len:]
