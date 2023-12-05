@@ -2,12 +2,9 @@ import os
 import shutil
 import unittest
 import logging
-import torch
 
 from aria.train import train, resume_train, convert_cp_from_accelerate
 from aria.tokenizer import TokenizerLazy
-from aria.model import ModelConfig, TransformerLM
-from aria.config import load_model_config
 from aria.data.midi import MidiDict
 from aria.data.datasets import (
     MidiDataset,

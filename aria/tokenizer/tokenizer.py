@@ -7,15 +7,12 @@ import itertools
 import random
 
 from collections import defaultdict
+from typing import Callable
 from mido.midifiles.units import second2tick
 
 from aria.data.midi import MidiDict
 from aria.config import load_config
 from aria.data.midi import get_duration_ms
-
-
-# TODO: PITCH AUG BREAKS WHEN TOKENIZED SEQS ARE NOT IMPLEMENTED WITH PADDING
-#       AKA CONCAT SEQUENCES
 
 
 class Tokenizer:
@@ -542,6 +539,60 @@ class TokenizerLazy(Tokenizer):
             metadata={},
         )
 
+    def export_aug_fn_concat(self, aug_fn: Callable):
+        """Exports a function that splits src before augmenting.
+
+        This is useful for augmentation functions that expect pure sequences
+        instead of concatenated ones (like those given by PretrainedDataset).
+        """
+
+        def _aug_fn_concat(
+            src: list,
+            _aug_fn: Callable,
+            pad_tok: str,
+            eos_tok: str,
+            **kwargs,
+        ):
+            # Split list on '<E>'
+            initial_seq_len = len(src)
+            src_sep = []
+            prev_idx = 0
+            for curr_idx, tok in enumerate(src, start=1):
+                if tok == eos_tok:
+                    src_sep.append(src[prev_idx:curr_idx])
+                    prev_idx = curr_idx
+
+            # Last sequence
+            if prev_idx != curr_idx:
+                src_sep.append(src[prev_idx:])
+
+            # Augment
+            src_sep = [
+                _aug_fn(
+                    _src,
+                    **kwargs,
+                )
+                for _src in src_sep
+            ]
+
+            # Concatenate
+            src_aug_concat = [tok for src_aug in src_sep for tok in src_aug]
+
+            # Pad or truncate to original sequence length as necessary
+            src_aug_concat = src_aug_concat[:initial_seq_len]
+            src_aug_concat += [pad_tok] * (
+                initial_seq_len - len(src_aug_concat)
+            )
+
+            return src_aug_concat
+
+        return functools.partial(
+            _aug_fn_concat,
+            _aug_fn=aug_fn,
+            pad_tok=self.pad_tok,
+            eos_tok=self.eos_tok,
+        )
+
     def export_pitch_aug(self, aug_range: int):
         """Exports a function that augments the pitch of all note tokens.
 
@@ -660,11 +711,10 @@ class TokenizerLazy(Tokenizer):
             src: list,
             min_time_step: int,
             max_time_step: int,
-            pad_tok: str,
             _tempo_aug_range: float,
         ):
             def tempo_aug_tok_raw(tok, _tempo_aug):
-                if isinstance(tok, str):
+                if isinstance(tok, str):  # Stand in for special tokens
                     _tok_type = "special"
                 else:
                     _tok_type = tok[0]
@@ -688,7 +738,6 @@ class TokenizerLazy(Tokenizer):
 
             # Recalculate dur and wait tokens so that they are correctly
             # formatted after naive augmentation.
-            initial_seq_len = len(augmented_seq)
             idx = 0
             buffer = []
             while idx < len(augmented_seq):
@@ -742,18 +791,13 @@ class TokenizerLazy(Tokenizer):
                 else:
                     idx += 1
 
-            # Pad or truncate to original sequence length as necessary
-            augmented_seq = augmented_seq[:initial_seq_len]
-            augmented_seq += [pad_tok] * (initial_seq_len - len(augmented_seq))
-
             return augmented_seq
 
         # See functools.partial docs
         return functools.partial(
-            tempo_aug_seq,
+            self.export_aug_fn_concat(aug_fn=tempo_aug_seq),
             min_time_step=self.min_time_step,
             max_time_step=self.max_time_step,
-            pad_tok=self.pad_tok,
             _tempo_aug_range=tempo_aug_range,
         )
 
@@ -801,8 +845,9 @@ class TokenizerLazy(Tokenizer):
                             _idx += 2
 
                 elif tok_type == "dur":
-                    # Add dur to previously added note token
-                    stack[-1]["dur"] = tok
+                    # Add dur to previously added note token if exists
+                    if stack:
+                        stack[-1]["dur"] = tok
                 else:
                     # Note token -> append to stack
                     stack.append({"note": tok})
@@ -810,6 +855,6 @@ class TokenizerLazy(Tokenizer):
             return src
 
         return functools.partial(
-            chord_mixup,
+            self.export_aug_fn_concat(aug_fn=chord_mixup),
             unk_tok=self.unk_tok,
         )
