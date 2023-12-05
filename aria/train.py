@@ -18,7 +18,7 @@ from tqdm import tqdm
 from aria.config import load_model_config
 from aria.model import ModelConfig, TransformerLM
 from aria.tokenizer import TokenizerLazy
-from aria.data.datasets import TokenizedDataset
+from aria.data.datasets import PretrainingDataset, FinetuningDataset
 
 
 # ----- USAGE -----
@@ -38,11 +38,7 @@ from aria.data.datasets import TokenizedDataset
 #   -workers 8
 
 # TODO:
-# - Add fine-tuning functionality
 # - Test that everything works on a distributed setup
-
-
-# FINISH FT IMPLEMENTATION
 
 
 def setup_logger(project_dir: str):
@@ -194,7 +190,65 @@ def get_finetune_optim(
     )
 
 
-def get_dataloaders(
+def get_pretrain_dataloaders(
+    train_data_dir: str,
+    val_data_dir: str,
+    tokenizer: TokenizerLazy,
+    batch_size: int,
+    num_workers: int,
+    init_epoch: int | None = None,
+    apply_aug: bool = True,
+):
+    logger = logging.getLogger(__name__)
+    train_dataset = PretrainingDataset(
+        dir_path=train_data_dir,
+        tokenizer=tokenizer,
+    )
+    val_dataset = PretrainingDataset(
+        dir_path=val_data_dir,
+        tokenizer=tokenizer,
+    )
+
+    if init_epoch:
+        if init_epoch > train_dataset.num_epochs:
+            logger.warning(
+                f"Provided init_epoch is larger than the number of epoch files "
+                f"located in {train_data_dir}. The default behaviour in this case "
+                f"is to load the epochs in a cyclic fashion."
+            )
+        train_dataset.init_epoch(idx=init_epoch)
+
+    assert (
+        val_dataset.num_epochs == 1
+    ), "val-data directory should only contain one epoch"
+
+    if apply_aug:
+        train_dataset.set_transform(
+            [
+                tokenizer.export_chord_mixup(),
+                tokenizer.export_velocity_aug(1),
+                tokenizer.export_pitch_aug(5),
+                tokenizer.export_tempo_aug(0.2),
+            ]
+        )
+
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        shuffle=False,
+    )
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        shuffle=False,
+    )
+
+    return train_dataloader, val_dataloader
+
+
+def get_finetune_dataloaders(
     train_data_path: str,
     val_data_path: str,
     tokenizer: TokenizerLazy,
@@ -203,12 +257,11 @@ def get_dataloaders(
     apply_aug: bool = True,
 ):
     """Returns tuple: (train_dataloader, val_dataloader)"""
-    # Init datasets & data loaders
-    train_dataset = TokenizedDataset(
+    train_dataset = FinetuningDataset(
         file_path=train_data_path,
         tokenizer=tokenizer,
     )
-    val_dataset = TokenizedDataset(
+    val_dataset = FinetuningDataset(
         file_path=val_data_path,
         tokenizer=tokenizer,
     )
@@ -227,13 +280,13 @@ def get_dataloaders(
         train_dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        shuffle=False,  # Perhaps change this but be careful
+        shuffle=False,
     )
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        shuffle=False,  # Same as above
+        shuffle=False,
     )
 
     return train_dataloader, val_dataloader
@@ -271,6 +324,7 @@ def _train(
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     steps_per_checkpoint: int | None = None,
     resume_step: int | None = None,
+    resume_epoch: int | None = None,
 ):
     def profile_flops(dataloader: DataLoader):
         def _bench():
@@ -305,22 +359,15 @@ def _train(
             f"{iters_per_second * total_flops / 1e12} TF/s (not warm)"
         )
 
-    def make_checkpoint(_accelerator, _epoch: int, _step: int | None = None):
-        if _step:
-            checkpoint_dir = os.path.join(
-                project_dir,
-                "checkpoints",
-                f"epoch{_epoch}_step{_step}",
-            )
-        else:
-            checkpoint_dir = os.path.join(
-                project_dir,
-                "checkpoints",
-                f"epoch{_epoch}",
-            )
+    def make_checkpoint(_accelerator, _epoch: int, _step: int):
+        checkpoint_dir = os.path.join(
+            project_dir,
+            "checkpoints",
+            f"epoch{_epoch}_step{_step}",
+        )
 
         logger.info(
-            f"EPOCH {_epoch}/{epochs}: Saving checkpoint - {checkpoint_dir}"
+            f"EPOCH {_epoch}/{epochs + start_epoch}: Saving checkpoint - {checkpoint_dir}"
         )
         _accelerator.save_state(checkpoint_dir)
 
@@ -339,13 +386,15 @@ def _train(
             lr_for_print = "{:.2e}".format(optimizer.param_groups[-1]["lr"])
 
         model.train()
-        for step, batch in (
+        for __step, batch in (
             pbar := tqdm(
                 enumerate(dataloader),
-                total=len(dataloader),
+                total=len(dataloader) + _resume_step,
+                initial=_resume_step,
                 leave=False,
             )
         ):
+            step = __step + _resume_step + 1
             src, tgt = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
             logits = model(src)  # (b_sz, s_len, v_sz)
             logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
@@ -356,17 +405,19 @@ def _train(
             if len(loss_buffer) > TRAILING_LOSS_STEPS:
                 loss_buffer.pop(0)
             trailing_loss = sum(loss_buffer) / len(loss_buffer)
-            avg_train_loss = rolling_average(avg_train_loss, loss.item(), step)
+            avg_train_loss = rolling_average(
+                avg_train_loss, loss.item(), __step
+            )
 
             # Logging
             logger.debug(
-                f"EPOCH {_epoch} STEP {_resume_step + step}: "
+                f"EPOCH {_epoch} STEP {step}: "
                 f"lr={lr_for_print}, "
                 f"loss={round(loss.item(), 4)}, "
                 f"trailing_loss={round(trailing_loss, 4)}, "
                 f"average_loss={round(avg_train_loss, 4)}"
             )
-            loss_writer.writerow([_epoch, _resume_step + step, loss.item()])
+            loss_writer.writerow([_epoch, step, loss.item()])
             pbar.set_postfix_str(
                 f"lr={lr_for_print}, "
                 f"loss={round(loss.item(), 4)}, "
@@ -382,15 +433,15 @@ def _train(
                 lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
 
             if steps_per_checkpoint:
-                if step % steps_per_checkpoint == 0 and step != 0:
+                if step % steps_per_checkpoint == 0:
                     make_checkpoint(
                         _accelerator=accelerator,
-                        _epoch=epoch,
+                        _epoch=_epoch,
                         _step=step,
                     )
 
         logger.info(
-            f"EPOCH {_epoch}/{epochs}: Finished training - "
+            f"EPOCH {_epoch}/{epochs + start_epoch}: Finished training - "
             f"average_loss={round(avg_train_loss, 4)}"
         )
 
@@ -418,7 +469,7 @@ def _train(
 
         # EPOCH
         logger.info(
-            f"EPOCH {_epoch}/{epochs}: Finished evaluation - "
+            f"EPOCH {_epoch}/{epochs + start_epoch}: Finished evaluation - "
             f"average_loss={round(avg_val_loss, 4)}"
         )
 
@@ -443,31 +494,42 @@ def _train(
     epoch_writer = csv.writer(epoch_csv)
     epoch_writer.writerow(["epoch", "avg_train_loss", "avg_val_loss"])
 
-    if resume_step:
+    if resume_epoch is not None:
+        start_epoch = resume_epoch + 1
+    else:
+        start_epoch = 0
+
+    if resume_step is not None:
+        assert resume_epoch is not None, "Must provide resume epoch"
         logger.info(
-            f"Resuming training from step {resume_step} - logging as EPOCH 0"
+            f"Resuming training from step {resume_step} - logging as EPOCH {resume_epoch}"
         )
         skipped_dataloader = accelerator.skip_first_batches(
             dataloader=train_dataloader,
             num_batches=resume_step,
         )
+
         avg_train_loss = train_loop(
             dataloader=skipped_dataloader,
-            _epoch=0,
+            _epoch=resume_epoch,
             _resume_step=resume_step,
         )
-        avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=0)
+        avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=resume_epoch)
         epoch_writer.writerow([0, avg_train_loss, avg_val_loss])
+        epoch_csv.flush()
+        make_checkpoint(_accelerator=accelerator, _epoch=start_epoch, _step=0)
 
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + start_epoch):
+        train_dataloader.dataset.init_epoch(epoch)
         avg_train_loss = train_loop(dataloader=train_dataloader, _epoch=epoch)
         avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=epoch)
         epoch_writer.writerow([epoch, avg_train_loss, avg_val_loss])
         epoch_csv.flush()
-        make_checkpoint(_accelerator=accelerator, _epoch=epoch)
+        make_checkpoint(_accelerator=accelerator, _epoch=epoch + 1, _step=0)
 
     loss_csv.close()
     epoch_csv.close()
+    logging.shutdown()
 
 
 # NOTE: Any differences observed when resuming training are most likely the
@@ -477,23 +539,40 @@ def resume_train(
     model_name: str,
     train_data_path: str,
     val_data_path: str,
+    mode: str,
     num_workers: int,
     batch_size: int,
     epochs: int,
     checkpoint_dir: str,
+    resume_epoch: int,
     resume_step: int,
-    finetune: bool = False,  # load ft optimizers if True
     steps_per_checkpoint: int | None = None,
     project_dir: str = None,
 ):
     # Validate inputs
+    assert mode in {"pretrain", "finetune"}, "Invalid mode"
     assert 0 < num_workers <= 128, "Too many workers"
     assert epochs > 0, "Invalid number of epochs"
     assert batch_size > 0, "Invalid batch size"
-    assert os.path.isfile(train_data_path)
-    assert os.path.isfile(val_data_path)
     assert torch.cuda.is_available() is True, "CUDA not available"
+    assert os.path.isdir(checkpoint_dir), f"No dir at {checkpoint_dir}"
+    if mode == "finetune":
+        assert os.path.isfile(
+            train_data_path
+        ), f"No file found at {train_data_path}"
+        assert os.path.isfile(
+            val_data_path
+        ), f"No file found at {val_data_path}"
+    elif mode == "pretrain":
+        assert os.path.isdir(
+            train_data_path
+        ), f"No dir found at {train_data_path}"
+        assert os.path.isdir(val_data_path), f"No dir found at {val_data_path}"
+    else:
+        raise Exception
 
+    # TODO: Add support for verifying the resume_step and epoch, keep these
+    # save these variables as part of the state during checkpointing
     project_dir = setup_project_dir(project_dir)
     accelerator = accelerate.Accelerator(project_dir=project_dir)
     logger = setup_logger(project_dir)
@@ -502,20 +581,22 @@ def resume_train(
         "Please insure that the training config and resume step are set "
         "correctly, the script does not currently check that this is the case. "
         "If the previous checkpoint was saved at step n, then resume_step "
-        "should be n+1. If there is a mismatch between the batch size then the "
+        "should be n. If there is a mismatch between the batch size then the "
         "script will resume at the wrong step."
     )
     logger.info(
         f"Using training config: "
         f"model_name={model_name}, "
+        f"mode={mode}, "
         f"epochs={epochs}, "
         f"batch_size={batch_size}, "
         f"num_workers={num_workers}, "
         f"checkpoint_dir={checkpoint_dir}, "
-        f"resume_step={resume_step}"
+        f"resume_step={resume_step}, "
+        f"resume_epoch={resume_epoch}"
     )
     if steps_per_checkpoint:
-        logger.info(f"Creating checkpoints ")
+        logger.info(f"Creating checkpoints every {steps_per_checkpoint}")
 
     # Init model
     tokenizer = TokenizerLazy(return_tensors=True)
@@ -523,14 +604,37 @@ def resume_train(
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = torch.compile(TransformerLM(model_config), mode="default")
 
-    train_dataloader, val_dataloader = get_dataloaders(
-        train_data_path=train_data_path,
-        val_data_path=val_data_path,
-        tokenizer=tokenizer,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        apply_aug=True,
-    )
+    if mode == "pretrain":
+        train_dataloader, val_dataloader = get_pretrain_dataloaders(
+            train_data_dir=train_data_path,
+            val_data_dir=val_data_path,
+            tokenizer=tokenizer,
+            init_epoch=resume_epoch,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            apply_aug=True,
+        )
+        optimizer, scheduler = get_pretrain_optim(
+            model,
+            num_epochs=epochs,
+            steps_per_epoch=len(train_dataloader),
+        )
+    elif mode == "finetune":
+        train_dataloader, val_dataloader = get_finetune_dataloaders(
+            train_data_path=train_data_path,
+            val_data_path=val_data_path,
+            tokenizer=tokenizer,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            apply_aug=True,
+        )
+        optimizer, scheduler = get_finetune_optim(
+            model,
+            num_epochs=epochs,
+            steps_per_epoch=len(train_dataloader),
+        )
+    else:
+        raise Exception
 
     assert (
         train_dataloader.dataset.max_seq_len == model_config.max_seq_len
@@ -538,19 +642,6 @@ def resume_train(
     assert (
         val_dataloader.dataset.max_seq_len == model_config.max_seq_len
     ), "max_seq_len differs between datasets and model config"
-
-    if finetune:
-        optimizer, scheduler = get_finetune_optim(
-            model,
-            num_epochs=epochs,
-            steps_per_epoch=len(train_dataloader),
-        )
-    else:
-        optimizer, scheduler = get_pretrain_optim(
-            model,
-            num_epochs=epochs,
-            steps_per_epoch=len(train_dataloader),
-        )
 
     (
         model,
@@ -580,6 +671,7 @@ def resume_train(
         scheduler=scheduler,
         steps_per_checkpoint=steps_per_checkpoint,
         resume_step=resume_step,
+        resume_epoch=resume_epoch,
     )
 
 
@@ -587,6 +679,7 @@ def train(
     model_name: str,
     train_data_path: str,
     val_data_path: str,
+    mode: str,
     num_workers: int,
     batch_size: int,
     epochs: int,
@@ -595,22 +688,35 @@ def train(
     project_dir: str = None,
 ):
     # Validate inputs
+    assert mode in {"pretrain", "finetune"}, "Invalid mode"
     assert 0 < num_workers <= 128, "Too many workers"
     assert epochs > 0, "Invalid number of epochs"
     assert batch_size > 0, "Invalid batch size"
-    assert os.path.isfile(train_data_path)
-    assert os.path.isfile(val_data_path)
     assert torch.cuda.is_available() is True, "CUDA not available"
-    if finetune_cp_path:
+    if mode == "finetune":
         assert os.path.isfile(finetune_cp_path), "Invalid checkpoint path"
+        assert os.path.isfile(
+            train_data_path
+        ), f"No file found at {train_data_path}"
+        assert os.path.isfile(
+            val_data_path
+        ), f"No file found at {val_data_path}"
+    elif mode == "pretrain":
+        assert os.path.isdir(
+            train_data_path
+        ), f"No dir found at {train_data_path}"
+        assert os.path.isdir(val_data_path), f"No dir found at {val_data_path}"
+    else:
+        raise Exception
 
     project_dir = setup_project_dir(project_dir)
     accelerator = accelerate.Accelerator(project_dir=project_dir)
     logger = setup_logger(project_dir)
-    logger.info(f"Using project directory {project_dir} ")
+    logger.info(f"Using project directory {project_dir}")
     logger.info(
         f"Using training config: "
         f"model_name={model_name}, "
+        f"mode={mode}, "
         f"epochs={epochs}, "
         f"batch_size={batch_size}, "
         f"num_workers={num_workers}"
@@ -622,21 +728,43 @@ def train(
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerLM(model_config)
     logger.info(f"Loaded model with config: {load_model_config(model_name)}")
-    if finetune_cp_path:
+    if mode == "finetune":
         model.load_state_dict(torch.load(finetune_cp_path))
         logger.info(
             f"Loaded finetune checkpoint located at: {finetune_cp_path}"
         )
     model = torch.compile(model, mode="default")
 
-    train_dataloader, val_dataloader = get_dataloaders(
-        train_data_path=train_data_path,
-        val_data_path=val_data_path,
-        tokenizer=tokenizer,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        apply_aug=True,
-    )
+    if mode == "pretrain":
+        train_dataloader, val_dataloader = get_pretrain_dataloaders(
+            train_data_dir=train_data_path,
+            val_data_dir=val_data_path,
+            tokenizer=tokenizer,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            apply_aug=True,
+        )
+        optimizer, scheduler = get_pretrain_optim(
+            model,
+            num_epochs=epochs,
+            steps_per_epoch=len(train_dataloader),
+        )
+    elif mode == "finetune":
+        train_dataloader, val_dataloader = get_finetune_dataloaders(
+            train_data_path=train_data_path,
+            val_data_path=val_data_path,
+            tokenizer=tokenizer,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            apply_aug=True,
+        )
+        optimizer, scheduler = get_finetune_optim(
+            model,
+            num_epochs=epochs,
+            steps_per_epoch=len(train_dataloader),
+        )
+    else:
+        raise Exception
 
     assert (
         train_dataloader.dataset.max_seq_len == model_config.max_seq_len
@@ -644,19 +772,6 @@ def train(
     assert (
         val_dataloader.dataset.max_seq_len == model_config.max_seq_len
     ), "max_seq_len differs between datasets and model config"
-
-    if finetune_cp_path:
-        optimizer, scheduler = get_finetune_optim(
-            model,
-            num_epochs=epochs,
-            steps_per_epoch=len(train_dataloader),
-        )
-    else:
-        optimizer, scheduler = get_pretrain_optim(
-            model,
-            num_epochs=epochs,
-            steps_per_epoch=len(train_dataloader),
-        )
 
     (
         model,
@@ -727,6 +842,7 @@ def parse_resume_args():
     argp.add_argument("val_data", help="path to val data")
     argp.add_argument("-cdir", help="checkpoint dir", type=str, required=True)
     argp.add_argument("-rstep", help="resume step", type=int, required=True)
+    argp.add_argument("-repoch", help="resume epoch", type=int, required=True)
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
     argp.add_argument("-bs", help="batch size", type=int, default=32)
     argp.add_argument("-workers", help="number workers", type=int, default=1)
@@ -741,7 +857,7 @@ def parse_resume_args():
 def parse_pretrain_args():
     argp = argparse.ArgumentParser(prog="python aria/train.py pretrain")
     argp.add_argument("model", help="name of model config file")
-    argp.add_argument("train_data", help="path to train data")
+    argp.add_argument("train_dir", help="path to train dir")
     argp.add_argument("val_data", help="path to val data")
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
     argp.add_argument("-bs", help="batch size", type=int, default=32)
@@ -792,12 +908,12 @@ if __name__ == "__main__":
             model_name=pretrain_args.model,
             train_data_path=pretrain_args.train_data,
             val_data_path=pretrain_args.val_data,
+            mode="pretrain",
             num_workers=pretrain_args.workers,
             batch_size=pretrain_args.bs,
             epochs=pretrain_args.epochs,
-            finetune_cp_path=False,
-            project_dir=pretrain_args.pdir,
             steps_per_checkpoint=pretrain_args.spc,
+            project_dir=pretrain_args.pdir,
         )
     elif args.mode == "finetune":
         pretrain_args = parse_finetune_args()
@@ -805,12 +921,13 @@ if __name__ == "__main__":
             model_name=pretrain_args.model,
             train_data_path=pretrain_args.train_data,
             val_data_path=pretrain_args.val_data,
+            mode="finetune",
             num_workers=pretrain_args.workers,
             batch_size=pretrain_args.bs,
             epochs=pretrain_args.epochs,
             finetune_cp_path=args.cp,
-            project_dir=pretrain_args.pdir,
             steps_per_checkpoint=pretrain_args.spc,
+            project_dir=pretrain_args.pdir,
         )
     elif args.mode == "resume":
         pretrain_args = parse_resume_args()
@@ -818,14 +935,15 @@ if __name__ == "__main__":
             model_name=pretrain_args.model,
             train_data_path=pretrain_args.train_data,
             val_data_path=pretrain_args.val_data,
-            checkpoint_dir=pretrain_args.cdir,
-            resume_step=pretrain_args.rstep,
+            mode="pretrain" if args.mode == "pt" else "finetune",
             num_workers=pretrain_args.workers,
             batch_size=pretrain_args.bs,
             epochs=pretrain_args.epochs,
-            finetune=True if args.mode == "ft" else False,
-            project_dir=pretrain_args.pdir,
+            checkpoint_dir=pretrain_args.cdir,
+            resume_step=pretrain_args.rstep,
+            resume_epoch=pretrain_args.repoch,
             steps_per_checkpoint=pretrain_args.spc,
+            project_dir=pretrain_args.pdir,
         )
     else:
         print("Unrecognized command")

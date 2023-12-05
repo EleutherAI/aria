@@ -216,7 +216,7 @@ def sample(args):
 
 
 def _parse_midi_dataset_args():
-    argp = argparse.ArgumentParser(prog="aria midi_dataset")
+    argp = argparse.ArgumentParser(prog="aria midi-dataset")
     argp.add_argument("dir", help="directory containing midi files")
     argp.add_argument("save_path", help="path to save dataset")
     argp.add_argument("-r", action="store_true", help="recursively search dirs")
@@ -247,30 +247,53 @@ def build_midi_dataset(args):
         )
 
 
-def _parse_tokenized_dataset_args():
-    argp = argparse.ArgumentParser(prog="aria tokenized_dataset")
+def _parse_pretrain_dataset_args():
+    argp = argparse.ArgumentParser(prog="aria pretrain-dataset")
     argp.add_argument("load_path", help="path midi_dict dataset")
-    argp.add_argument("save_path", help="path to save dataset")
-    argp.add_argument("-s", help="also produce shuffled", action="store_true")
+    argp.add_argument("save_dir", help="path to save dataset")
     argp.add_argument("-l", help="max sequence length", type=int, default=2048)
+    argp.add_argument("-e", help="num epochs", type=int, default=1)
 
     return argp.parse_args(sys.argv[2:])
 
 
 def build_tokenized_dataset(args):
     from aria.tokenizer import TokenizerLazy
-    from aria.data.datasets import TokenizedDataset
+    from aria.data.datasets import PretrainingDataset
 
     tokenizer = TokenizerLazy()
-    dataset = TokenizedDataset.build(
+    dataset = PretrainingDataset.build(
         tokenizer=tokenizer,
-        save_path=args.save_path,
-        midi_dataset_path=args.load_path,
+        save_dir=args.save_dir,
         max_seq_len=args.l,
-        overwrite=True,
+        num_epochs=args.e,
+        midi_dataset_path=args.load_path,
     )
-    if args.s:
-        dataset.get_shuffled_dataset()
+
+
+def _parse_finetune_dataset_args():
+    argp = argparse.ArgumentParser(prog="aria finetune-dataset")
+    argp.add_argument("load_path", help="path midi_dict dataset")
+    argp.add_argument("save_dir", help="path to save dataset")
+    argp.add_argument("-l", help="max sequence length", type=int, default=2048)
+    argp.add_argument("-s", help="stride length", type=int, default=512)
+
+    return argp.parse_args(sys.argv[2:])
+
+
+# This might not be correct - double check
+def build_finetune_dataset(args):
+    from aria.tokenizer import TokenizerLazy
+    from aria.data.datasets import FinetuningDataset
+
+    tokenizer = TokenizerLazy()
+    dataset = FinetuningDataset.build(
+        tokenizer=tokenizer,
+        save_dir=args.save_dir,
+        max_seq_len=args.l,
+        stride_len=args.s,
+        midi_dataset_path=args.load_path,
+    )
 
 
 def main():
@@ -279,7 +302,7 @@ def main():
     parser.add_argument(
         "command",
         help="command to run",
-        choices=("sample", "midi-dataset", "tokenized-dataset"),
+        choices=("sample", "midi-dataset", "pretrain-dataset"),
     )
 
     # parse_args defaults to [1:] for args, but you need to
@@ -294,8 +317,10 @@ def main():
         sample(args=_parse_sample_args())
     elif args.command == "midi-dataset":
         build_midi_dataset(args=_parse_midi_dataset_args())
-    elif args.command == "tokenized-dataset":
-        build_tokenized_dataset(args=_parse_tokenized_dataset_args())
+    elif args.command == "pretrain-dataset":
+        build_tokenized_dataset(args=_parse_pretrain_dataset_args())
+    elif args.command == "finetune-dataset":
+        build_tokenized_dataset(args=_parse_finetune_dataset_args())
     else:
         print("Unrecognized command")
         parser.print_help()

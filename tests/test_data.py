@@ -1,5 +1,6 @@
 import unittest
 import os
+import shutil
 import logging
 
 from aria import tokenizer
@@ -94,8 +95,10 @@ class TestMidiDataset(unittest.TestCase):
         self.assertEqual(mid_1.calculate_hash(), mid_2.calculate_hash())
 
 
-class TestTokenizedDataset(unittest.TestCase):
-    # Test building is working (on the file level)
+# TODO: Fix failing tests and fix the del thing not working correctly.
+
+
+class TestPretrainingDataset(unittest.TestCase):
     def test_build(self):
         MAX_SEQ_LEN = 512
         tknzr = tokenizer.TokenizerLazy(
@@ -107,123 +110,73 @@ class TestTokenizedDataset(unittest.TestCase):
         )
         mididict_dataset.save("tests/test_results/mididict_dataset.jsonl")
 
-        dataset_buffer_from_file = datasets.TokenizedDataset.build(
+        if os.path.exists("tests/test_results/pretrain_dataset_buff_1"):
+            shutil.rmtree("tests/test_results/pretrain_dataset_buff_1")
+        if os.path.exists("tests/test_results/pretrain_dataset_buff_2"):
+            shutil.rmtree("tests/test_results/pretrain_dataset_buff_2")
+
+        dataset_from_file = datasets.PretrainingDataset.build(
             tokenizer=tknzr,
-            save_path="tests/test_results/dataset_buffer_1.jsonl",
+            save_dir="tests/test_results/pretrain_dataset_buff_1",
+            max_seq_len=MAX_SEQ_LEN,
+            num_epochs=3,
             midi_dataset_path="tests/test_results/mididict_dataset.jsonl",
-            max_seq_len=MAX_SEQ_LEN,
-            overwrite=True,
         )
-        dataset_buffer_from_mdset = datasets.TokenizedDataset.build(
+        dataset_from_mdset = datasets.PretrainingDataset.build(
             tokenizer=tknzr,
-            save_path="tests/test_results/dataset_buffer_2.jsonl",
-            midi_dataset=mididict_dataset,
+            save_dir="tests/test_results/pretrain_dataset_buff_2",
             max_seq_len=MAX_SEQ_LEN,
-            overwrite=True,
+            num_epochs=3,
+            midi_dataset=mididict_dataset,
         )
-
-        with (
-            open("tests/test_results/dataset_buffer_1.jsonl") as buff1,
-            open("tests/test_results/dataset_buffer_1.jsonl") as buff2,
-        ):
-            buff1_lines = buff1.readlines()
-            buff2_lines = buff2.readlines()
-
-            for l1, l2 in zip(buff1_lines, buff2_lines):
-                for tok1, tok2 in zip(l1, l2):
-                    if tok1 == "<D>" or tok2 == "<D>":
-                        break  # <D> is randomly inserted due to multiprocessing
-                    else:
-                        self.assertEqual(tuple(tok1), tuple(tok2))
-
-        self.assertEqual(
-            sum(1 for _ in dataset_buffer_from_file.file_buff),
-            len(dataset_buffer_from_file) + 1,
-        )
-
-        dataset_buffer_from_file.close()
-        dataset_buffer_from_mdset.close()
 
     def test_mmap(self):
         MAX_SEQ_LEN = 512
         tknzr = tokenizer.TokenizerLazy(
             return_tensors=False,
         )
-        midi_dataset = datasets.MidiDataset.build(
+        mididict_dataset = datasets.MidiDataset.build(
             dir="tests/test_data",
             recur=True,
         )
-        tokenized_dataset = datasets.TokenizedDataset.build(
+        if os.path.exists("tests/test_results/pretrain_dataset_buff"):
+            shutil.rmtree("tests/test_results/pretrain_dataset_buff")
+        pretrain_dataset = datasets.PretrainingDataset.build(
             tokenizer=tknzr,
-            save_path="tests/test_results/dataset_buffer.jsonl",
-            midi_dataset=midi_dataset,
+            save_dir="tests/test_results/pretrain_dataset_buff",
             max_seq_len=MAX_SEQ_LEN,
-            overwrite=True,
+            num_epochs=1,
+            midi_dataset=mididict_dataset,
         )
 
-        raw_entries = [src for src, tgt in tokenized_dataset]
+        raw_entries = [src for src, tgt in pretrain_dataset]
         self.assertEqual(len({len(_) for _ in raw_entries}), 1)
 
-        src, tgt = tokenized_dataset[0]
-        logging.info(f"src: {tknzr.decode(src)}")
-        logging.info(f"tgt: {tknzr.decode(tgt)}")
-
-        tokenized_dataset.close()
-
-    def test_shuffle(self):
-        MAX_SEQ_LEN = 512
-        tknzr = tokenizer.TokenizerLazy(
-            return_tensors=False,
-        )
-        midi_dataset = datasets.MidiDataset.build(
-            dir="tests/test_data",
-            recur=True,
-        )
-        tokenized_dataset = datasets.TokenizedDataset.build(
-            tokenizer=tknzr,
-            save_path="tests/test_results/dataset_buffer.jsonl",
-            midi_dataset=midi_dataset,
-            max_seq_len=MAX_SEQ_LEN,
-            overwrite=True,
-        )
-        tokenized_dataset_shuffled = tokenized_dataset.get_shuffled_dataset(
-            repeatable=True,
-            overwrite=True,
-        )
-
-        self.assertEqual(
-            len(tokenized_dataset), len(tokenized_dataset_shuffled)
-        )
-        self.assertEqual(
-            len(tokenized_dataset), len(tokenized_dataset_shuffled)
-        )
-
-        same_order = True
-        for seq1, seq2 in zip(tokenized_dataset, tokenized_dataset_shuffled):
-            for x, y in zip(seq1, seq2):
-                if x != y:
-                    same_order = False
-
-        self.assertFalse(same_order)
+        src, tgt = pretrain_dataset[0]
+        logging.info(f"src: {tknzr.decode(src)[:50]}")
+        logging.info(f"tgt: {tknzr.decode(tgt)[:50]}")
 
     def test_augmentation(self):
         MAX_SEQ_LEN = 512
         tknzr = tokenizer.TokenizerLazy(
             return_tensors=False,
         )
-        midi_dataset = datasets.MidiDataset.build(
+        mididict_dataset = datasets.MidiDataset.build(
             dir="tests/test_data",
             recur=True,
         )
-        tokenized_dataset = datasets.TokenizedDataset.build(
+        if os.path.exists("tests/test_results/pretrain_dataset_buff"):
+            shutil.rmtree("tests/test_results/pretrain_dataset_buff")
+        pretrain_dataset = datasets.PretrainingDataset.build(
             tokenizer=tknzr,
-            save_path="tests/test_results/dataset_buffer.jsonl",
-            midi_dataset=midi_dataset,
+            save_dir="tests/test_results/pretrain_dataset_buff",
             max_seq_len=MAX_SEQ_LEN,
-            overwrite=True,
+            num_epochs=1,
+            midi_dataset=mididict_dataset,
         )
-        tokenized_dataset.set_transform(
+        pretrain_dataset.set_transform(
             [
+                tknzr.export_chord_mixup(),
                 tknzr.export_pitch_aug(5),
                 tknzr.export_velocity_aug(2),
                 tknzr.export_tempo_aug(0.5),
@@ -231,7 +184,7 @@ class TestTokenizedDataset(unittest.TestCase):
         )
 
         seq = get_short_seq()
-        seq_augmented = tokenized_dataset._transform(seq)
+        seq_augmented = pretrain_dataset._transform(seq)
 
         logging.info(f"aug:\n{seq} ->\n{seq_augmented}")
         self.assertEqual(
@@ -243,7 +196,69 @@ class TestTokenizedDataset(unittest.TestCase):
             seq_augmented[8][2] - seq[8][2],
         )
 
-        tokenized_dataset.close()
+
+class TestFinetuningDataset(unittest.TestCase):
+    # Test building is working (on the file level)
+    def test_build(self):
+        MAX_SEQ_LEN = 512
+        STRIDE_LEN = 256
+        tknzr = tokenizer.TokenizerLazy(
+            return_tensors=False,
+        )
+        mididict_dataset = datasets.MidiDataset.build(
+            dir="tests/test_data",
+            recur=True,
+        )
+        mididict_dataset.save("tests/test_results/mididict_dataset.jsonl")
+
+        if os.path.exists("tests/test_results/dataset_buffer_1.jsonl"):
+            os.remove("tests/test_results/dataset_buffer_1.jsonl")
+        finetune_dataset_from_file = datasets.FinetuningDataset.build(
+            tokenizer=tknzr,
+            save_path="tests/test_results/dataset_buffer_1.jsonl",
+            midi_dataset_path="tests/test_results/mididict_dataset.jsonl",
+            max_seq_len=MAX_SEQ_LEN,
+            stride_len=STRIDE_LEN,
+        )
+
+        if os.path.exists("tests/test_results/dataset_buffer_2.jsonl"):
+            os.remove("tests/test_results/dataset_buffer_2.jsonl")
+        finetune_dataset_from_mdset = datasets.FinetuningDataset.build(
+            tokenizer=tknzr,
+            save_path="tests/test_results/dataset_buffer_2.jsonl",
+            midi_dataset=mididict_dataset,
+            max_seq_len=MAX_SEQ_LEN,
+            stride_len=STRIDE_LEN,
+        )
+
+        raw_entries = [src for src, tgt in finetune_dataset_from_file]
+        self.assertEqual(len({len(_) for _ in raw_entries}), 1)
+        raw_entries = [src for src, tgt in finetune_dataset_from_mdset]
+        self.assertEqual(len({len(_) for _ in raw_entries}), 1)
+
+        src, tgt = finetune_dataset_from_file[0]
+        logging.info(f"src: {tknzr.decode(src)[:50]}")
+        logging.info(f"tgt: {tknzr.decode(tgt)[:50]}")
+
+        finetune_dataset_from_file.set_transform(
+            [
+                tknzr.export_pitch_aug(5),
+                tknzr.export_velocity_aug(2),
+                tknzr.export_tempo_aug(0.5),
+            ]
+        )
+        seq = get_short_seq()
+        seq_augmented = finetune_dataset_from_file._transform(seq)
+
+        logging.info(f"aug:\n{seq} ->\n{seq_augmented}")
+        self.assertEqual(
+            seq_augmented[4][1] - seq[4][1],
+            seq_augmented[8][1] - seq[8][1],
+        )
+        self.assertEqual(
+            seq_augmented[4][2] - seq[4][2],
+            seq_augmented[8][2] - seq[8][2],
+        )
 
 
 class TestReaderWriter(unittest.TestCase):

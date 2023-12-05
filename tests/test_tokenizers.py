@@ -42,8 +42,64 @@ def get_short_seq(tknzr: tokenizer.TokenizerLazy):
     ]
 
 
+def get_concat_seq(tknzr: tokenizer.TokenizerLazy):
+    return [
+        ("dur", tknzr._quantize_time(1000000)),
+        ("wait", tknzr._quantize_time(1000000)),
+        ("wait", tknzr._quantize_time(1000000)),
+        ("wait", tknzr._quantize_time(1000000)),
+        ("wait", tknzr._quantize_time(100)),
+        ("piano", 65, tknzr._quantize_velocity(70)),
+        ("dur", tknzr._quantize_time(100)),
+        ("wait", tknzr._quantize_time(100)),
+        ("piano", 60, tknzr._quantize_velocity(50)),
+        ("dur", tknzr._quantize_time(60)),
+        ("piano", 70, tknzr._quantize_velocity(50)),
+        ("dur", tknzr._quantize_time(70)),
+        ("drum", 50),
+        ("piano", 80, tknzr._quantize_velocity(50)),
+        ("dur", tknzr._quantize_time(80)),
+        ("wait", tknzr._quantize_time(100)),
+        "<E>",
+        ("prefix", "instrument", "piano"),
+        ("prefix", "instrument", "drum"),
+        ("prefix", "composer", "bach"),
+        "<S>",
+        ("piano", 62, tknzr._quantize_velocity(50)),
+        ("dur", tknzr._quantize_time(50)),
+        ("wait", tknzr._quantize_time(100)),
+        ("drum", tknzr._quantize_time(50)),
+        ("piano", 64, tknzr._quantize_velocity(70)),
+        ("dur", tknzr._quantize_time(1000000)),
+        ("wait", tknzr._quantize_time(1000000)),
+        ("wait", tknzr._quantize_time(1000000)),
+        ("wait", tknzr._quantize_time(1000000)),
+        ("wait", tknzr._quantize_time(100)),
+        ("piano", 65, tknzr._quantize_velocity(70)),
+        ("dur", tknzr._quantize_time(100)),
+        ("wait", tknzr._quantize_time(100)),
+        ("piano", 60, tknzr._quantize_velocity(50)),
+        ("dur", tknzr._quantize_time(60)),
+        ("piano", 70, tknzr._quantize_velocity(50)),
+        ("dur", tknzr._quantize_time(70)),
+        ("drum", 50),
+        ("piano", 80, tknzr._quantize_velocity(50)),
+        ("dur", tknzr._quantize_time(80)),
+        ("wait", tknzr._quantize_time(100)),
+        "<E>",
+        ("prefix", "instrument", "piano"),
+        ("prefix", "instrument", "drum"),
+        ("prefix", "composer", "bach"),
+        "<S>",
+        ("piano", 62, tknzr._quantize_velocity(50)),
+        ("dur", tknzr._quantize_time(50)),
+        ("wait", tknzr._quantize_time(100)),
+        ("drum", tknzr._quantize_time(50)),
+        ("piano", 64, tknzr._quantize_velocity(70)),
+    ]
+
+
 class TestLazyTokenizer(unittest.TestCase):
-    # Add encode decode test
     def test_tokenize_detokenize_mididict(self):
         def tokenize_detokenize(file_name: str):
             mid_path = f"tests/test_data/{file_name}"
@@ -66,6 +122,7 @@ class TestLazyTokenizer(unittest.TestCase):
     def test_aug(self):
         tknzr = tokenizer.TokenizerLazy(return_tensors=False)
         seq = get_short_seq(tknzr)
+        seq_concat = get_concat_seq(tknzr)
         pitch_aug_fn = tknzr.export_pitch_aug(aug_range=5)
         velocity_aug_fn = tknzr.export_velocity_aug(aug_steps_range=2)
         tempo_aug_fn = tknzr.export_tempo_aug(tempo_aug_range=0.5)
@@ -93,9 +150,19 @@ class TestLazyTokenizer(unittest.TestCase):
         seq_tempo_augmented = tempo_aug_fn(get_short_seq(tknzr))
         logging.info(f"tempo_aug_fn:\n{seq} ->\n\n{seq_tempo_augmented}\n")
 
+        seq_concat_tempo_augmented = tempo_aug_fn(get_concat_seq(tknzr))
+        logging.info(
+            f"tempo_aug_fn:\n{seq_concat} ->\n\n{seq_concat_tempo_augmented}\n"
+        )
+
         # Chord mix-up augmentation
         seq_mixup_augmented = chord_mixup_fn(get_short_seq(tknzr))
         logging.info(f"chord_mixup_fn:\n{seq} ->\n\n{seq_mixup_augmented}\n")
+
+        seq_concat_tempo_augmented = chord_mixup_fn(get_concat_seq(tknzr))
+        logging.info(
+            f"chord_mixup_fn:\n{seq_concat} ->\n\n{seq_concat_tempo_augmented}\n"
+        )
 
     def test_aug_time(self):
         tknzr = tokenizer.TokenizerLazy()
