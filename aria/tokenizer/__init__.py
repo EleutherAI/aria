@@ -1,1 +1,1 @@
-from .tokenizer import Tokenizer, TokenizerLazy
+from .tokenizer import Tokenizer, TokenizerLazy, AbsTokenizer

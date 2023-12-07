@@ -8,7 +8,6 @@ import random
 
 from collections import defaultdict
 from typing import Callable
-from mido.midifiles.units import second2tick
 
 from aria.data.midi import MidiDict
 from aria.config import load_config
@@ -111,6 +110,56 @@ class Tokenizer:
 
         return decoded_seq
 
+    @classmethod
+    def _find_closest_int(cls, n: int, sorted_list: list):
+        # Selects closest integer to n from sorted_list
+        # Time ~ Log(n)
+
+        left, right = 0, len(sorted_list) - 1
+        closest = float("inf")
+
+        while left <= right:
+            mid = (left + right) // 2
+            diff = abs(sorted_list[mid] - n)
+
+            if diff < abs(closest - n):
+                closest = sorted_list[mid]
+
+            if sorted_list[mid] < n:
+                left = mid + 1
+            else:
+                right = mid - 1
+
+        return closest
+
+    def _build_pedal_intervals(self, midi_dict: MidiDict):
+        """Returns pedal-on intervals for each channel."""
+        channel_to_pedal_intervals = defaultdict(list)
+        pedal_status = {}
+
+        for pedal_msg in midi_dict.pedal_msgs:
+            tick = pedal_msg["tick"]
+            channel = pedal_msg["channel"]
+            data = pedal_msg["data"]
+
+            if data == 1 and pedal_status.get(channel, None) is None:
+                pedal_status[channel] = tick
+            elif data == 0 and pedal_status.get(channel, None) is not None:
+                # Close pedal interval
+                _start_tick = pedal_status[channel]
+                _end_tick = tick
+                channel_to_pedal_intervals[channel].append(
+                    [_start_tick, _end_tick]
+                )
+                del pedal_status[channel]
+
+        # Close all unclosed pedals at end of track
+        final_tick = midi_dict.note_msgs[-1]["data"]["end"]
+        for channel, start_tick in pedal_status.items():
+            channel_to_pedal_intervals[channel].append([start_tick, final_tick])
+
+        return channel_to_pedal_intervals
+
     def add_tokens_to_vocab(self, tokens: list | tuple):
         for token in tokens:
             assert token not in self.vocab
@@ -121,20 +170,403 @@ class Tokenizer:
         self.vocab_size = len(self.vocab)
 
 
+class AbsTokenizer(Tokenizer):
+    def __init__(self, return_tensors: bool = False):
+        super().__init__(return_tensors)
+        self.config = load_config()["tokenizer"]["abs"]
+        self.name = "abs"
+
+        # Calculate time quantizations (in ms)
+        self.abs_time_step = self.config["abs_time_step_ms"]
+        self.max_dur = self.config["max_dur_ms"]
+        self.time_step = self.config["time_step_ms"]
+
+        # TODO: Test that these are both correct
+        self.dur_time_quantizations = [
+            self.time_step * i
+            for i in range((self.max_dur // self.time_step) + 1)
+        ]
+        # Remember to check for <T>, 0 onset and max, <T> being the same
+        self.onset_time_quantizations = [
+            self.time_step * i for i in range((self.max_dur // self.time_step))
+        ]
+
+        # Calculate velocity quantizations
+        self.velocity_step = self.config["velocity_quantization"]["step"]
+        self.velocity_quantizations = [
+            i * self.velocity_step
+            for i in range(int(127 / self.velocity_step) + 1)
+        ]
+        self.max_velocity = self.velocity_quantizations[-1]
+
+        # _nd = no drum; _wd = with drum
+        self.instruments_nd = [
+            k
+            for k, v in self.config["ignore_instruments"].items()
+            if v is False
+        ]
+        self.instruments_wd = self.instruments_nd + ["drum"]
+
+        # Prefix tokens
+        self.prefix_tokens = [
+            ("prefix", "instrument", x) for x in self.instruments_wd
+        ]
+        self.composer_names = self.config["composer_names"]
+        self.prefix_tokens += [
+            ("prefix", "composer", x) for x in self.composer_names
+        ]
+
+        # Build vocab
+        self.time_tok = "<T>"
+        self.onset_tokens = [
+            ("onset", i) for i in self.onset_time_quantizations
+        ]
+        self.dur_tokens = [("dur", i) for i in self.dur_time_quantizations]
+        self.drum_tokens = [("drum", i) for i in range(35, 82)]
+
+        self.note_tokens = list(
+            itertools.product(
+                self.instruments_nd,
+                [i for i in range(128)],
+                self.velocity_quantizations,
+            )
+        )
+
+        self.special_tokens.append(self.time_tok)
+        self.add_tokens_to_vocab(
+            self.special_tokens
+            + self.prefix_tokens
+            + self.note_tokens
+            + self.drum_tokens
+            + self.dur_tokens
+            + self.onset_tokens
+        )
+        self.pad_id = self.tok_to_id[self.pad_tok]
+
+    def _quantize_dur(self, time: int):
+        # This function will return values res >= 0 (inc. 0)
+        return TokenizerLazy._find_closest_int(
+            time, self.dur_time_quantizations
+        )
+
+    def _quantize_onset(self, time: int):
+        # This function will return values res >= 0 (inc. 0)
+        return TokenizerLazy._find_closest_int(
+            time, self.onset_time_quantizations
+        )
+
+    def _quantize_velocity(self, velocity: int):
+        # This function will return values in the range 0 < res =< 127
+        velocity_quantized = TokenizerLazy._find_closest_int(
+            velocity, self.velocity_quantizations
+        )
+
+        if velocity_quantized == 0 and velocity != 0:
+            return self.velocity_step
+        else:
+            return velocity_quantized
+
+    def _format(self, prefix: list, unformatted_seq: list):
+        # If unformatted_seq is longer than 150 tokens insert diminish tok
+        idx = -100 + random.randint(-10, 10)
+        if len(unformatted_seq) > 150:
+            if (
+                unformatted_seq[idx][0] == "onset"
+            ):  # Don't want: note, <D>, onset, due
+                unformatted_seq.insert(idx - 1, self.dim_tok)
+            elif (
+                unformatted_seq[idx][0] == "dur"
+            ):  # Don't want: note, onset, <D>, dur
+                unformatted_seq.insert(idx - 2, self.dim_tok)
+            else:
+                unformatted_seq.insert(idx, self.dim_tok)
+
+        res = prefix + [self.bos_tok] + unformatted_seq + [self.eos_tok]
+
+        return res
+
+    def tokenize_midi_dict(self, midi_dict: MidiDict):
+        ticks_per_beat = midi_dict.ticks_per_beat
+        midi_dict.remove_instruments(self.config["ignore_instruments"])
+
+        if len(midi_dict.note_msgs) == 0:
+            raise Exception("note_msgs is empty after ignoring instruments")
+
+        channel_to_pedal_intervals = self._build_pedal_intervals(midi_dict)
+
+        channels_used = {msg["channel"] for msg in midi_dict.note_msgs}
+
+        channel_to_instrument = {
+            msg["channel"]: midi_dict.program_to_instrument[msg["data"]]
+            for msg in midi_dict.instrument_msgs
+            if msg["channel"] != 9  # Exclude drums
+        }
+        # If non-drum channel is missing from instrument_msgs, default to piano
+        for c in channels_used:
+            if channel_to_instrument.get(c) is None and c != 9:
+                channel_to_instrument[c] = "piano"
+
+        # Add non-drums to present_instruments (prefix)
+        prefix = [
+            ("prefix", "instrument", x)
+            for x in set(channel_to_instrument.values())
+        ]
+        if 9 in channels_used:
+            prefix.append(("prefix", "instrument", "drum"))
+
+        composer = midi_dict.metadata.get("composer")
+        if composer and (composer in self.composer_names):
+            prefix.insert(0, ("prefix", "composer", composer))
+
+        # NOTE: Any preceding silence is removed implicitly
+        tokenized_seq = []
+        initial_onset_tick = midi_dict.note_msgs[0]["data"]["start"]
+        curr_time_since_onset = 0
+        for _, msg in enumerate(midi_dict.note_msgs):
+            # Extract msg data
+            _channel = msg["channel"]
+            _pitch = msg["data"]["pitch"]
+            _velocity = msg["data"]["velocity"]
+            _start_tick = msg["data"]["start"]
+            _end_tick = msg["data"]["end"]
+
+            # Calculate time data
+            prev_time_since_onset = curr_time_since_onset
+            curr_time_since_onset = get_duration_ms(
+                start_tick=initial_onset_tick,
+                end_tick=_start_tick,
+                tempo_msgs=midi_dict.tempo_msgs,
+                ticks_per_beat=ticks_per_beat,
+            )
+
+            # Add abs time token if necessary
+            time_toks_to_append = (
+                curr_time_since_onset // self.abs_time_step
+            ) - (prev_time_since_onset // self.abs_time_step)
+            if time_toks_to_append > 0:
+                for _ in range(time_toks_to_append):
+                    tokenized_seq.append(self.time_tok)
+
+            # Special case instrument is a drum. This occurs exclusively when
+            # MIDI channel is 9 when 0 indexing
+            if _channel == 9:
+                _note_onset = self._quantize_onset(
+                    curr_time_since_onset % self.abs_time_step
+                )
+                tokenized_seq.append(("drum", _pitch))
+                tokenized_seq.append(("onset", _note_onset))
+
+            else:  # Non drum case (i.e. an instrument note)
+                _instrument = channel_to_instrument[_channel]
+
+                # Update _end_tick if affected by pedal
+                for pedal_interval in channel_to_pedal_intervals[_channel]:
+                    pedal_start, pedal_end = (
+                        pedal_interval[0],
+                        pedal_interval[1],
+                    )
+                    if (
+                        pedal_start <= _start_tick < pedal_end
+                        and _end_tick < pedal_end
+                    ):
+                        _end_tick = pedal_end
+
+                _note_duration = get_duration_ms(
+                    start_tick=_start_tick,
+                    end_tick=_end_tick,
+                    tempo_msgs=midi_dict.tempo_msgs,
+                    ticks_per_beat=ticks_per_beat,
+                )
+
+                # Quantize
+                _velocity = self._quantize_velocity(_velocity)
+                _note_onset = self._quantize_onset(
+                    curr_time_since_onset % self.abs_time_step
+                )
+                _note_duration = self._quantize_dur(_note_duration)
+                if _note_duration == 0:
+                    _note_duration = self.time_step
+
+                tokenized_seq.append((_instrument, _pitch, _velocity))
+                tokenized_seq.append(("onset", _note_onset))
+                tokenized_seq.append(("dur", _note_duration))
+
+        return self._format(
+            prefix=prefix,
+            unformatted_seq=tokenized_seq,
+        )
+
+    def detokenize_midi_dict(self, tokenized_seq: list):
+        instrument_programs = self.config["instrument_programs"]
+        # NOTE: These values chosen so that 1000 ticks = 1000ms, allowing us to
+        # skip converting between ticks and ms
+        TICKS_PER_BEAT = 500
+        TEMPO = 500000
+
+        # Set message tempos
+        tempo_msgs = [{"type": "tempo", "data": TEMPO, "tick": 0}]
+        meta_msgs = []
+        pedal_msgs = []
+        instrument_msgs = []
+
+        instrument_to_channel = {}
+
+        # Add non-drum instrument_msgs, breaks at first note token
+        channel_idx = 0
+        for idx, tok in enumerate(tokenized_seq):
+            if channel_idx == 9:  # Skip channel reserved for drums
+                channel_idx += 1
+
+            if tok in self.special_tokens:
+                # Skip special tokens
+                continue
+            elif (
+                tok[0] == "prefix"
+                and tok[1] == "instrument"
+                and tok[2] in self.instruments_wd
+            ):
+                # Process instrument prefix tokens
+                if tok[2] in instrument_to_channel.keys():
+                    logging.warning(f"Duplicate prefix {tok[2]}")
+                    continue
+                elif tok[2] == "drum":
+                    instrument_msgs.append(
+                        {
+                            "type": "instrument",
+                            "data": 0,
+                            "tick": 0,
+                            "channel": 9,
+                        }
+                    )
+                    instrument_to_channel["drum"] = 9
+                else:
+                    instrument_msgs.append(
+                        {
+                            "type": "instrument",
+                            "data": instrument_programs[tok[2]],
+                            "tick": 0,
+                            "channel": channel_idx,
+                        }
+                    )
+                    instrument_to_channel[tok[2]] = channel_idx
+                    channel_idx += 1
+            elif tok[0] == "prefix":
+                # Skip all other prefix tokens
+                continue
+            else:
+                # Note, wait, or duration token
+                start = idx
+                break
+
+        # Note messages
+        note_msgs = []
+        curr_tick = 0
+        for tok_1, tok_2, tok_3 in zip(
+            tokenized_seq[start:],
+            tokenized_seq[start + 1 :],
+            tokenized_seq[start + 2 :],
+        ):
+            if tok_1 in self.special_tokens:
+                _tok_type_1 = "special"
+            else:
+                _tok_type_1 = tok_1[0]
+            if tok_2 in self.special_tokens:
+                _tok_type_2 = "special"
+            else:
+                _tok_type_2 = tok_2[0]
+            if tok_3 in self.special_tokens:
+                _tok_type_3 = "special"
+            else:
+                _tok_type_3 = tok_3[0]
+
+            if tok_1 == self.time_tok:
+                curr_tick += self.abs_time_step
+
+            elif (
+                _tok_type_1 == "special"
+                or _tok_type_1 == "prefix"
+                or _tok_type_1 == "onset"
+                or _tok_type_1 == "dur"
+            ):
+                continue
+            elif _tok_type_1 == "drum" and _tok_type_2 == "onset":
+                _start_tick = curr_tick + tok_2[1]
+                _end_tick = _start_tick + self.time_step
+                _pitch = tok_1[1]
+                _channel = instrument_to_channel["drum"]
+                _velocity = self.config["drum_velocity"]
+
+                note_msgs.append(
+                    {
+                        "type": "note",
+                        "data": {
+                            "pitch": _pitch,
+                            "start": _start_tick,
+                            "end": _end_tick,
+                            "velocity": _velocity,
+                        },
+                        "tick": _start_tick,
+                        "channel": _channel,
+                    }
+                )
+
+            elif (
+                _tok_type_1 in self.instruments_nd
+                and _tok_type_2 == "onset"
+                and _tok_type_3 == "dur"
+            ):
+                _pitch = tok_1[1]
+                _channel = instrument_to_channel.get(tok_1[0], None)
+                _velocity = tok_1[2]
+                _start_tick = curr_tick + tok_2[1]
+                _end_tick = _start_tick + tok_3[1]
+
+                if _channel is None:
+                    logging.warning(
+                        "Tried to decode note message for unexpected instrument"
+                    )
+                else:
+                    note_msgs.append(
+                        {
+                            "type": "note",
+                            "data": {
+                                "pitch": _pitch,
+                                "start": _start_tick,
+                                "end": _end_tick,
+                                "velocity": _velocity,
+                            },
+                            "tick": _start_tick,
+                            "channel": _channel,
+                        }
+                    )
+
+            else:
+                logging.warning(
+                    f"Unexpected token sequence: {tok_1}, {tok_2}, {tok_3}"
+                )
+
+        return MidiDict(
+            meta_msgs=meta_msgs,
+            tempo_msgs=tempo_msgs,
+            pedal_msgs=pedal_msgs,
+            instrument_msgs=instrument_msgs,
+            note_msgs=note_msgs,
+            ticks_per_beat=TICKS_PER_BEAT,
+            metadata={},
+        )
+
+
 class TokenizerLazy(Tokenizer):
     """Lazy MidiDict Tokenizer"""
 
-    def __init__(
-        self,
-        return_tensors: bool = False,
-    ):
+    def __init__(self, return_tensors: bool = False):
         super().__init__(return_tensors)
         self.config = load_config()["tokenizer"]["lazy"]
         self.name = "lazy"
 
         # Calculate time quantizations (in ms)
         self.num_time_step = self.config["time_quantization"]["num_steps"]
-        self.min_time_step = self.config["time_quantization"]["min_step"]
+        self.min_time_step = self.config["time_quantization"]["step"]
         self.time_step_quantizations = [
             self.min_time_step * i for i in range(self.num_time_step)
         ]
@@ -186,58 +618,7 @@ class TokenizerLazy(Tokenizer):
             + self.dur_tokens
             + self.wait_tokens
         )
-
         self.pad_id = self.tok_to_id[self.pad_tok]
-
-    def _build_pedal_intervals(self, midi_dict: MidiDict):
-        """Returns pedal-on intervals for each channel."""
-        channel_to_pedal_intervals = defaultdict(list)
-        pedal_status = {}
-
-        for pedal_msg in midi_dict.pedal_msgs:
-            tick = pedal_msg["tick"]
-            channel = pedal_msg["channel"]
-            data = pedal_msg["data"]
-
-            if data == 1 and pedal_status.get(channel, None) is None:
-                pedal_status[channel] = tick
-            elif data == 0 and pedal_status.get(channel, None) is not None:
-                # Close pedal interval
-                _start_tick = pedal_status[channel]
-                _end_tick = tick
-                channel_to_pedal_intervals[channel].append(
-                    [_start_tick, _end_tick]
-                )
-                del pedal_status[channel]
-
-        # Close all unclosed pedals at end of track
-        final_tick = midi_dict.note_msgs[-1]["data"]["end"]
-        for channel, start_tick in pedal_status.items():
-            channel_to_pedal_intervals[channel].append([start_tick, final_tick])
-
-        return channel_to_pedal_intervals
-
-    @classmethod
-    def _find_closest_int(cls, n: int, sorted_list: list):
-        # Selects closest integer to n from sorted_list
-        # Time ~ Log(n)
-
-        left, right = 0, len(sorted_list) - 1
-        closest = float("inf")
-
-        while left <= right:
-            mid = (left + right) // 2
-            diff = abs(sorted_list[mid] - n)
-
-            if diff < abs(closest - n):
-                closest = sorted_list[mid]
-
-            if sorted_list[mid] < n:
-                left = mid + 1
-            else:
-                right = mid - 1
-
-        return closest
 
     def _quantize_time(self, time: int):
         # This function will return values res >= 0 (inc. 0)
@@ -376,7 +757,7 @@ class TokenizerLazy(Tokenizer):
 
     def detokenize_midi_dict(self, tokenized_seq: list):
         instrument_programs = self.config["instrument_programs"]
-        TICKS_PER_BEAT = 480
+        TICKS_PER_BEAT = 500
         TEMPO = 500000
 
         # Set message tempos
@@ -457,13 +838,7 @@ class TokenizerLazy(Tokenizer):
             ):
                 continue
             elif _curr_tok_type == "wait":
-                curr_tick += int(
-                    second2tick(
-                        second=1e-3 * curr_tok[1],
-                        ticks_per_beat=TICKS_PER_BEAT,
-                        tempo=TEMPO,
-                    )
-                )
+                curr_tick += curr_tok[1]
             elif _curr_tok_type == "drum":
                 _tick = curr_tick
                 _pitch = curr_tok[1]
@@ -502,13 +877,7 @@ class TokenizerLazy(Tokenizer):
                 _pitch = curr_tok[1]
                 _velocity = curr_tok[2]
                 _start_tick = curr_tick
-                _end_tick = curr_tick + int(
-                    second2tick(
-                        second=1e-3 * duration,
-                        ticks_per_beat=TICKS_PER_BEAT,
-                        tempo=TEMPO,
-                    )
-                )
+                _end_tick = curr_tick + duration
 
                 note_msgs.append(
                     {

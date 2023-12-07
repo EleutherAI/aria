@@ -99,6 +99,28 @@ def get_concat_seq(tknzr: tokenizer.TokenizerLazy):
     ]
 
 
+class TestAbsTokenizer(unittest.TestCase):
+    def test_tokenize_detokenize_mididict(self):
+        def tokenize_detokenize(file_name: str):
+            mid_path = f"tests/test_data/{file_name}"
+            midi_dict = MidiDict.from_midi(mid_path=mid_path)
+            tokenized_seq = tknzr.tokenize(midi_dict)
+            print(tokenized_seq)
+            detokenized_midi_dict = tknzr.detokenize(tokenized_seq)
+            res = detokenized_midi_dict.to_midi()
+            res.save(f"tests/test_results/{file_name}")
+
+        # tknzr = tokenizer.AbsTokenizer(return_tensors=False)
+        tknzr = tokenizer.TokenizerLazy(return_tensors=False)
+        tokenize_detokenize("basic.mid")
+        tokenize_detokenize("arabesque.mid")
+        tokenize_detokenize("beethoven.mid")
+        tokenize_detokenize("bach.mid")
+        tokenize_detokenize("expressive.mid")
+        tokenize_detokenize("pop.mid")
+        tokenize_detokenize("beethoven_moonlight.mid")
+
+
 class TestLazyTokenizer(unittest.TestCase):
     def test_tokenize_detokenize_mididict(self):
         def tokenize_detokenize(file_name: str):
