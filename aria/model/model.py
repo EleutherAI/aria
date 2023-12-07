@@ -28,6 +28,7 @@ class YaRNConfig:
     scale: int = 1.0
     mscale_coeff: int = 0.07
     base: float = 10000.0
+    finetuning: bool = False
 
 
 @dataclass
@@ -158,6 +159,7 @@ class FusedEncoderBlock(nn.Module):
                 beta_slow=cfg.beta_slow,
                 base=cfg.base,
                 mscale_coeff=cfg.mscale_coeff,
+                finetuned=cfg.finetuning,
             )
         else:
             self.rotary_emb = RotaryEmbedding(self.d_head)
