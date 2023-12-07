@@ -25,8 +25,8 @@ class YaRNConfig:
 
     beta_fast: int = 16
     beta_slow: int = 1
-    scale: int = 1.0
-    mscale_coeff: int = 0.07
+    scale: float = 1.0
+    mscale_coeff: float = 0.07
     base: float = 10000.0
     finetuning: bool = False
 
