@@ -144,7 +144,7 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
                 / self.dim
             )
         )
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.register_buffer("inv_freq", inv_freq)
 
     def _update_cos_sin_cache(self, seq_len, device=None, dtype=None):
         # Reset the tables if the sequence length has changed,
@@ -165,7 +165,7 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
                         scaling_factor = self.scaling_factor
                 else:
                     scaling_factor = (
-                            seq_len / self.original_max_position_embeddings
+                        seq_len / self.original_max_position_embeddings
                     )
                 if scaling_factor:
                     self._compute_inv_freq(scaling_factor, device)
@@ -201,7 +201,11 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
             self._sin_cached = (torch.sin(freqs) * self.mscale).to(dtype)
 
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, total_len: Optional[int] = None, past_len: int = 0,
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        total_len: Optional[int] = None,
+        past_len: int = 0,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
