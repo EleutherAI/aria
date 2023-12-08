@@ -2,7 +2,9 @@ import torch
 
 
 @torch.jit.script
-def apply_rotary_pos_emb(x, cos, sin, past_len: int = 0, interleave: bool = False):
+def apply_rotary_pos_emb(
+    x, cos, sin, past_len: int = 0, interleave: bool = False
+):
     """
     In-place RoPE. Credits to Katherine Crowson:
     x shape (b_sz, s_len, n_head, d_head).
