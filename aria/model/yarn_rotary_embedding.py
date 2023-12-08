@@ -204,28 +204,25 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
         self,
         q: torch.Tensor,
         k: torch.Tensor,
-        total_len: Optional[int] = None,
         past_len: int = 0,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             q: (batch, q_len, n_heads, head_dim)
             k: (batch, k_len, n_heads, head_dim)
-            total_len: the total length of sequence (including kv cache)
             past_len: the length before the second axis of q (usually it is just the kv length)
         """
-        total_len = total_len or q.shape[1]
         self._update_cos_sin_cache(
-            total_len + past_len, device=q.device, dtype=q.dtype
+            q.size(1) + past_len, device=q.device, dtype=q.dtype
         )
         return apply_rotary_pos_emb(
             q,
-            self._cos_cached[past_len:],
-            self._sin_cached[past_len:],
+            self._cos_cached[past_len : past_len + q.size(1)],
+            self._sin_cached[past_len : past_len + q.size(1)],
             self.interleaved,
         ), apply_rotary_pos_emb(
             k,
-            self._cos_cached[past_len:],
-            self._sin_cached[past_len:],
+            self._cos_cached[past_len : past_len + k.size(1)],
+            self._sin_cached[past_len : past_len + k.size(1)],
             self.interleaved,
         )

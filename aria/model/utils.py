@@ -19,8 +19,8 @@ def rotate_half(x, interleaved=False):
 
 def apply_rotary_pos_emb(x, cos, sin, interleaved=False):
     """
-    x: (batch_size, seqlen, nheads, headdim)
-    cos, sin: (seqlen, rotary_dim / 2) or (batch_size, seqlen, rotary_dim / 2)
+    x: (batch_size, seq_len, n_heads, head_dim)
+    cos, sin: (seq_len, rotary_dim / 2) or (batch_size, seq_len, rotary_dim / 2)
     """
     ro_dim = cos.shape[-1] * 2
     assert ro_dim <= x.shape[-1]
