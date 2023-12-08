@@ -1,0 +1,42 @@
+# Taken from:
+# https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/layers/rotary.py
+
+from einops import rearrange, repeat
+import torch
+import torch.jit
+
+
+def rotate_half(x, interleaved=False):
+    if not interleaved:
+        x1, x2 = x.chunk(2, dim=-1)
+        return torch.cat((-x2, x1), dim=-1)
+    else:
+        x1, x2 = x[..., ::2], x[..., 1::2]
+        return rearrange(
+            torch.stack((-x2, x1), dim=-1), "... d two -> ... (d two)", two=2
+        )
+
+
+def apply_rotary_pos_emb(x, cos, sin, interleaved=False):
+    """
+    x: (batch_size, seqlen, nheads, headdim)
+    cos, sin: (seqlen, rotary_dim / 2) or (batch_size, seqlen, rotary_dim / 2)
+    """
+    ro_dim = cos.shape[-1] * 2
+    assert ro_dim <= x.shape[-1]
+    cos = repeat(
+        cos,
+        "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)",
+    )
+    sin = repeat(
+        sin,
+        "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)",
+    )
+    return torch.cat(
+        [
+            x[..., :ro_dim] * cos
+            + rotate_half(x[..., :ro_dim], interleaved) * sin,
+            x[..., ro_dim:],
+        ],
+        dim=-1,
+    )

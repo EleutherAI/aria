@@ -5,7 +5,9 @@ import torch.utils.checkpoint
 
 from torch import nn as nn
 from torch.nn import functional as F
-from aria.model.dynamic_yarn import DynamicYaRNScaledRotaryEmbedding
+from aria.model.yarn_rotary_embedding import YaRNScaledRotaryEmbedding
+
+from aria.model.utils import apply_rotary_pos_emb
 
 
 @dataclass
@@ -28,7 +30,8 @@ class YaRNConfig:
     scale: float = 1.0
     mscale_coeff: float = 0.07
     base: float = 10000.0
-    finetuning: bool = False
+    finetuned: bool = False
+    dynamic: bool = True
 
 
 @dataclass
@@ -48,80 +51,6 @@ class ModelConfig:
 
     def set_vocab_size(self, vocab_size: int):
         self.vocab_size = vocab_size
-
-
-# Taken from GPT-NeoX see:
-# https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt_neox/modeling_gpt_neox.py
-class RotaryEmbedding(torch.nn.Module):
-    def __init__(
-        self,
-        dim,
-        max_position_embeddings=2048,
-        base=10000,
-    ):
-        super().__init__()
-
-        self.dim = dim
-        self.max_position_embeddings = max_position_embeddings
-        self.base = base
-        inv_freq = 1.0 / (
-            self.base ** (torch.arange(0, self.dim, 2).float() / self.dim)
-        )
-        self.register_buffer("inv_freq", inv_freq)
-
-        # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(
-            seq_len=max_position_embeddings,
-            device=self.inv_freq.device,
-            dtype=torch.get_default_dtype(),
-        )
-
-    def _set_cos_sin_cache(self, seq_len, device, dtype):
-        self.max_seq_len_cached = seq_len
-        t = torch.arange(
-            self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype
-        )
-
-        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-        # Different from paper, but it uses a different permutation in order to
-        # obtain the same calculation
-        emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer(
-            "cos_cached", emb.cos().to(dtype), persistent=False
-        )
-        self.register_buffer(
-            "sin_cached", emb.sin().to(dtype), persistent=False
-        )
-
-    def forward(self, x, seq_len=None):
-        # x: [bs, num_attention_heads, seq_len, head_size]
-        if seq_len > self.max_seq_len_cached:
-            self._set_cos_sin_cache(
-                seq_len=seq_len, device=x.device, dtype=x.dtype
-            )
-
-        return (
-            self.cos_cached[:seq_len].to(dtype=x.dtype),
-            self.sin_cached[:seq_len].to(dtype=x.dtype),
-        )
-
-
-def rotate_half(x):
-    x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
-
-    return torch.cat(
-        (-x2, x1), dim=x1.ndim - 1
-    )  # dim=-1 triggers a bug in earlier torch versions
-
-
-@torch.jit.script
-def apply_rotary_pos_emb(q, k, cos, sin, past_len: int = 0):
-    """Returns tuple (xq, xk). Expects shape (s_len, b_sz, n_head, d_head)."""
-    cos = cos[past_len : past_len + q.size(0), None, None]
-    sin = sin[past_len : past_len + q.size(0), None, None]
-    return (q * cos) + (rotate_half(q) * sin), (k * cos) + (
-        rotate_half(k) * sin
-    )
 
 
 class FusedEncoderBlock(nn.Module):
@@ -148,21 +77,18 @@ class FusedEncoderBlock(nn.Module):
         self.max_seq_len = model_config.max_seq_len
 
         # Positional embeddings
-        if model_config.yarn_config is not None:
-            # TODO: Need more testing on this;
-            cfg = model_config.yarn_config
-            self.rotary_emb = DynamicYaRNScaledRotaryEmbedding(
-                self.d_head,
-                max_position_embeddings=round(self.max_seq_len * cfg.scale),
-                original_max_position_embeddings=self.max_seq_len,
-                beta_fast=cfg.beta_fast,
-                beta_slow=cfg.beta_slow,
-                base=cfg.base,
-                mscale_coeff=cfg.mscale_coeff,
-                finetuned=cfg.finetuning,
-            )
-        else:
-            self.rotary_emb = RotaryEmbedding(self.d_head)
+        cfg = model_config.yarn_config or YaRNConfig()
+        self.rotary_emb = YaRNScaledRotaryEmbedding(
+            self.d_head,
+            max_position_embeddings=round(self.max_seq_len * cfg.scale),
+            original_max_position_embeddings=self.max_seq_len,
+            beta_fast=cfg.beta_fast,
+            beta_slow=cfg.beta_slow,
+            base=cfg.base,
+            mscale_coeff=cfg.mscale_coeff,
+            finetuned=cfg.finetuned,
+            dynamic=cfg.dynamic,
+        )
 
         # Attention
         self.mixed_qkv = nn.Linear(
@@ -213,10 +139,9 @@ class FusedEncoderBlock(nn.Module):
 
         past_len = 0 if past_kv is None else past_kv[0].size(1)
         # apply_rotary_post_emb expects: (s_len, b_sz, n_head, d_head)
-        cos, sin = self.rotary_emb(x=xv, seq_len=seq_len + past_len)
         xq, xk = xq.transpose(0, 1), xk.transpose(0, 1)
-        xq, xk = apply_rotary_pos_emb(
-            q=xq, k=xk, cos=cos, sin=sin, past_len=past_len
+        xq, xk = self.rotary_emb(
+            xq, xk, seq_len=seq_len + past_len, past_len=past_len
         )
         xq, xk = xq.transpose(0, 1), xk.transpose(0, 1)
         # xq, xk: (b_sz, s_len, n_head, d_head)
