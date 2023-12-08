@@ -14,7 +14,7 @@ import shutil
 from pathlib import Path
 from typing import Callable, Iterable
 from collections import defaultdict
-from multiprocessing import Pool, Process, Queue
+from multiprocessing import Pool, Process, Queue, get_start_method
 
 from aria.config import load_config
 from aria.tokenizer import Tokenizer, TokenizerLazy
@@ -277,6 +277,11 @@ def build_mididict_dataset(
                     yield mid_dict
 
     logger = setup_logger()
+    if get_start_method() == "spawn":
+        logger.warning(
+            'The current multiprocessing start method is "spawn", this '
+            "will slow down dataset building"
+        )
 
     paths = []
     if recur is True:
@@ -617,6 +622,11 @@ class PretrainingDataset(TrainingDataset):
         logger = setup_logger()
         assert max_seq_len > 0, "max_seq_len must be greater than 0"
         assert num_epochs > 0, "num_epochs must be greater than 0"
+        if get_start_method() == "spawn":
+            logger.warning(
+                'The current multiprocessing start method is "spawn", this '
+                "will slow down dataset building"
+            )
 
         if os.path.isdir(save_dir) and os.listdir(save_dir):
             print(
@@ -760,6 +770,11 @@ class FinetuningDataset(TrainingDataset):
 
         logger = setup_logger()
         assert max_seq_len > 0, "max_seq_len must be greater than 0"
+        if get_start_method() == "spawn":
+            logger.warning(
+                'The current multiprocessing start method is "spawn", this '
+                "will slow down dataset building"
+            )
 
         if os.path.isfile(save_path):
             print(
