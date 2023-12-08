@@ -52,7 +52,6 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
         self,
         dim: int,
         base=10000.0,
-        interleaved=False,
         pos_idx_in_fp32=True,
         original_context_length=2048,
         scaling_factor=1.0,
@@ -66,8 +65,6 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
         device=None,
     ):
         """
-        interleaved: if True, rotate pairs of even and odd dimensions (GPT-J style) instead
-            of 1st half and 2nd half (GPT-NeoX style).
         pos_idx_in_fp32: if True, the position indices [0.0, ..., seqlen - 1] are in fp32,
             otherwise they might be in lower precision.
         """
@@ -75,7 +72,6 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
 
         self.dim = dim
         self.base = float(base)
-        self.interleaved = interleaved
         self.original_context_length = original_context_length
         self.scaling_factor = scaling_factor
 
@@ -212,10 +208,8 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
             q,
             self._cos_cached[past_len : past_len + q.size(1)],
             self._sin_cached[past_len : past_len + q.size(1)],
-            self.interleaved,
         ), apply_rotary_pos_emb(
             k,
             self._cos_cached[past_len : past_len + k.size(1)],
             self._sin_cached[past_len : past_len + k.size(1)],
-            self.interleaved,
         )

@@ -2,14 +2,11 @@ import torch
 
 
 @torch.jit.script
-def apply_rotary_pos_emb(
-    x, cos, sin, past_len: int = 0, interleave: bool = False
-):
+def apply_rotary_pos_emb(x, cos, sin, past_len: int = 0):
     """
     In-place RoPE. Credits to Katherine Crowson:
     x shape (b_sz, s_len, n_head, d_head).
     cos, sin shape (s_len, d_head // 2).
-    This implementation tries to use stride tricks to avoid explicit reshapes.
     """
     d = cos.shape[-1]
     cos = cos[None, past_len : past_len + x.size(1), None]
