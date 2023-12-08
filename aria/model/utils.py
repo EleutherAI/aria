@@ -1,42 +1,19 @@
-# Taken from:
-# https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/layers/rotary.py
-
-from einops import rearrange, repeat
 import torch
-import torch.jit
 
 
-def rotate_half(x, interleaved=False):
-    if not interleaved:
-        x1, x2 = x.chunk(2, dim=-1)
-        return torch.cat((-x2, x1), dim=-1)
-    else:
-        x1, x2 = x[..., ::2], x[..., 1::2]
-        return rearrange(
-            torch.stack((-x2, x1), dim=-1), "... d two -> ... (d two)", two=2
-        )
-
-
-def apply_rotary_pos_emb(x, cos, sin, interleaved=False):
+@torch.jit.script
+def apply_rotary_pos_emb(x, cos, sin, past_len: int = 0, interleave: bool = False):
     """
-    x: (batch_size, seq_len, n_heads, head_dim)
-    cos, sin: (seq_len, rotary_dim / 2) or (batch_size, seq_len, rotary_dim / 2)
+    In-place RoPE. Credits to Katherine Crowson:
+    x shape (b_sz, s_len, n_head, d_head).
+    cos, sin shape (s_len, d_head // 2).
+    This implementation tries to use stride tricks to avoid explicit reshapes.
     """
-    ro_dim = cos.shape[-1] * 2
-    assert ro_dim <= x.shape[-1]
-    cos = repeat(
-        cos,
-        "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)",
-    )
-    sin = repeat(
-        sin,
-        "... d -> ... 1 (2 d)" if not interleaved else "... d -> ... 1 (d 2)",
-    )
-    return torch.cat(
-        [
-            x[..., :ro_dim] * cos
-            + rotate_half(x[..., :ro_dim], interleaved) * sin,
-            x[..., ro_dim:],
-        ],
-        dim=-1,
-    )
+    d = cos.shape[-1]
+    cos = cos[None, past_len : past_len + x.size(1), None]
+    sin = sin[None, past_len : past_len + x.size(1), None]
+    x1, x2 = x[..., :d], x[..., d : d * 2]
+    tmp = x1.clone()
+    x1.mul_(cos).addcmul_(x2, sin, value=-1)
+    x2.mul_(cos).addcmul_(tmp, sin, value=1)
+    return x

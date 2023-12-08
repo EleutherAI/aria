@@ -80,8 +80,8 @@ class FusedEncoderBlock(nn.Module):
         cfg = model_config.yarn_config or YaRNConfig()
         self.rotary_emb = YaRNScaledRotaryEmbedding(
             self.d_head,
-            max_position_embeddings=round(self.max_seq_len * cfg.scale),
-            original_max_position_embeddings=self.max_seq_len,
+            original_context_length=self.max_seq_len,
+            scaling_factor=cfg.scale,
             beta_fast=cfg.beta_fast,
             beta_slow=cfg.beta_slow,
             base=cfg.base,
@@ -138,10 +138,8 @@ class FusedEncoderBlock(nn.Module):
         xv = xv.view(batch_size, seq_len, self.n_heads, self.d_head)
 
         past_len = 0 if past_kv is None else past_kv[0].size(1)
-        # apply_rotary_post_emb expects: (s_len, b_sz, n_head, d_head)
-        xq, xk = xq.transpose(0, 1), xk.transpose(0, 1)
+        # apply_rotary_post_emb expects: (b_sz, s_len, n_head, d_head)
         xq, xk = self.rotary_emb(xq, xk, past_len=past_len)
-        xq, xk = xq.transpose(0, 1), xk.transpose(0, 1)
         # xq, xk: (b_sz, s_len, n_head, d_head)
         if past_kv is not None:
             assert len(past_kv) == 2

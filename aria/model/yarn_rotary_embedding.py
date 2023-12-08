@@ -44,7 +44,7 @@ def _yarn_get_mscale(scale=1.0, coeff=0.1):
 
 class YaRNScaledRotaryEmbedding(torch.nn.Module):
     """
-    Taken from:
+    Adapted from:
     https://github.com/jquesnelle/yarn/blob/master/scaled_rope/modeling_llama_together_yarn.py
     """
 
@@ -54,8 +54,8 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
         base=10000.0,
         interleaved=False,
         pos_idx_in_fp32=True,
-        max_position_embeddings=2048,
-        original_max_position_embeddings=2048,
+        original_context_length=2048,
+        scaling_factor=1.0,
         extrapolation_factor=1.0,
         attn_factor=1.0,
         mscale_coeff=0.1,
@@ -76,15 +76,8 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
         self.dim = dim
         self.base = float(base)
         self.interleaved = interleaved
-        self.max_position_embeddings = max_position_embeddings
-        self.original_max_position_embeddings = (
-            original_max_position_embeddings
-            if original_max_position_embeddings
-            else max_position_embeddings
-        )
-        self.scaling_factor = (
-            max_position_embeddings / original_max_position_embeddings
-        )
+        self.original_context_length = original_context_length
+        self.scaling_factor = scaling_factor
 
         self.extrapolation_factor = extrapolation_factor
         self.attn_factor = attn_factor
@@ -122,7 +115,7 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
             self.beta_slow,
             self.dim,
             self.base,
-            self.original_max_position_embeddings,
+            self.original_context_length,
         )
         inv_freq_mask = (
             1
@@ -160,13 +153,11 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
 
             if self.dynamic:
                 scaling_factor = None
-                if seq_len <= self.max_position_embeddings:
+                if seq_len <= self.original_context_length:
                     if self.finetuned:
                         scaling_factor = self.scaling_factor
                 else:
-                    scaling_factor = (
-                        seq_len / self.original_max_position_embeddings
-                    )
+                    scaling_factor = seq_len / self.original_context_length
                 if scaling_factor:
                     self._compute_inv_freq(scaling_factor, device)
                     self.mscale = float(
@@ -213,7 +204,9 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
             past_len: the length before the second axis of q (usually it is just the kv length)
         """
         self._update_cos_sin_cache(
-            q.size(1) + past_len, device=q.device, dtype=q.dtype
+            max(q.size(1) + past_len, self.original_context_length),
+            device=q.device,
+            dtype=q.dtype,
         )
         return apply_rotary_pos_emb(
             q,
