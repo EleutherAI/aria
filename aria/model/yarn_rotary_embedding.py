@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Optional
 
 import torch
 import math
@@ -103,6 +103,8 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
         # Generate and save the inverse frequency buffer (non-trainable)
         if not dynamic:
             self._compute_inv_freq(self.scaling_factor, device)
+        else:
+            self._compute_inv_freq_original(device)
 
         self._seq_len_cached = 0
         self._cos_cached = None
@@ -132,7 +134,7 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
             inv_freq_interpolation * (1 - inv_freq_mask)
             + inv_freq_extrapolation * inv_freq_mask
         )
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self.register_buffer("inv_freq", inv_freq)
 
     def _compute_inv_freq_original(self, device=None):
         inv_freq = 1 / (
@@ -144,26 +146,26 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
         )
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
-    def _update_cos_sin_cache(self, seqlen, device=None, dtype=None):
+    def _update_cos_sin_cache(self, seq_len, device=None, dtype=None):
         # Reset the tables if the sequence length has changed,
         # if we're on a new device (possibly due to tracing for instance),
         # or if we're switching from inference mode to training
         if (
-            seqlen > self._seq_len_cached
+            seq_len > self._seq_len_cached
             or self._cos_cached.device != device
             or self._cos_cached.dtype != dtype
             or (self.training and self._cos_cached.is_inference())
         ):
-            self._seq_len_cached = seqlen
+            self._seq_len_cached = seq_len
 
             if self.dynamic:
                 scaling_factor = None
-                if seqlen <= self.max_position_embeddings:
+                if seq_len <= self.max_position_embeddings:
                     if self.finetuned:
                         scaling_factor = self.scaling_factor
                 else:
                     scaling_factor = (
-                        seqlen / self.original_max_position_embeddings
+                            seq_len / self.original_max_position_embeddings
                     )
                 if scaling_factor:
                     self._compute_inv_freq(scaling_factor, device)
@@ -178,7 +180,7 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
             # And the output of arange can be quite large, so bf16 would lose a lot of precision.
             # However, for compatibility reason, we add an option to use the dtype of self.inv_freq.
             if self.pos_idx_in_fp32:
-                t = torch.arange(seqlen, device=device, dtype=torch.float32)
+                t = torch.arange(seq_len, device=device, dtype=torch.float32)
                 # We want fp32 here as well since inv_freq will be multiplied with t, and the output
                 # will be large. Having it in bf16 will lose a lot of precision and cause the
                 # cos & sin output to change significantly.
@@ -189,7 +191,7 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
                     inv_freq = self.inv_freq
             else:
                 t = torch.arange(
-                    seqlen, device=device, dtype=self.inv_freq.dtype
+                    seq_len, device=device, dtype=self.inv_freq.dtype
                 )
                 inv_freq = self.inv_freq
             # Don't do einsum, it converts fp32 to fp16 under AMP
@@ -199,25 +201,27 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
             self._sin_cached = (torch.sin(freqs) * self.mscale).to(dtype)
 
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor, seqlen_offset: int = 0
+        self, q: torch.Tensor, k: torch.Tensor, total_len: Optional[int] = None, past_len: int = 0,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        q: (batch, seqlen, nheads, headdim)
-        k: (batch, seqlen, nheads, headdim)
-        seqlen_offset: can be used in generation where the qkv being passed in is only the last
-        token in the batch.
+        Args:
+            q: (batch, q_len, n_heads, head_dim)
+            k: (batch, k_len, n_heads, head_dim)
+            total_len: the total length of sequence (including kv cache)
+            past_len: the length before the second axis of q (usually it is just the kv length)
         """
+        total_len = total_len or q.shape[1]
         self._update_cos_sin_cache(
-            q.shape[1] + seqlen_offset, device=q.device, dtype=q.dtype
+            total_len + past_len, device=q.device, dtype=q.dtype
         )
         return apply_rotary_pos_emb(
             q,
-            self._cos_cached[seqlen_offset:],
-            self._sin_cached[seqlen_offset:],
+            self._cos_cached[past_len:],
+            self._sin_cached[past_len:],
             self.interleaved,
         ), apply_rotary_pos_emb(
             k,
-            self._cos_cached[seqlen_offset:],
-            self._sin_cached[seqlen_offset:],
+            self._cos_cached[past_len:],
+            self._sin_cached[past_len:],
             self.interleaved,
         )

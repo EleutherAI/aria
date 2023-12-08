@@ -141,7 +141,7 @@ class FusedEncoderBlock(nn.Module):
         # apply_rotary_post_emb expects: (s_len, b_sz, n_head, d_head)
         xq, xk = xq.transpose(0, 1), xk.transpose(0, 1)
         xq, xk = self.rotary_emb(
-            xq, xk, seq_len=seq_len + past_len, past_len=past_len
+            xq, xk, total_len=seq_len + past_len, past_len=past_len
         )
         xq, xk = xq.transpose(0, 1), xk.transpose(0, 1)
         # xq, xk: (b_sz, s_len, n_head, d_head)
