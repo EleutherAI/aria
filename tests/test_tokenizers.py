@@ -11,7 +11,102 @@ if not os.path.isdir("tests/test_results"):
     os.makedirs("tests/test_results")
 
 
-def get_short_seq(tknzr: tokenizer.TokenizerLazy):
+# TODO: Implement with tokenizer functions
+def get_short_seq_abs(tknzr: tokenizer.AbsTokenizer):
+    assert tknzr.time_step == 10, "invalid config"
+    assert tknzr.dur_time_quantizations[-1] == 5000, "invalid config"
+    return [
+        ("prefix", "instrument", "piano"),
+        ("prefix", "instrument", "drum"),
+        "<S>",
+        ("piano", 62, 45),
+        ("onset", 0),
+        ("dur", 50),
+        ("drum", 50),
+        ("onset", 100),
+        ("piano", 64, 75),
+        ("onset", 100),
+        ("dur", 5000),
+        "<T>",
+        "<T>",
+        "<T>",
+        ("piano", 65, 75),
+        ("onset", 170),
+        ("dur", 100),
+        ("piano", 60, 45),
+        ("onset", 270),
+        ("dur", 60),
+        "<U>",
+        ("onset", 270),
+        ("dur", 70),
+        ("drum", 50),
+        ("onset", 270),
+        ("piano", 80, 45),
+        ("onset", 270),
+        ("dur", 80),
+        "<E>",
+    ]
+
+
+def get_concat_seq_abs(tknzr: tokenizer.AbsTokenizer):
+    assert tknzr.time_step == 10, "invalid config"
+    assert tknzr.dur_time_quantizations[-1] == 5000, "invalid config"
+    return [
+        ("onset", 270),
+        ("dur", 60),
+        ("piano", 70, 45),
+        ("onset", 270),
+        ("dur", 70),
+        ("drum", 50),
+        ("onset", 270),
+        ("piano", 80, 45),
+        ("onset", 270),
+        ("dur", 80),
+        "<E>",
+        ("prefix", "instrument", "piano"),
+        ("prefix", "instrument", "drum"),
+        "<S>",
+        ("piano", 62, 45),
+        ("onset", 0),
+        ("dur", 50),
+        ("drum", 50),
+        ("onset", 100),
+        ("piano", 64, 75),
+        ("onset", 100),
+        ("dur", 5000),
+        "<T>",
+        "<T>",
+        "<T>",
+        ("piano", 65, 75),
+        ("onset", 170),
+        ("dur", 100),
+        ("piano", 60, 45),
+        ("onset", 270),
+        ("dur", 60),
+        ("piano", 70, 45),
+        ("onset", 270),
+        ("dur", 70),
+        ("drum", 50),
+        ("onset", 270),
+        ("piano", 80, 45),
+        ("onset", 270),
+        ("dur", 80),
+        "<E>",
+        "<S>",
+        ("piano", 62, 45),
+        ("onset", 0),
+        ("dur", 50),
+        ("drum", 50),
+        ("onset", 100),
+        ("piano", 64, 75),
+        ("onset", 100),
+        ("dur", 5000),
+        "<T>",
+        "<T>",
+    ]
+
+
+def get_short_seq_rel(tknzr: tokenizer.TokenizerLazy):
     return [
         ("prefix", "instrument", "piano"),
         ("prefix", "instrument", "drum"),
@@ -42,7 +137,7 @@ def get_short_seq(tknzr: tokenizer.TokenizerLazy):
     ]
 
 
-def get_concat_seq(tknzr: tokenizer.TokenizerLazy):
+def get_concat_seq_rel(tknzr: tokenizer.TokenizerLazy):
     return [
         ("dur", tknzr._quantize_time(1000000)),
         ("wait", tknzr._quantize_time(1000000)),
@@ -110,8 +205,7 @@ class TestAbsTokenizer(unittest.TestCase):
             res = detokenized_midi_dict.to_midi()
             res.save(f"tests/test_results/{file_name}")
 
-        # tknzr = tokenizer.AbsTokenizer(return_tensors=False)
-        tknzr = tokenizer.TokenizerLazy(return_tensors=False)
+        tknzr = tokenizer.AbsTokenizer(return_tensors=False)
         tokenize_detokenize("basic.mid")
         tokenize_detokenize("arabesque.mid")
         tokenize_detokenize("beethoven.mid")
@@ -119,6 +213,43 @@ class TestAbsTokenizer(unittest.TestCase):
         tokenize_detokenize("expressive.mid")
         tokenize_detokenize("pop.mid")
         tokenize_detokenize("beethoven_moonlight.mid")
+
+    def test_aug(self):
+        tknzr = tokenizer.AbsTokenizer(return_tensors=False)
+        seq = get_short_seq_abs(tknzr)
+        seq_concat = get_concat_seq_abs(tknzr)
+        pitch_aug_fn = tknzr.export_pitch_aug(aug_range=5)
+        velocity_aug_fn = tknzr.export_velocity_aug(aug_steps_range=2)
+        tempo_aug_fn = tknzr.export_tempo_aug(tempo_aug_range=0.5)
+        chord_mixup_fn = tknzr.export_chord_mixup()
+
+        # Pitch augmentation
+        seq_pitch_augmented = pitch_aug_fn(get_short_seq_abs(tknzr))
+        logging.info(f"pitch_aug_fn:\n{seq} ->\n\n{seq_pitch_augmented}\n")
+
+        # Velocity augmentation
+        seq_velocity_augmented = velocity_aug_fn(get_short_seq_abs(tknzr))
+        logging.info(
+            f"velocity_aug_fn:\n{seq} ->\n\n{seq_velocity_augmented}\n"
+        )
+
+        # Tempo augmentation
+        seq_tempo_augmented = tempo_aug_fn(get_short_seq_abs(tknzr))
+        logging.info(f"tempo_aug_fn:\n{seq} ->\n\n{seq_tempo_augmented}\n")
+
+        seq_concat_tempo_augmented = tempo_aug_fn(get_concat_seq_abs(tknzr))
+        logging.info(
+            f"tempo_aug_fn:\n{seq_concat} ->\n\n{seq_concat_tempo_augmented}\n"
+        )
+
+        # Chord mix-up augmentation
+        seq_mixup_augmented = chord_mixup_fn(get_short_seq_abs(tknzr))
+        logging.info(f"chord_mixup_fn:\n{seq} ->\n\n{seq_mixup_augmented}\n")
+
+        seq_concat_tempo_augmented = chord_mixup_fn(get_concat_seq_abs(tknzr))
+        logging.info(
+            f"chord_mixup_fn:\n{seq_concat} ->\n\n{seq_concat_tempo_augmented}\n"
+        )
 
 
 class TestLazyTokenizer(unittest.TestCase):
@@ -143,15 +274,15 @@ class TestLazyTokenizer(unittest.TestCase):
 
     def test_aug(self):
         tknzr = tokenizer.TokenizerLazy(return_tensors=False)
-        seq = get_short_seq(tknzr)
-        seq_concat = get_concat_seq(tknzr)
+        seq = get_short_seq_rel(tknzr)
+        seq_concat = get_concat_seq_rel(tknzr)
         pitch_aug_fn = tknzr.export_pitch_aug(aug_range=5)
         velocity_aug_fn = tknzr.export_velocity_aug(aug_steps_range=2)
-        tempo_aug_fn = tknzr.export_tempo_aug(tempo_aug_range=0.5)
+        tempo_aug_fn = tknzr.export_tempo_aug(tempo_aug_range=0.8)
         chord_mixup_fn = tknzr.export_chord_mixup()
 
         # Pitch augmentation
-        seq_pitch_augmented = pitch_aug_fn(get_short_seq(tknzr))
+        seq_pitch_augmented = pitch_aug_fn(get_short_seq_rel(tknzr))
         logging.info(f"pitch_aug_fn:\n{seq} ->\n\n{seq_pitch_augmented}\n")
         self.assertEqual(
             seq_pitch_augmented[4][1] - seq[4][1],
@@ -159,7 +290,7 @@ class TestLazyTokenizer(unittest.TestCase):
         )
 
         # Velocity augmentation
-        seq_velocity_augmented = velocity_aug_fn(get_short_seq(tknzr))
+        seq_velocity_augmented = velocity_aug_fn(get_short_seq_rel(tknzr))
         logging.info(
             f"velocity_aug_fn:\n{seq} ->\n\n{seq_velocity_augmented}\n"
         )
@@ -169,19 +300,19 @@ class TestLazyTokenizer(unittest.TestCase):
         )
 
         # Tempo augmentation
-        seq_tempo_augmented = tempo_aug_fn(get_short_seq(tknzr))
+        seq_tempo_augmented = tempo_aug_fn(get_short_seq_rel(tknzr))
         logging.info(f"tempo_aug_fn:\n{seq} ->\n\n{seq_tempo_augmented}\n")
 
-        seq_concat_tempo_augmented = tempo_aug_fn(get_concat_seq(tknzr))
+        seq_concat_tempo_augmented = tempo_aug_fn(get_concat_seq_rel(tknzr))
         logging.info(
             f"tempo_aug_fn:\n{seq_concat} ->\n\n{seq_concat_tempo_augmented}\n"
         )
 
         # Chord mix-up augmentation
-        seq_mixup_augmented = chord_mixup_fn(get_short_seq(tknzr))
+        seq_mixup_augmented = chord_mixup_fn(get_short_seq_rel(tknzr))
         logging.info(f"chord_mixup_fn:\n{seq} ->\n\n{seq_mixup_augmented}\n")
 
-        seq_concat_tempo_augmented = chord_mixup_fn(get_concat_seq(tknzr))
+        seq_concat_tempo_augmented = chord_mixup_fn(get_concat_seq_rel(tknzr))
         logging.info(
             f"chord_mixup_fn:\n{seq_concat} ->\n\n{seq_concat_tempo_augmented}\n"
         )
@@ -226,20 +357,20 @@ class TestLazyTokenizer(unittest.TestCase):
 
     def test_encode_decode(self):
         tknzr = tokenizer.TokenizerLazy(return_tensors=True)
-        seq = get_short_seq(tknzr)
+        seq = get_short_seq_rel(tknzr)
         enc_dec_seq = tknzr.decode(tknzr.encode(seq))
         for x, y in zip(seq, enc_dec_seq):
             self.assertEqual(x, y)
 
         tknzr = tokenizer.TokenizerLazy(return_tensors=False)
-        seq = get_short_seq(tknzr)
+        seq = get_short_seq_rel(tknzr)
         enc_dec_seq = tknzr.decode(tknzr.encode(seq))
         for x, y in zip(seq, enc_dec_seq):
             self.assertEqual(x, y)
 
     def test_no_unk_token(self):
         tknzr = tokenizer.TokenizerLazy()
-        seq = get_short_seq(tknzr)
+        seq = get_short_seq_rel(tknzr)
         enc_dec_seq = tknzr.decode(tknzr.encode(seq))
         for tok in enc_dec_seq:
             self.assertTrue(tok != tknzr.unk_tok)

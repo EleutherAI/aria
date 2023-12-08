@@ -169,6 +169,60 @@ class Tokenizer:
         self.id_to_tok = {v: k for k, v in self.tok_to_id.items()}
         self.vocab_size = len(self.vocab)
 
+    def export_aug_fn_concat(self, aug_fn: Callable):
+        """Exports a function that splits src before augmenting.
+
+        This is useful for augmentation functions that expect pure sequences
+        instead of concatenated ones (like those given by PretrainedDataset).
+        """
+
+        def _aug_fn_concat(
+            src: list,
+            _aug_fn: Callable,
+            pad_tok: str,
+            eos_tok: str,
+            **kwargs,
+        ):
+            # Split list on '<E>'
+            initial_seq_len = len(src)
+            src_sep = []
+            prev_idx = 0
+            for curr_idx, tok in enumerate(src, start=1):
+                if tok == eos_tok:
+                    src_sep.append(src[prev_idx:curr_idx])
+                    prev_idx = curr_idx
+
+            # Last sequence
+            if prev_idx != curr_idx:
+                src_sep.append(src[prev_idx:])
+
+            # Augment
+            src_sep = [
+                _aug_fn(
+                    _src,
+                    **kwargs,
+                )
+                for _src in src_sep
+            ]
+
+            # Concatenate
+            src_aug_concat = [tok for src_aug in src_sep for tok in src_aug]
+
+            # Pad or truncate to original sequence length as necessary
+            src_aug_concat = src_aug_concat[:initial_seq_len]
+            src_aug_concat += [pad_tok] * (
+                initial_seq_len - len(src_aug_concat)
+            )
+
+            return src_aug_concat
+
+        return functools.partial(
+            _aug_fn_concat,
+            _aug_fn=aug_fn,
+            pad_tok=self.pad_tok,
+            eos_tok=self.eos_tok,
+        )
+
 
 class AbsTokenizer(Tokenizer):
     def __init__(self, return_tensors: bool = False):
@@ -186,7 +240,6 @@ class AbsTokenizer(Tokenizer):
             self.time_step * i
             for i in range((self.max_dur // self.time_step) + 1)
         ]
-        # Remember to check for <T>, 0 onset and max, <T> being the same
         self.onset_time_quantizations = [
             self.time_step * i for i in range((self.max_dur // self.time_step))
         ]
@@ -555,6 +608,286 @@ class AbsTokenizer(Tokenizer):
             metadata={},
         )
 
+    def export_pitch_aug(self, aug_range: int):
+        """Exports a function that augments the pitch of all note tokens.
+
+        Note that notes which fall out of the range (0, 127) will be replaced
+        with the unknown token '<U>'.
+
+        Args:
+            aug_range (int): Returned function will randomly augment the pitch
+                from a value in the range (-aug_range, aug_range).
+
+        Returns:
+            Callable[list]: Exported function.
+        """
+
+        def pitch_aug_seq(
+            src: list,
+            unk_tok: str,
+            _aug_range: float,
+        ):
+            def pitch_aug_tok(tok, _pitch_aug):
+                if isinstance(tok, str):  # Stand in for special tokens
+                    _tok_type = "special"
+                else:
+                    _tok_type = tok[0]
+
+                if (
+                    _tok_type == "special"
+                    or _tok_type == "prefix"
+                    or _tok_type == "dur"
+                    or _tok_type == "drum"
+                    or _tok_type == "onset"
+                ):
+                    # Return without changing
+                    return tok
+                else:
+                    # Return augmented tok
+                    (_instrument, _pitch, _velocity) = tok
+
+                    if 0 <= _pitch + _pitch_aug <= 127:
+                        return (_instrument, _pitch + _pitch_aug, _velocity)
+                    else:
+                        return unk_tok
+
+            pitch_aug = random.randint(-_aug_range, _aug_range)
+            return [pitch_aug_tok(x, pitch_aug) for x in src]
+
+        # See functools.partial docs
+        return functools.partial(
+            pitch_aug_seq,
+            unk_tok=self.unk_tok,
+            _aug_range=aug_range,
+        )
+
+    def export_velocity_aug(self, aug_steps_range: int):
+        """Exports a function which augments the velocity of all pitch tokens.
+
+        This augmentation truncated such that it returns a valid note token.
+
+        Args:
+            aug_steps_range (int): Returned function will randomly augment
+                velocity in the range aug_steps_range * (-self.velocity_step,
+                self.velocity step).
+
+        Returns:
+            Callable[str]: Exported function.
+        """
+
+        def velocity_aug_seq(
+            src: list,
+            velocity_step: int,
+            max_velocity: int,
+            _aug_steps_range: int,
+        ):
+            def velocity_aug_tok(tok, _velocity_aug):
+                if isinstance(tok, str):  # Stand in for special tokens
+                    _tok_type = "special"
+                else:
+                    _tok_type = tok[0]
+
+                if (
+                    _tok_type == "special"
+                    or _tok_type == "prefix"
+                    or _tok_type == "dur"
+                    or _tok_type == "drum"
+                    or _tok_type == "onset"
+                ):
+                    # Return without changing
+                    return tok
+                else:
+                    # Return augmented tok
+                    (_instrument, _pitch, _velocity) = tok
+
+                    # Check it doesn't go out of bounds
+                    if _velocity + _velocity_aug >= max_velocity:
+                        return (_instrument, _pitch, max_velocity)
+                    elif _velocity + _velocity_aug <= velocity_step:
+                        return (_instrument, _pitch, velocity_step)
+
+                    return (_instrument, _pitch, _velocity + _velocity_aug)
+
+            velocity_aug = velocity_step * random.randint(
+                -_aug_steps_range, _aug_steps_range
+            )
+            return [velocity_aug_tok(x, velocity_aug) for x in src]
+
+        # See functools.partial docs
+        return functools.partial(
+            velocity_aug_seq,
+            velocity_step=self.velocity_step,
+            max_velocity=self.max_velocity,
+            _aug_steps_range=aug_steps_range,
+        )
+
+    # NOT TESTED
+    def export_tempo_aug(self, tempo_aug_range: float):
+        def tempo_aug_seq(
+            src: list,
+            abs_time_step: int,
+            max_dur: int,
+            time_step: int,
+            time_tok: str,
+            instruments_nd: list,
+            _tempo_aug_range: float,
+        ):
+            """This must be used with export_aug_fn_concat in order to work
+            properly for concatenated sequences."""
+            tempo_aug = random.uniform(
+                1 - tempo_aug_range, 1 + _tempo_aug_range
+            )
+
+            res = []
+            src_time = 0  # Needed?
+            src_time_tok_cnt = 0
+            tgt_time_tok_cnt = 0
+            for tok_1, tok_2, tok_3 in zip(src, src[1:], src[2:]):
+                if tok_1 == time_tok:  # Stand in for special tokens
+                    _tok_type = "time"
+                elif isinstance(tok_1, str):  # Stand in for special tokens
+                    _tok_type = "special"
+                else:
+                    _tok_type = tok_1[0]
+
+                if _tok_type == "special" or _tok_type == "prefix":
+                    res.append(tok_1)
+                    continue
+                elif _tok_type == "time":
+                    src_time_tok_cnt += 1
+                    continue
+                elif _tok_type == "onset" or _tok_type == "dur":
+                    continue
+                else:
+                    src_time = src_time_tok_cnt * abs_time_step + tok_2[1]
+
+                # Add time tokens to tgt if necessary
+                tgt_time = round(src_time * tempo_aug)
+                for _ in range(tgt_time_tok_cnt, tgt_time // abs_time_step):
+                    res.append(time_tok)
+                    tgt_time_tok_cnt += 1
+
+                # Add note or drum:
+                rel_tgt_time = tgt_time % abs_time_step
+                if _tok_type == "drum":
+                    (_instrument, _pitch) = tok_1
+                    src.append((_instrument, _pitch))
+                    src.append(("onset", rel_tgt_time))
+                elif _tok_type in instruments_nd:  # Make sure this works
+                    _src_dur = tok_3[1]
+                    _tgt_dur = time_step * (
+                        round(float(tempo_aug * _src_dur) / time_step)
+                    )
+                    if _tgt_dur > max_dur:
+                        _tgt_dur = max_dur
+
+                    (_instrument, _pitch, _velocity) = tok_1
+                    src.append((_instrument, _pitch, _velocity))
+                    src.append(("onset", rel_tgt_time))
+                    src.append(("dur", _tgt_dur))
+
+            for tok in src[-2:]:
+                if tok == time_tok:  # Stand in for special tokens
+                    _tok_type = "time"
+                elif isinstance(tok, str):  # Stand in for special tokens
+                    _tok_type = "special"
+                else:
+                    _tok_type = tok[0]
+
+                if _tok_type == "special":
+                    src.append(tok)
+
+            return src
+
+        return functools.partial(
+            self.export_aug_fn_concat(aug_fn=tempo_aug_seq),
+            abs_time_step=self.abs_time_step,
+            max_dur=self.max_dur,
+            time_step=self.time_step,
+            time_tok=self.time_tok,
+            instruments_nd=self.instruments_nd,
+            _tempo_aug_range=tempo_aug_range,
+        )
+
+    # NOT TESTED
+    def export_chord_mixup(self):
+        # Chord mix up will randomly reorder concurrent notes. A concurrent
+        # notes are those which occur at the onset.
+        def chord_mixup(
+            src: list,
+            unk_tok: str,
+            time_tok: str,
+            end_tok: str,
+            instruments_wd: list,
+        ):
+            """This must be used with export_aug_fn_concat in order to work
+            properly for concatenated sequences."""
+
+            time_tok_cnt = 0
+            start = True
+            res = []
+            buffer = defaultdict(lambda: defaultdict(list))
+            for tok_1, tok_2, tok_3 in zip(src, src[1:], src[2:]):
+                if tok_1 == time_tok:
+                    start = False
+                    _tok_type = "time"
+                if tok_1 == unk_tok:
+                    start = False
+                    _tok_type = "unk"
+                elif tok_1 in instruments_wd:
+                    start = False
+                    _tok_type = tok_1[0]
+                elif start == True:
+                    res.append(tok_1)
+                    continue
+                else:
+                    continue
+
+                if _tok_type == "time":
+                    time_tok_cnt += 1
+                elif _tok_type == "drum":
+                    buffer[time_tok_cnt][tok_2[1]].append(
+                        {
+                            "note": tok_1,
+                            "onset": tok_2,
+                            "dur": None,
+                        }
+                    )
+                else:
+                    buffer[time_tok_cnt][tok_2[1]].append(
+                        {
+                            "note": tok_1,
+                            "onset": tok_2,
+                            "dur": tok_3,
+                        }
+                    )
+
+            start = True
+            for interval_notes in sorted(buffer).values():
+                if not start:
+                    res.append(time_tok)
+                for notes_by_onset in sorted(interval_notes).values():
+                    random.shuffle(notes_by_onset)
+                    for note in notes_by_onset:
+                        res.append(note["note"])
+                        res.append(note["note"])
+                        if note["dur"]:
+                            res.append(note["dur"])
+                start = False
+
+            if src[-1] == end_tok:
+                res.append(end_tok)
+
+            return src
+
+        return functools.partial(
+            self.export_aug_fn_concat(aug_fn=chord_mixup),
+            unk_tok=self.unk_tok,
+            time_tok=self.time_tok,
+            end_tok=self.eos_tok,
+            instruments_wd=self.instruments_wd,
+        )
+
 
 class TokenizerLazy(Tokenizer):
     """Lazy MidiDict Tokenizer"""
@@ -906,60 +1239,6 @@ class TokenizerLazy(Tokenizer):
             note_msgs=note_msgs,
             ticks_per_beat=TICKS_PER_BEAT,
             metadata={},
-        )
-
-    def export_aug_fn_concat(self, aug_fn: Callable):
-        """Exports a function that splits src before augmenting.
-
-        This is useful for augmentation functions that expect pure sequences
-        instead of concatenated ones (like those given by PretrainedDataset).
-        """
-
-        def _aug_fn_concat(
-            src: list,
-            _aug_fn: Callable,
-            pad_tok: str,
-            eos_tok: str,
-            **kwargs,
-        ):
-            # Split list on '<E>'
-            initial_seq_len = len(src)
-            src_sep = []
-            prev_idx = 0
-            for curr_idx, tok in enumerate(src, start=1):
-                if tok == eos_tok:
-                    src_sep.append(src[prev_idx:curr_idx])
-                    prev_idx = curr_idx
-
-            # Last sequence
-            if prev_idx != curr_idx:
-                src_sep.append(src[prev_idx:])
-
-            # Augment
-            src_sep = [
-                _aug_fn(
-                    _src,
-                    **kwargs,
-                )
-                for _src in src_sep
-            ]
-
-            # Concatenate
-            src_aug_concat = [tok for src_aug in src_sep for tok in src_aug]
-
-            # Pad or truncate to original sequence length as necessary
-            src_aug_concat = src_aug_concat[:initial_seq_len]
-            src_aug_concat += [pad_tok] * (
-                initial_seq_len - len(src_aug_concat)
-            )
-
-            return src_aug_concat
-
-        return functools.partial(
-            _aug_fn_concat,
-            _aug_fn=aug_fn,
-            pad_tok=self.pad_tok,
-            eos_tok=self.eos_tok,
         )
 
     def export_pitch_aug(self, aug_range: int):
