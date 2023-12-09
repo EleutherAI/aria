@@ -92,8 +92,6 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
         # Generate and save the inverse frequency buffer (non-trainable)
         if not dynamic:
             self._compute_inv_freq(self.scaling_factor, device)
-        else:
-            self._compute_inv_freq_original(device)
 
         self._seq_len_cached = 0
         self._cos_cached = None
@@ -149,11 +147,16 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
 
             if self.dynamic:
                 scaling_factor = None
-                if seq_len <= self.original_context_length:
+                if (
+                    seq_len
+                    <= self.original_context_length * self.scaling_factor
+                ):
                     if self.finetuned:
                         scaling_factor = self.scaling_factor
                 else:
-                    scaling_factor = seq_len / self.original_context_length
+                    scaling_factor = seq_len / (
+                        self.original_context_length * self.scaling_factor
+                    )
                 if scaling_factor:
                     self._compute_inv_freq(scaling_factor, device)
                     self.mscale = float(
@@ -199,18 +202,17 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
             k: (batch, k_len, n_heads, head_dim)
             past_len: the length before the second axis of q (usually it is just the kv length)
         """
-        with torch.no_grad():
-            self._update_cos_sin_cache(
-                max(q.size(1) + past_len, self.original_context_length),
-                device=q.device,
-                dtype=q.dtype,
-            )
-            return apply_rotary_pos_emb(
-                q,
-                self._cos_cached[past_len : past_len + q.size(1)],
-                self._sin_cached[past_len : past_len + q.size(1)],
-            ), apply_rotary_pos_emb(
-                k,
-                self._cos_cached[past_len : past_len + k.size(1)],
-                self._sin_cached[past_len : past_len + k.size(1)],
-            )
+        self._update_cos_sin_cache(
+            max(q.size(1) + past_len, self.original_context_length),
+            device=q.device,
+            dtype=q.dtype,
+        )
+        return apply_rotary_pos_emb(
+            q,
+            self._cos_cached[past_len : past_len + q.size(1)],
+            self._sin_cached[past_len : past_len + q.size(1)],
+        ), apply_rotary_pos_emb(
+            k,
+            self._cos_cached[past_len : past_len + k.size(1)],
+            self._sin_cached[past_len : past_len + k.size(1)],
+        )
