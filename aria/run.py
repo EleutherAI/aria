@@ -176,7 +176,7 @@ def sample(args):
         args.p
     )  # let user input midi path if not provided
 
-    if args.l and 0 < args.l < model.max_seq_len:
+    if args.l and 0 < args.l:
         max_gen_len = args.l
     else:
         max_gen_len = model.max_seq_len
