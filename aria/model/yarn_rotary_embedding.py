@@ -199,17 +199,18 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
             k: (batch, k_len, n_heads, head_dim)
             past_len: the length before the second axis of q (usually it is just the kv length)
         """
-        self._update_cos_sin_cache(
-            max(q.size(1) + past_len, self.original_context_length),
-            device=q.device,
-            dtype=q.dtype,
-        )
-        return apply_rotary_pos_emb(
-            q,
-            self._cos_cached[past_len : past_len + q.size(1)],
-            self._sin_cached[past_len : past_len + q.size(1)],
-        ), apply_rotary_pos_emb(
-            k,
-            self._cos_cached[past_len : past_len + k.size(1)],
-            self._sin_cached[past_len : past_len + k.size(1)],
-        )
+        with torch.no_grad():
+            self._update_cos_sin_cache(
+                max(q.size(1) + past_len, self.original_context_length),
+                device=q.device,
+                dtype=q.dtype,
+            )
+            return apply_rotary_pos_emb(
+                q,
+                self._cos_cached[past_len : past_len + q.size(1)],
+                self._sin_cached[past_len : past_len + q.size(1)],
+            ), apply_rotary_pos_emb(
+                k,
+                self._cos_cached[past_len : past_len + k.size(1)],
+                self._sin_cached[past_len : past_len + k.size(1)],
+            )

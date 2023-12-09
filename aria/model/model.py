@@ -41,7 +41,7 @@ class ModelConfig:
     n_layers: int
     ff_mult: int
     drop_p: float
-    max_seq_len: int
+    max_seq_len: int  # The original context length *WITHOUT* considering YaRN
     grad_checkpoint: bool
     yarn_config: dict | YaRNConfig | None = None
 
@@ -133,8 +133,13 @@ class FusedEncoderBlock(nn.Module):
         xq, xk, xv = mixed_qkv.chunk(3, -1)
 
         # Reshape for rotary embeddings
-        xq = xq.view(batch_size, seq_len, self.n_heads, self.d_head)
-        xk = xk.view(batch_size, seq_len, self.n_heads, self.d_head)
+        # Need contiguous for q, k since in-place RoPE cannot be applied on a view
+        xq = xq.reshape(
+            batch_size, seq_len, self.n_heads, self.d_head
+        ).contiguous()
+        xk = xk.reshape(
+            batch_size, seq_len, self.n_heads, self.d_head
+        ).contiguous()
         xv = xv.view(batch_size, seq_len, self.n_heads, self.d_head)
 
         past_len = 0 if past_kv is None else past_kv[0].size(1)
@@ -227,8 +232,6 @@ class Transformer(nn.Module):
                 d_model).
         """
         hidden_states = self.tok_embeddings(src)
-
-        assert src.shape[1] <= self.model_config.max_seq_len, "Too long."
 
         # NOTE: If you want to use gradient checkpointing then you must
         # remove torch.compile from the train script as this is not currently
