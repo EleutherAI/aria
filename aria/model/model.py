@@ -1,11 +1,14 @@
 """Includes (PyTorch) transformer model and config classes."""
 from dataclasses import dataclass
+from typing import Optional, Union
+
 import torch
 import torch.utils.checkpoint
 
 from torch import nn as nn
 from torch.nn import functional as F
 from aria.model.yarn_rotary_embedding import YaRNScaledRotaryEmbedding
+from aria.model.cache import KVCache
 
 
 @dataclass
@@ -25,10 +28,13 @@ class YaRNConfig:
 
     beta_fast: int = 16
     beta_slow: int = 1
+    # `max_len * scale` would be the actual max context length for the run
     scale: float = 1.0
     mscale_coeff: float = 0.1
     base: float = 10000.0
+    # Whether the underlying weights are already finetuned with YaRN
     finetuned: bool = False
+    # Whether to use dynamic YaRN beyond the context length * scale
     dynamic: bool = True
 
 
@@ -41,7 +47,8 @@ class ModelConfig:
     drop_p: float
     max_seq_len: int  # The original context length *WITHOUT* considering YaRN
     grad_checkpoint: bool
-    yarn_config: dict | YaRNConfig | None = None
+    yarn_config: Optional[Union[dict, YaRNConfig]] = None
+    vocab_size: Optional[int] = None
 
     def __post_init__(self):
         if self.yarn_config is not None and isinstance(self.yarn_config, dict):
@@ -116,17 +123,25 @@ class FusedEncoderBlock(nn.Module):
         self.norm1 = nn.LayerNorm(model_config.d_model)
         self.norm2 = nn.LayerNorm(model_config.d_model)
 
-    def forward(self, x: torch.Tensor, use_cache=False, past_kv=None):
-        att, kv = self._att_block(
-            self.norm1(x), use_cache=use_cache, past_kv=past_kv
-        )
+    def forward(self, x: torch.Tensor, past_kv=None):
+        att = self._att_block(self.norm1(x), past_kv=past_kv)
         x = x + att
         x = x + self._ff_block(self.norm2(x))
 
-        return x, kv
+        return x
 
-    def _att_block(self, x: torch.Tensor, use_cache=False, past_kv=None):
+    def _att_block(
+        self,
+        x: torch.Tensor,
+        input_positions: Optional[torch.Tensor] = None,
+        past_kv: Optional[KVCache] = None,
+    ):
         batch_size, seq_len, _ = x.shape
+        input_positions = (
+            torch.arange(seq_len, device=x.device, dtype=torch.long)
+            if input_positions is None
+            else input_positions
+        )
         mixed_qkv = self.mixed_qkv(x)
         xq, xk, xv = mixed_qkv.chunk(3, -1)
 
@@ -140,15 +155,16 @@ class FusedEncoderBlock(nn.Module):
         ).contiguous()
         xv = xv.view(batch_size, seq_len, self.n_heads, self.d_head)
 
-        past_len = 0 if past_kv is None else past_kv[0].size(1)
+        past_len = 0 if past_kv is None else past_kv.next_pos
+        input_positions += past_len  # If cache exists, shift input positions
+
         # apply_rotary_post_emb expects: (b_sz, s_len, n_head, d_head)
-        xq, xk = self.rotary_emb(xq, xk, past_len=past_len)
+        xq, xk = self.rotary_emb(
+            xq, xk, input_positions=input_positions, past_len=past_len
+        )
         # xq, xk: (b_sz, s_len, n_head, d_head)
         if past_kv is not None:
-            assert len(past_kv) == 2
-            xk = torch.concat([past_kv[0], xk], axis=1)
-            xv = torch.concat([past_kv[1], xv], axis=1)
-        kv = (xk, xv)
+            xk, xv = past_kv.update(input_positions, xk, xv)
         # Reshape for attention calculation: (b_sz, n_head, s_len, d_head)
         xq = xq.transpose(1, 2)
         xk = xk.transpose(1, 2)
@@ -160,8 +176,9 @@ class FusedEncoderBlock(nn.Module):
         else:
             att_dropout = 0.0
 
-        # Using beta torch functionality (subject to change)
-        # See - https://shorturl.at/jtI17
+        # Calculate attention
+        # Note: We avoid explicitly creating an attention mask of shape (..., q_len, k_len)
+        #       to save vRAM for potential long length samples.
         if past_kv is None:
             att = F.scaled_dot_product_attention(
                 query=xq,
@@ -172,7 +189,7 @@ class FusedEncoderBlock(nn.Module):
             )
         else:
             assert xq.size(2) == 1
-            mask = torch.ones(1, xk.size(2), dtype=bool, device=xk.device)
+            mask = torch.ones(1, xk.size(2), dtype=torch.bool, device=xk.device)
             att = F.scaled_dot_product_attention(
                 query=xq,
                 key=xk,
@@ -186,10 +203,7 @@ class FusedEncoderBlock(nn.Module):
         out = att.transpose(1, 2).contiguous()
         out = out.view(batch_size, seq_len, self.n_heads * self.d_head)
 
-        return (
-            self.resid_dropout(self.att_proj_linear(out)),
-            kv if use_cache else None,
-        )
+        return self.resid_dropout(self.att_proj_linear(out))
 
     def _ff_block(self, x: torch.Tensor):
         x = self.ff_linear_2(self.ff_activation(self.ff_linear_1(x)))
@@ -218,12 +232,16 @@ class Transformer(nn.Module):
         for _ in range(model_config.n_layers):
             self.encode_layers.append(FusedEncoderBlock(model_config))
 
-    def forward(self, src: torch.Tensor, use_cache=False, past_kv=None):
+    def forward(
+        self, src: torch.Tensor, past_kv: Optional[list[KVCache]] = None
+    ):
         """Forward pass of Transformer.
 
         Args:
             src (torch.tensor): Input to encoder block, of shape (batch_size,
                 seq_len, d_model).
+            past_kv (Optional[list[KVCache]]): a list of kv caches. The list index
+                corresponds to the layer index.
 
         Returns:
             torch.tensor: Model outputs with shape (batch_size, seq_len,
@@ -235,7 +253,7 @@ class Transformer(nn.Module):
         # remove torch.compile from the train script as this is not currently
         # supported.
         # Implements gradient checkpoints on Encoder Layers.
-        if self.model_config.grad_checkpoint is True and not use_cache:
+        if self.model_config.grad_checkpoint is True:
             for layer in self.encode_layers:
 
                 def create_custom_forward(module):
@@ -244,27 +262,20 @@ class Transformer(nn.Module):
 
                     return custom_forward
 
-                hidden_states, _ = torch.utils.checkpoint.checkpoint(
+                hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(layer),
                     hidden_states,
                     preserve_rng_state=True,
                     use_reentrant=True,
                 )
         else:
-            new_past_kv = []
             past_kv = (
                 [None] * len(self.encode_layers) if past_kv is None else past_kv
             )
             for layer, _kv in zip(self.encode_layers, past_kv):
-                hidden_states, kv = layer(
-                    hidden_states, use_cache=use_cache, past_kv=_kv
-                )
-                new_past_kv.append(kv)
+                hidden_states, kv = layer(hidden_states, past_kv=_kv)
 
-        return (
-            self.out_layer_norm(hidden_states),
-            new_past_kv if use_cache else None,
-        )
+        return self.out_layer_norm(hidden_states)
 
 
 class TransformerLM(nn.Module):
@@ -283,7 +294,7 @@ class TransformerLM(nn.Module):
             model_config.d_model, model_config.vocab_size, bias=False
         )
 
-    def forward(self, src: torch.Tensor, use_cache=False, past_kv=None):
+    def forward(self, src: torch.Tensor, past_kv=None):
         """Forward pass of Transformer decoder with LM head.
 
         Args:
@@ -294,10 +305,25 @@ class TransformerLM(nn.Module):
             torch.tensor: Forward pass of src through Transformer and LM head.
                 Has shape (batch_size, seq_len, vocab_size).
         """
-        hidden, past_kv = self.model(src, use_cache=use_cache, past_kv=past_kv)
+        hidden, past_kv = self.model(src, past_kv=past_kv)
         logits = self.lm_head(hidden)
 
-        if use_cache:
-            return logits, past_kv
-        else:
-            return logits
+        return logits
+
+    def get_cache(self, max_batch_size: int = 16, max_len: int = 2048):
+        """
+        Initialize an empty kv cache according to the model parameters.
+        We do not make KVCache a part of the model because one may apply techniques
+        such as CFG utilizing multiple caches.
+        """
+        return [
+            KVCache(
+                max_batch_size=max_batch_size,
+                max_size=max_len,
+                n_head=self.model.model_config.n_heads,
+                d_head=self.model.model_config.d_model
+                // self.model_config.n_heads,
+                dtype=next(self.parameters()).dtype,
+            )
+            for _ in range(self.model.model_config.n_layers)
+        ]

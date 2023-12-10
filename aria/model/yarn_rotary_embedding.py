@@ -196,12 +196,14 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
         self,
         q: torch.Tensor,
         k: torch.Tensor,
+        input_positions: Optional[torch.Tensor] = None,
         past_len: int = 0,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             q: (batch, q_len, n_heads, head_dim)
             k: (batch, k_len, n_heads, head_dim)
+            input_positions: (batch, *)
             past_len: the length before the second axis of q (usually it is just the kv length)
         """
         self._update_cos_sin_cache(
