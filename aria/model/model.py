@@ -177,8 +177,6 @@ class FusedEncoderBlock(nn.Module):
             att_dropout = 0.0
 
         # Calculate attention
-        # Note: We avoid explicitly creating an attention mask of shape (..., q_len, k_len)
-        #       to save vRAM for potential long length samples.
         if past_kv is None:
             att = F.scaled_dot_product_attention(
                 query=xq,
@@ -188,8 +186,12 @@ class FusedEncoderBlock(nn.Module):
                 is_causal=True,
             )
         else:
-            assert xq.size(2) == 1
-            mask = torch.ones(1, xk.size(2), dtype=torch.bool, device=xk.device)
+            mask = torch.tril(
+                torch.ones(
+                    xq.size(2), xk.size(2), dtype=torch.bool, device=xk.device
+                ),
+                diagonal=xk.size(2) - xq.size(2),
+            )
             att = F.scaled_dot_product_attention(
                 query=xq,
                 key=xk,
@@ -310,7 +312,9 @@ class TransformerLM(nn.Module):
 
         return logits
 
-    def get_cache(self, max_batch_size: int = 16, max_len: int = 2048, device=None):
+    def get_cache(
+        self, max_batch_size: int = 16, max_len: int = 2048, device=None
+    ):
         """
         Initialize an empty kv cache according to the model parameters.
         We do not make KVCache a part of the model because one may apply techniques

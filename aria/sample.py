@@ -139,11 +139,15 @@ def greedy_sample(
     input_text_mask = tokens != pad_id
     start_pos = min_prompt_size
 
-    past_kv = model.get_cache(max_batch_size=bsz, max_len=total_len, device=device)
+    past_kv = model.get_cache(
+        max_batch_size=bsz, max_len=total_len, device=device
+    )
     cfg_kv = (
         None
         if cfg_gamma is None
-        else model.get_cache(max_batch_size=bsz, max_len=neg_max_len, device=device)
+        else model.get_cache(
+            max_batch_size=bsz, max_len=neg_max_len, device=device
+        )
     )
     neg_previous_token = None
 
