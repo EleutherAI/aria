@@ -310,7 +310,7 @@ class TransformerLM(nn.Module):
 
         return logits
 
-    def get_cache(self, max_batch_size: int = 16, max_len: int = 2048):
+    def get_cache(self, max_batch_size: int = 16, max_len: int = 2048, device=None):
         """
         Initialize an empty kv cache according to the model parameters.
         We do not make KVCache a part of the model because one may apply techniques
@@ -324,6 +324,6 @@ class TransformerLM(nn.Module):
                 d_head=self.model.model_config.d_model
                 // self.model.model_config.n_heads,
                 dtype=next(self.parameters()).dtype,
-            )
+            ).to(device)
             for _ in range(self.model.model_config.n_layers)
         ]
