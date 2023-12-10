@@ -7,3 +7,4 @@ safetensors
 pyfluidsynth
 huggingface_hub
 rich
+python-rtmidi
