@@ -4,3 +4,6 @@ mido
 jsonlines
 pydub
 safetensors
+pyfluidsynth
+huggingface_hub
+rich
