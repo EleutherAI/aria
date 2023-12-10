@@ -275,7 +275,7 @@ class Transformer(nn.Module):
                 [None] * len(self.encode_layers) if past_kv is None else past_kv
             )
             for layer, _kv in zip(self.encode_layers, past_kv):
-                hidden_states, kv = layer(hidden_states, past_kv=_kv)
+                hidden_states = layer(hidden_states, past_kv=_kv)
 
         return self.out_layer_norm(hidden_states)
 
