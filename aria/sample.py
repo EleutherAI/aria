@@ -113,7 +113,9 @@ def greedy_sample(
 
         neg_min_len = min(total_len, min(len(a) for a in neg_prompts))
         neg_max_len = max(total_len, max(len(a) for a in neg_prompts))
-        neg_prompt_tensors = torch.full((bsz, neg_max_len), pad_id, device=device)
+        neg_prompt_tensors = torch.full(
+            (bsz, neg_max_len), pad_id, device=device
+        )
 
         # Padding to the left
         for neg_seq, neg_tensor in zip(neg_prompts, neg_prompt_tensors):
@@ -134,11 +136,15 @@ def greedy_sample(
         )
 
     dim_tok_inserted = [False for _ in range(bsz)]
-    input_text_mask = (tokens != pad_id)
+    input_text_mask = tokens != pad_id
     start_pos = min_prompt_size
 
     past_kv = model.get_cache(max_batch_size=1, max_len=total_len)
-    cfg_kv = None if cfg_gamma is None else model.get_cache(max_batch_size=1, max_len=neg_max_len)
+    cfg_kv = (
+        None
+        if cfg_gamma is None
+        else model.get_cache(max_batch_size=1, max_len=neg_max_len)
+    )
     neg_previous_token = None
 
     with torch.inference_mode():
@@ -154,9 +160,7 @@ def greedy_sample(
                 if cur_pos == start_pos
                 else tokens[:, cur_pos - 1 : cur_pos]
             )
-            logits = model.forward(
-                token, past_kv=past_kv
-            )
+            logits = model.forward(token, past_kv=past_kv)
             logits = logits[:, -1, :]
             if cfg_gamma is not None and max_prompt_size < cur_pos:
                 coeff = _get_cfg_coeff(
@@ -171,9 +175,7 @@ def greedy_sample(
                     ].unsqueeze(1)
                 else:
                     neg_tok = neg_previous_token.unsqueeze(1)
-                uncond_logits = model.forward(
-                    neg_tok, past_kv=cfg_kv
-                )
+                uncond_logits = model.forward(neg_tok, past_kv=cfg_kv)
                 uncond_logits = uncond_logits[:, -1, :]
                 logits = uncond_logits + coeff * (logits - uncond_logits)
 
