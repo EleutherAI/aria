@@ -92,6 +92,8 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
         # Generate and save the inverse frequency buffer (non-trainable)
         if not dynamic:
             self._compute_inv_freq(self.scaling_factor, device)
+        else:
+            self._compute_inv_freq_original(device)
 
         self._seq_len_cached = 0
         self._cos_cached = None

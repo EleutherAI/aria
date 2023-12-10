@@ -7,8 +7,6 @@ from torch import nn as nn
 from torch.nn import functional as F
 from aria.model.yarn_rotary_embedding import YaRNScaledRotaryEmbedding
 
-from aria.model.utils import apply_rotary_pos_emb
-
 
 @dataclass
 class YaRNConfig:
@@ -28,7 +26,7 @@ class YaRNConfig:
     beta_fast: int = 16
     beta_slow: int = 1
     scale: float = 1.0
-    mscale_coeff: float = 0.07
+    mscale_coeff: float = 0.1
     base: float = 10000.0
     finetuned: bool = False
     dynamic: bool = True
