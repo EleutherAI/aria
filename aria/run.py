@@ -199,8 +199,7 @@ def sample(args):
         prompts,
         device=device,
         force_end=force_end,
-        max_seq_len=model_config.max_seq_len,
-        max_gen_len=max_gen_len,
+        max_new_tokens=max_gen_len,
     )
 
     if os.path.isdir("samples") is False:

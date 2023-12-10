@@ -16,9 +16,6 @@ from tqdm import tqdm
 from aria.model import TransformerLM
 from aria.tokenizer import Tokenizer
 
-# TODO:
-# - Enable sampling sequences longer than max_seq_len by truncating
-
 
 def _get_cfg_coeff(cfg_gamma, cfg_mode, cur_pos, start_pos, total_len):
     if cfg_mode is None:
@@ -47,8 +44,7 @@ def greedy_sample(
     model: TransformerLM,
     tokenizer: Tokenizer,
     prompts: List[list],
-    max_seq_len: int,
-    max_gen_len: int,
+    max_new_tokens: int,
     device: torch.device | None = None,
     cfg_gamma: float | None = 1.4,
     cfg_mode: str | None = None,
@@ -65,8 +61,7 @@ def greedy_sample(
         model (TransformerLM): Model to sample from.
         tokenizer (Tokenizer): Tokenizer corresponding to model.
         prompts (List[list]): A list of prompts to sample as a batch.
-        max_seq_len (int): Maximum sequence length supported by the model.
-        max_gen_len (int): Maximum desired sequence length of the samples.
+        max_new_tokens (int): Maximum number of new generated tokens.
         device (torch.device, optional): Device to use. Defaults to None.
         cfg_gamma (float, optional): CFG gamma parameter. Defaults to 1.2.
             This parameter *determines* whether parameters related to CFG are used.
@@ -98,7 +93,7 @@ def greedy_sample(
     bsz = len(prompts)
     min_prompt_size = min([len(t) for t in prompts])
     max_prompt_size = max([len(t) for t in prompts])
-    total_len = min(max_seq_len, max_gen_len + max_prompt_size)
+    total_len = max_new_tokens + max_prompt_size
 
     if force_end:
         assert (
@@ -106,33 +101,25 @@ def greedy_sample(
         ), "prompt too long to use force_end=True"
 
     print(
-        f"Using hyperparams: temp={temperature}, top_p={top_p}, gamma={cfg_gamma}, gen_len={max_gen_len}"
+        f"Using hyperparams: temp={temperature}, top_p={top_p}, gamma={cfg_gamma}, gen_len={max_new_tokens}"
     )
 
     if cfg_gamma is not None:
-        # todo: maybe it already works with varying prompts
         assert (
             min_prompt_size == max_prompt_size
         ), "CFG not supported with varying prompts"
         if neg_prompts is None:
-            neg_prompts = [prompts[-1] for _ in range(bsz)]
+            neg_prompts = [t[-1:] for t in prompts]
 
         neg_min_len = min(total_len, min(len(a) for a in neg_prompts))
         neg_max_len = max(total_len, max(len(a) for a in neg_prompts))
-        neg_prompt_tensors = torch.stack(
-            [
-                torch.concat(
-                    [
-                        torch.full(
-                            (neg_max_len - len(neg_seq),), pad_id, device=device
-                        ),
-                        tokenizer.encode(neg_seq).to(device),
-                    ]
-                )
-                for neg_seq in neg_prompts
-            ],
-            axis=0,
-        )
+        neg_prompt_tensors = torch.full((bsz, neg_max_len), pad_id, device=device)
+
+        # Padding to the left
+        for neg_seq, neg_tensor in zip(neg_prompts, neg_prompt_tensors):
+            neg_tensor[: len(neg_seq)] = tokenizer.encode(neg_seq).to(device)
+
+        # Set the starting position of the negative prompt
         neg_len = (
             neg_min_len
             if neg_prompt_len is None
@@ -147,11 +134,11 @@ def greedy_sample(
         )
 
     dim_tok_inserted = [False for _ in range(bsz)]
-    input_text_mask = tokens != pad_id
+    input_text_mask = (tokens != pad_id)
     start_pos = min_prompt_size
 
-    past_kv = None
-    cfg_kv = None
+    past_kv = model.get_cache(max_batch_size=1, max_len=total_len)
+    cfg_kv = None if cfg_gamma is None else model.get_cache(max_batch_size=1, max_len=neg_max_len)
     neg_previous_token = None
 
     with torch.inference_mode():
@@ -167,8 +154,8 @@ def greedy_sample(
                 if cur_pos == start_pos
                 else tokens[:, cur_pos - 1 : cur_pos]
             )
-            logits, past_kv = model.forward(
-                token, use_cache=True, past_kv=past_kv
+            logits = model.forward(
+                token, past_kv=past_kv
             )
             logits = logits[:, -1, :]
             if cfg_gamma is not None and max_prompt_size < cur_pos:
@@ -184,8 +171,8 @@ def greedy_sample(
                     ].unsqueeze(1)
                 else:
                     neg_tok = neg_previous_token.unsqueeze(1)
-                uncond_logits, cfg_kv = model.forward(
-                    neg_tok, use_cache=True, past_kv=cfg_kv
+                uncond_logits = model.forward(
+                    neg_tok, past_kv=cfg_kv
                 )
                 uncond_logits = uncond_logits[:, -1, :]
                 logits = uncond_logits + coeff * (logits - uncond_logits)
@@ -234,7 +221,7 @@ def greedy_sample(
     decoded = []
     for idx, seq in enumerate(tokens.tolist()):
         # Cut to max gen len
-        seq = seq[: len(prompts[idx]) + max_gen_len]
+        seq = seq[: len(prompts[idx]) + max_new_tokens]
         # Cut to eos tok if any
         try:
             seq = seq[: seq.index(eos_id)]
