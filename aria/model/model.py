@@ -322,7 +322,7 @@ class TransformerLM(nn.Module):
                 max_size=max_len,
                 n_head=self.model.model_config.n_heads,
                 d_head=self.model.model_config.d_model
-                // self.model_config.n_heads,
+                // self.model.model_config.n_heads,
                 dtype=next(self.parameters()).dtype,
             )
             for _ in range(self.model.model_config.n_layers)
