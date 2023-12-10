@@ -32,6 +32,6 @@ class KVCache(torch.nn.Module):
         self.v_cache[: v.size(0), pos] = v
         self.next_pos = pos.max() + 1
         return (
-            self.k_cache[:, : self.next_pos],
-            self.v_cache[:, : self.next_pos],
+            self.k_cache[: k.size(0), : self.next_pos],
+            self.v_cache[: v.size(0), : self.next_pos],
         )
