@@ -307,7 +307,7 @@ class TransformerLM(nn.Module):
             torch.tensor: Forward pass of src through Transformer and LM head.
                 Has shape (batch_size, seq_len, vocab_size).
         """
-        hidden, past_kv = self.model(src, past_kv=past_kv)
+        hidden = self.model(src, past_kv=past_kv)
         logits = self.lm_head(hidden)
 
         return logits
