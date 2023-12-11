@@ -123,25 +123,55 @@ class FusedEncoderBlock(nn.Module):
         self.norm1 = nn.LayerNorm(model_config.d_model)
         self.norm2 = nn.LayerNorm(model_config.d_model)
 
-    def forward(self, x: torch.Tensor, past_kv=None):
-        att = self._att_block(self.norm1(x), past_kv=past_kv)
+    def forward(self, x: torch.Tensor, attn_mask=None, past_kv=None):
+        att = self._att_block(
+            self.norm1(x), attn_mask=attn_mask, past_kv=past_kv
+        )
         x = x + att
         x = x + self._ff_block(self.norm2(x))
 
         return x
 
+    @staticmethod
+    def _create_mask(
+        q_len: int,
+        k_len: int,
+        attn_mask: Optional[torch.Tensor] = None,
+        device=None,
+    ):
+        # Could have cached some of these masks (not the entire (seq_len, seq_len)!!).
+        # But profiler seems to show that their impact is negligible.
+
+        # attn_mask: (b_sz, k_len)
+        mask = torch.ones(q_len, k_len, dtype=torch.bool, device=device)
+        mask = torch.tril(mask, diagonal=q_len - k_len)
+        if attn_mask is not None:
+            mask = mask & attn_mask[:, None, :]
+        return mask
+
     def _att_block(
         self,
         x: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
         input_positions: Optional[torch.Tensor] = None,
+        max_pos: Optional[int] = None,
         past_kv: Optional[KVCache] = None,
     ):
+        """
+        Args:
+            x: (b_sz, s_len, d_model)
+            attn_mask: (b_sz, s_len). The attention mask. `False` masks the column(keys)
+                in the attention matrix.
+            input_positions: (s_len,). The absolute position of each token.
+                If None, we assume that the input positions are contiguous.
+            max_pos: The maximum position of the input. Only used when input_positions
+                is not None. Can be inferred as input_positions.max(), but such an
+                operation makes the cache update slower due to dynamic shape.
+            past_kv: A KVCache object.
+        """
         batch_size, seq_len, _ = x.shape
-        input_positions = (
-            torch.arange(seq_len, device=x.device, dtype=torch.long)
-            if input_positions is None
-            else input_positions
-        )
+        past_len = 0 if past_kv is None else past_kv.next_pos
+
         mixed_qkv = self.mixed_qkv(x)
         xq, xk, xv = mixed_qkv.chunk(3, -1)
 
@@ -155,20 +185,16 @@ class FusedEncoderBlock(nn.Module):
         ).contiguous()
         xv = xv.view(batch_size, seq_len, self.n_heads, self.d_head)
 
-        past_len = 0 if past_kv is None else past_kv.next_pos
-        input_positions += past_len  # If cache exists, shift input positions
-
         # apply_rotary_post_emb expects: (b_sz, s_len, n_head, d_head)
         xq, xk = self.rotary_emb(
             xq, xk, input_positions=input_positions, past_len=past_len
         )
         # xq, xk: (b_sz, s_len, n_head, d_head)
         if past_kv is not None:
-            xk, xv = past_kv.update(input_positions, xk, xv)
+            xk, xv = past_kv.update(xk, xv, pos=input_positions, max_pos=max_pos)
+
         # Reshape for attention calculation: (b_sz, n_head, s_len, d_head)
-        xq = xq.transpose(1, 2)
-        xk = xk.transpose(1, 2)
-        xv = xv.transpose(1, 2)
+        xq, xk, xv = map(lambda t: t.transpose(1, 2), (xq, xk, xv))
 
         # Required as we are not using a nn.Dropout layer
         if self.training:
@@ -177,7 +203,9 @@ class FusedEncoderBlock(nn.Module):
             att_dropout = 0.0
 
         # Calculate attention
-        if past_kv is None:
+        # Note: we avoid explicitly saving a (seq_len, seq_len) cache in order to
+        #       save vRAM.
+        if past_kv is None and attn_mask is None:
             att = F.scaled_dot_product_attention(
                 query=xq,
                 key=xk,
@@ -186,11 +214,8 @@ class FusedEncoderBlock(nn.Module):
                 is_causal=True,
             )
         else:
-            mask = torch.tril(
-                torch.ones(
-                    xq.size(2), xk.size(2), dtype=torch.bool, device=xk.device
-                ),
-                diagonal=xk.size(2) - xq.size(2),
+            mask = self._create_mask(
+                xq.size(2), xk.size(2), attn_mask=attn_mask, device=xk.device
             )
             att = F.scaled_dot_product_attention(
                 query=xq,
@@ -200,6 +225,8 @@ class FusedEncoderBlock(nn.Module):
                 is_causal=False,
                 attn_mask=mask,
             )
+            # If masked token show up in query, they come out as nan. Need to set to zero.
+            att = torch.nan_to_num(att, nan=0.0)
 
         # Reshape for out: (b_sz, s_len, n_head, d_head)
         out = att.transpose(1, 2).contiguous()
@@ -235,13 +262,18 @@ class Transformer(nn.Module):
             self.encode_layers.append(FusedEncoderBlock(model_config))
 
     def forward(
-        self, src: torch.Tensor, past_kv: Optional[list[KVCache]] = None
+        self,
+        src: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        past_kv: Optional[list[KVCache]] = None,
     ):
         """Forward pass of Transformer.
 
         Args:
             src (torch.tensor): Input to encoder block, of shape (batch_size,
                 seq_len, d_model).
+            attn_mask (Optional[torch.tensor]): Attention mask of shape
+                (batch_size, seq_len). Defaults to None.
             past_kv (Optional[list[KVCache]]): a list of kv caches. The list index
                 corresponds to the layer index.
 
@@ -267,6 +299,7 @@ class Transformer(nn.Module):
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(layer),
                     hidden_states,
+                    attn_mask,
                     preserve_rng_state=True,
                     use_reentrant=True,
                 )
@@ -275,7 +308,9 @@ class Transformer(nn.Module):
                 [None] * len(self.encode_layers) if past_kv is None else past_kv
             )
             for layer, _kv in zip(self.encode_layers, past_kv):
-                hidden_states = layer(hidden_states, past_kv=_kv)
+                hidden_states = layer(
+                    hidden_states, attn_mask=attn_mask, past_kv=_kv
+                )
 
         return self.out_layer_norm(hidden_states)
 
@@ -296,18 +331,27 @@ class TransformerLM(nn.Module):
             model_config.d_model, model_config.vocab_size, bias=False
         )
 
-    def forward(self, src: torch.Tensor, past_kv=None):
+    def forward(
+        self,
+        src: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        past_kv: Optional[list[KVCache]] = None,
+    ):
         """Forward pass of Transformer decoder with LM head.
 
         Args:
             src (torch.tensor): Input to encoder block, of shape (batch_size,
                 seq_len, d_model).
+            attn_mask (Optional[torch.tensor]): Attention mask of shape
+                (batch_size, seq_len). Defaults to None.
+            past_kv (Optional[list[KVCache]]): a list of kv caches. The list index
+                corresponds to the layer index.
 
         Returns:
             torch.tensor: Forward pass of src through Transformer and LM head.
                 Has shape (batch_size, seq_len, vocab_size).
         """
-        hidden = self.model(src, past_kv=past_kv)
+        hidden = self.model(src, attn_mask=attn_mask, past_kv=past_kv)
         logits = self.lm_head(hidden)
 
         return logits

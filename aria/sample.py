@@ -1,5 +1,4 @@
 """Contains generation/sampling code"""
-
 # This file contains code from https://github.com/facebookresearch/llama which
 # is available under the following licence:
 
@@ -36,10 +35,62 @@ def _get_cfg_coeff(cfg_gamma, cfg_mode, cur_pos, start_pos, total_len):
         raise ValueError(f"Unknown cfg_mode: {cfg_mode}")
 
 
+def _process_prompts(
+    prompts,
+    pad_token="<P>",
+    neg_prompts=None,
+    use_cfg=False,
+    neg_prompt_len=None,
+) -> list:
+    """
+    Preprocess prompts for generation.
+    If cfg is used,
+        1. the prompts and negative prompts will be combined.
+        2. the negative prompts will be truncated for at most as long as the longest prompt.
+    Args:
+        prompts: list of prompts
+        pad_token: pad token ('<P>')
+        neg_prompts: list of negative prompts
+        use_cfg: whether to use cfg
+        neg_prompt_len: max length of negative prompts. If more than the longest prompt,
+                        pad to this length.
+    Returns:
+        list of padded prompts
+    """
+    processed_prompts = []
+    max_len = max(len(t) for t in prompts)
+    pad_len = max(max_len, neg_prompt_len or 0)
+
+    if use_cfg:
+        if neg_prompts is None:
+            neg_prompts = [t[-1:] for t in prompts]
+        assert len(prompts) == len(
+            neg_prompts
+        ), "Prompts and neg_prompts must have the same count."
+
+        for prompt in prompts + neg_prompts:
+            processed_prompts.append(
+                [pad_token] * max(0, pad_len - len(prompt)) + prompt[:pad_len]
+            )
+    else:
+        max_len = max(len(t) for t in prompts)
+        for prompt in prompts:
+            processed_prompts.append(
+                [pad_token] * (max_len - len(prompt)) + prompt
+            )
+
+    return processed_prompts
+
+
+def _batch_encode(tokenizer, prompts: list[list]) -> torch.Tensor:
+    return torch.stack([tokenizer.encode(p) for p in prompts], dim=0)
+
+
 # Some good settings:
 # temp=0.85, top_p=0.9, cfg_gamma=1.4
 
 
+@torch.no_grad()
 def greedy_sample(
     model: TransformerLM,
     tokenizer: Tokenizer,
@@ -72,8 +123,9 @@ def greedy_sample(
             "sine": sine curve from 1 -> gamma -> 1
         neg_prompts (List[list], optional): Alternative prompts to sample from.
             Defaults to None ("unconditioned" model is approximated using only the last tokens of prompts).
-        neg_prompt_len (int, optional): Length of the negative prompts.
-            Defaults to None (minimal length of neg_prompts).
+        neg_prompt_len (int, optional): Max length used for the negative prompts.
+            Defaults to None (align to prompts).
+            When set, if `neg_prompt_len > max(t for t in prompts)`, we pad to `neg_prompt_len`.
         alpha (float, optional): an alpha parameter during interpolation.
             Only takes effect when neg_prompt_len < minimal length of neg_prompts. Defaults to 0.4.
         force_end (bool, optional): Whether to force the end of the prompt. Defaults to False.
@@ -88,146 +140,118 @@ def greedy_sample(
     model.eval()
 
     pad_id = tokenizer.pad_id
+    pad_tok = tokenizer.pad_tok
     eos_id = tokenizer.tok_to_id[tokenizer.eos_tok]
 
-    bsz = len(prompts)
-    min_prompt_size = min([len(t) for t in prompts])
-    max_prompt_size = max([len(t) for t in prompts])
-    total_len = max_new_tokens + max_prompt_size
+    padded_combined_prompts = _process_prompts(
+        prompts,
+        pad_tok,
+        neg_prompts,
+        cfg_gamma is not None,
+        neg_prompt_len=neg_prompt_len,
+    )
+    if neg_prompts is not None:
+        padded_negative_prompts = _process_prompts(
+            neg_prompts, pad_tok, None, False
+        )
+    else:
+        padded_negative_prompts = [t[-1:] for t in prompts]
+
+    prompt_len = len(padded_combined_prompts[0])
+    if neg_prompts is not None:
+        neg_offset_len = max(0, prompt_len - max(len(t) for t in prompts))
+    else:
+        neg_offset_len = 0
 
     if force_end:
-        assert (
-            total_len - max_prompt_size > 130
-        ), "prompt too long to use force_end=True"
+        assert max_new_tokens > 130, "prompt too long to use force_end=True"
 
     print(
         f"Using hyperparams: temp={temperature}, top_p={top_p}, gamma={cfg_gamma}, gen_len={max_new_tokens}"
     )
 
-    if cfg_gamma is not None:
-        assert (
-            min_prompt_size == max_prompt_size
-        ), "CFG not supported with varying prompts"
-        if neg_prompts is None:
-            neg_prompts = [t[-1:] for t in prompts]
+    total_len = prompt_len + max_new_tokens
+    tokens = torch.full(
+        (len(padded_combined_prompts), total_len), pad_id, device=device
+    )
+    tokens[:, :prompt_len] = _batch_encode(tokenizer, padded_combined_prompts).to(device)
+    full_neg_tokens = _batch_encode(tokenizer, padded_negative_prompts).to(device)
 
-        neg_min_len = min(total_len, min(len(a) for a in neg_prompts))
-        neg_max_len = max(total_len, max(len(a) for a in neg_prompts))
-        neg_prompt_tensors = torch.full(
-            (bsz, neg_max_len), pad_id, device=device
-        )
-
-        # Padding to the left
-        for neg_seq, neg_tensor in zip(neg_prompts, neg_prompt_tensors):
-            neg_tensor[: len(neg_seq)] = tokenizer.encode(neg_seq).to(device)
-
-        # Set the starting position of the negative prompt
-        neg_len = (
-            neg_min_len
-            if neg_prompt_len is None
-            else min(neg_min_len, neg_prompt_len)
-        )
-        neg_tokens = neg_prompt_tensors[:, :neg_len]
-
-    tokens = torch.full((bsz, total_len), pad_id, device=device)
-    for idx, unencoded_seq in enumerate(prompts):
-        tokens[idx, : len(unencoded_seq)] = tokenizer.encode(unencoded_seq).to(
-            device
-        )
-
-    dim_tok_inserted = [False for _ in range(bsz)]
-    input_text_mask = tokens != pad_id
-    start_pos = min_prompt_size
+    dim_tok_inserted = [False for _ in range(tokens.size(0))]
+    attn_mask = torch.ones(
+        (len(padded_combined_prompts), total_len), device=device, dtype=torch.bool
+    )
+    attn_mask[:, :prompt_len] = tokens[:, :prompt_len] != pad_id
+    start_pos = prompt_len
 
     past_kv = model.get_cache(
-        max_batch_size=bsz, max_len=total_len, device=device
+        max_batch_size=tokens.size(0), max_len=total_len, device=device
     )
-    cfg_kv = (
-        None
-        if cfg_gamma is None
-        else model.get_cache(
-            max_batch_size=bsz, max_len=neg_max_len, device=device
+
+    for cur_pos in (
+        pbar := tqdm(
+            range(start_pos, total_len),
+            total=total_len - start_pos,
+            leave=False,
         )
-    )
-    neg_previous_token = None
+    ):
+        if cur_pos == start_pos:
+            token = tokens[:, :start_pos]
+            mask = attn_mask[:, :start_pos]
+        else:
+            token = tokens[:, cur_pos - 1 : cur_pos]
+            mask = attn_mask[:, cur_pos - 1 : cur_pos]
 
-    with torch.inference_mode():
-        for cur_pos in (
-            pbar := tqdm(
-                range(start_pos, total_len),
-                total=total_len - start_pos,
-                leave=False,
+        logits = model.forward(token, attn_mask=mask, past_kv=past_kv)
+        logits = logits[:, -1, :]
+
+        if cfg_gamma is not None:
+            coeff = _get_cfg_coeff(
+                cfg_gamma, cfg_mode, cur_pos, start_pos, total_len
             )
+            cond_logits = logits[: logits.size(0) // 2]
+            uncond_logits = logits[logits.size(0) // 2 :]
+            logits = uncond_logits + coeff * (cond_logits - uncond_logits)
+
+        if temperature > 0:
+            probs = torch.softmax(logits / temperature, dim=-1)
+            next_token = sample_top_p(probs, top_p)
+        else:
+            next_token = torch.argmax(logits, dim=-1)
+        next_token = next_token.reshape(-1)
+
+        # When alpha is used, in the first `max_new_tokens * alpha` generations, the negative
+        # prompt completions still use its original content (if not exceeding). After that, the
+        # negative prompt completions will be updated by the new tokens.
+        if (
+            alpha is not None
+            and cur_pos - neg_offset_len < full_neg_tokens.size(0)
+            and cur_pos - start_pos < max_new_tokens * alpha
         ):
-            token = (
-                tokens[:, :start_pos]
-                if cur_pos == start_pos
-                else tokens[:, cur_pos - 1 : cur_pos]
-            )
-            logits = model.forward(token, past_kv=past_kv)
-            logits = logits[:, -1, :]
-            if cfg_gamma is not None and max_prompt_size < cur_pos:
-                coeff = _get_cfg_coeff(
-                    cfg_gamma, cfg_mode, cur_pos, start_pos, total_len
-                )
+            neg_slice = full_neg_tokens[:, cur_pos - neg_offset_len]
+            next_token = torch.concat([next_token, neg_slice], dim=0)
+        else:
+            if cfg_gamma is not None:
+                next_token = next_token.repeat(2)  # Also update neg prompts
 
-                if cur_pos == start_pos:
-                    neg_tok = neg_tokens
-                elif neg_previous_token is None:
-                    neg_tok = tokens[
-                        :, (cur_pos - start_pos) + neg_len - 1
-                    ].unsqueeze(1)
-                else:
-                    neg_tok = neg_previous_token.unsqueeze(1)
-                uncond_logits = model.forward(neg_tok, past_kv=cfg_kv)
-                uncond_logits = uncond_logits[:, -1, :]
-                logits = uncond_logits + coeff * (logits - uncond_logits)
+        # Insert dim tokens
+        if force_end and cur_pos >= total_len - 130:
+            for _idx in range(tokens.size(0)):
+                if (
+                    dim_tok_inserted[_idx] is False
+                    and tokenizer.id_to_tok[next_token[_idx].item()][0] != "dur"
+                ):
+                    next_token[_idx] = tokenizer.tok_to_id[tokenizer.dim_tok]
 
-            if temperature > 0:
-                probs = torch.softmax(logits / temperature, dim=-1)
-                next_token = sample_top_p(probs, top_p)
-            else:
-                next_token = torch.argmax(logits, dim=-1)
-            next_token = next_token.reshape(-1)
-            # Only replace token if prompt has already been generated
-            next_token = torch.where(
-                input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
-            )
+        # Update dim_tok_inserted
+        for _idx in range(tokens.size(0)):
+            if next_token[_idx] == tokenizer.tok_to_id[tokenizer.dim_tok]:
+                dim_tok_inserted[_idx] = True
 
-            # Insert dim tokens
-            if force_end and cur_pos >= total_len - 130:
-                for _idx in range(bsz):
-                    if (
-                        dim_tok_inserted[_idx] is False
-                        and tokenizer.id_to_tok[next_token[_idx].item()][0]
-                        != "dur"
-                    ):
-                        next_token[_idx] = tokenizer.tok_to_id[
-                            tokenizer.dim_tok
-                        ]
-
-            # Update dim_tok_inserted
-            for _idx in range(bsz):
-                if next_token[_idx] == tokenizer.tok_to_id[tokenizer.dim_tok]:
-                    dim_tok_inserted[_idx] = True
-
-            tokens[:, cur_pos] = next_token
-            if alpha is not None and cur_pos - start_pos < min(
-                neg_max_len - neg_len, alpha * (total_len - start_pos)
-            ):
-                _neg_tokens = neg_prompt_tensors[
-                    :, cur_pos - start_pos + neg_len
-                ]
-                neg_previous_token = torch.where(
-                    _neg_tokens != pad_id, _neg_tokens, next_token
-                )
-            else:
-                neg_previous_token = next_token
+        tokens[:, cur_pos] = next_token
 
     decoded = []
     for idx, seq in enumerate(tokens.tolist()):
-        # Cut to max gen len
-        seq = seq[: len(prompts[idx]) + max_new_tokens]
         # Cut to eos tok if any
         try:
             seq = seq[: seq.index(eos_id)]

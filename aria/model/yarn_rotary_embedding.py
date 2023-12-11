@@ -207,7 +207,10 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
             past_len: the length before the second axis of q (usually it is just the kv length)
         """
         self._update_cos_sin_cache(
-            max(q.size(1) + past_len, self.original_context_length),
+            max(
+                q.size(1) + past_len,
+                self.original_context_length * self.scaling_factor,
+            ),
             device=q.device,
             dtype=q.dtype,
         )
