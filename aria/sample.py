@@ -206,7 +206,9 @@ def greedy_sample(
         else:
             token = tokens[:, cur_pos - 1 : cur_pos]
 
-        logits = model.forward(token, attn_mask=attn_mask[:, :cur_pos], past_kv=past_kv)
+        logits = model.forward(
+            token, attn_mask=attn_mask[:, :cur_pos], past_kv=past_kv
+        )
         logits = logits[:, -1, :]
 
         if cfg_gamma is not None:
