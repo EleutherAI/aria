@@ -174,12 +174,18 @@ def greedy_sample(
     tokens = torch.full(
         (len(padded_combined_prompts), total_len), pad_id, device=device
     )
-    tokens[:, :prompt_len] = _batch_encode(tokenizer, padded_combined_prompts).to(device)
-    full_neg_tokens = _batch_encode(tokenizer, padded_negative_prompts).to(device)
+    tokens[:, :prompt_len] = _batch_encode(
+        tokenizer, padded_combined_prompts
+    ).to(device)
+    full_neg_tokens = _batch_encode(tokenizer, padded_negative_prompts).to(
+        device
+    )
 
     dim_tok_inserted = [False for _ in range(tokens.size(0))]
     attn_mask = torch.ones(
-        (len(padded_combined_prompts), total_len), device=device, dtype=torch.bool
+        (len(padded_combined_prompts), total_len),
+        device=device,
+        dtype=torch.bool,
     )
     attn_mask[:, :prompt_len] = tokens[:, :prompt_len] != pad_id
     start_pos = prompt_len

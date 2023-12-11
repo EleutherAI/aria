@@ -191,7 +191,9 @@ class FusedEncoderBlock(nn.Module):
         )
         # xq, xk: (b_sz, s_len, n_head, d_head)
         if past_kv is not None:
-            xk, xv = past_kv.update(xk, xv, pos=input_positions, max_pos=max_pos)
+            xk, xv = past_kv.update(
+                xk, xv, pos=input_positions, max_pos=max_pos
+            )
 
         # Reshape for attention calculation: (b_sz, n_head, s_len, d_head)
         xq, xk, xv = map(lambda t: t.transpose(1, 2), (xq, xk, xv))
