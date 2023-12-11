@@ -203,12 +203,10 @@ def greedy_sample(
     ):
         if cur_pos == start_pos:
             token = tokens[:, :start_pos]
-            mask = attn_mask[:, :start_pos]
         else:
             token = tokens[:, cur_pos - 1 : cur_pos]
-            mask = attn_mask[:, cur_pos - 1 : cur_pos]
 
-        logits = model.forward(token, attn_mask=mask, past_kv=past_kv)
+        logits = model.forward(token, attn_mask=attn_mask[:, :cur_pos], past_kv=past_kv)
         logits = logits[:, -1, :]
 
         if cfg_gamma is not None:
@@ -258,6 +256,8 @@ def greedy_sample(
 
     decoded = []
     for idx, seq in enumerate(tokens.tolist()):
+        if cfg_gamma is not None and 2 * idx >= tokens.size(0):
+            break
         # Cut to eos tok if any
         try:
             seq = seq[: seq.index(eos_id)]

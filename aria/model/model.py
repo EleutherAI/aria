@@ -144,11 +144,13 @@ class FusedEncoderBlock(nn.Module):
 
         # attn_mask: (b_sz, k_len)
         mask = torch.ones(q_len, k_len, dtype=torch.bool, device=device)
-        mask = torch.tril(mask, diagonal=q_len - k_len)
+        mask = torch.tril(mask, diagonal=k_len - q_len)
         if attn_mask is not None:
             # (1, q_len, k_len) & (b_sz, 1, k_len)
             mask = mask[None, ...] & attn_mask[:, None, :]
-        return mask[:, None]
+            return mask[:, None]
+        else:
+            return mask
 
     def _att_block(
         self,
@@ -220,7 +222,6 @@ class FusedEncoderBlock(nn.Module):
             mask = self._create_mask(
                 xq.size(2), xk.size(2), attn_mask=attn_mask, device=xk.device
             )
-
             att = F.scaled_dot_product_attention(
                 query=xq,
                 key=xk,
