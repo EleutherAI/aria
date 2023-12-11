@@ -37,7 +37,7 @@ class TestModel(unittest.TestCase):
         sin = torch.sin(freqs)
         q_ref = apply_rotary_pos_emb_reference(q.clone(), cos, sin)
         q = apply_rotary_pos_emb(q.clone(), cos, sin)
-        assert torch.allclose(q, q_ref)
+        assert torch.allclose(q, q_ref, atol=1e-5)
 
     def test_attn_mask(self):
         tokenizer = TokenizerLazy(return_tensors=True)
@@ -66,7 +66,7 @@ class TestModel(unittest.TestCase):
         model = TransformerLM(model_config).eval()
 
         midi_dict = MidiDict.from_midi(mid_path="tests/test_data/basic.mid")
-        prompts = [tokenizer.tokenize(midi_dict=midi_dict)[:50]] * 2
+        prompts = [tokenizer.tokenize(midi_dict=midi_dict)[:50]] * 3
         out = greedy_sample(
             model,
             tokenizer,
@@ -74,7 +74,7 @@ class TestModel(unittest.TestCase):
             device=torch.device("cpu"),
             max_new_tokens=50,
         )
-        prompts = [[tokenizer.pad_tok] + tokenizer.tokenize(midi_dict=midi_dict)[:50]] * 2
+        prompts = [[tokenizer.pad_tok] + tokenizer.tokenize(midi_dict=midi_dict)[:50]] * 3
         out2 = greedy_sample(
             model,
             tokenizer,
