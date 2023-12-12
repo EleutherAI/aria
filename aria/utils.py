@@ -8,7 +8,11 @@ from pydub import AudioSegment
 
 
 def midi_to_audio(mid_path: str, soundfont_path: str | None = None):
-    SOUNDFONT_PATH = "fluidsynth/DoreMarkYamahaS6-v1.6.sf2"
+    SOUNDFONT_PATH = os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "fluidsynth/DoreMarkYamahaS6-v1.6.sf2",
+    )
     DOWNLOAD_URL = "https://www.dropbox.com/scl/fi/t8gou8stesm42sc559nzu/DoreMarkYamahaS6-v1.6.sf2?rlkey=28ecl63kkjjmwxrkd6hnzsq8f&dl=1"
 
     if os.name != "posix":
