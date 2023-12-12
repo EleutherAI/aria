@@ -18,8 +18,12 @@ class TestModel(unittest.TestCase):
         model_config.set_vocab_size(tokenizer.vocab_size)
         model = TransformerLM(model_config)
         assert isinstance(model.model.model_config.yarn_config, YaRNConfig)
-        max_len = model.model.encode_layers[0].rotary_emb.max_position_embeddings
-        org_max_len = model.model.encode_layers[0].rotary_emb.original_max_position_embeddings
+        max_len = model.model.encode_layers[
+            0
+        ].rotary_emb.max_position_embeddings
+        org_max_len = model.model.encode_layers[
+            0
+        ].rotary_emb.original_max_position_embeddings
         assert max_len == org_max_len
         assert model.model.encode_layers[0].rotary_emb.mscale_coeff == 0.07
         assert model.model.encode_layers[0].rotary_emb.beta_fast == 32.0
