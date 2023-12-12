@@ -157,7 +157,7 @@ class YaRNScaledRotaryEmbedding(torch.nn.Module):
                         scaling_factor = self.scaling_factor
                 else:
                     scaling_factor = seq_len / (
-                        self.original_context_length * self.scaling_factor
+                        self.original_context_length
                     )
                 if scaling_factor:
                     self._compute_inv_freq(scaling_factor, device)

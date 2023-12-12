@@ -6,5 +6,5 @@
     "drop_p": 0.1,
     "max_seq_len": 2048,
     "grad_checkpoint": false,
-    "yarn_config": {"scale": 4.0, "mscale_coeff": 1.0}
+    "yarn_config": {"scale": 4.0, "mscale_coeff": 0.1}
 }
