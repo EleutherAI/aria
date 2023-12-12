@@ -162,6 +162,8 @@ cython_debug/
 # Project specific
 tools/
 data/
+fluidsynth/
+*.DS_Store
 tests/test_results
 lightning_logs/
 .vscode/
