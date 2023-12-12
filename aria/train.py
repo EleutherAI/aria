@@ -238,14 +238,7 @@ def get_pretrain_dataloaders(
     ), "val-data directory should only contain one epoch"
 
     if apply_aug:
-        train_dataset.set_transform(
-            [
-                tokenizer.export_chord_mixup(),
-                tokenizer.export_velocity_aug(1),
-                tokenizer.export_pitch_aug(5),
-                tokenizer.export_tempo_aug(0.2),
-            ]
-        )
+        train_dataset.set_transform(tokenizer.export_data_aug())
 
     train_dataloader = DataLoader(
         train_dataset,

@@ -56,6 +56,7 @@ class Tokenizer:
         tokens."""
         raise NotImplementedError
 
+    # REMEMBER TO USE THIS API IN THE TRAIN SCRIPT
     def tokenize(self, midi_dict: MidiDict, **kwargs):
         """Tokenizes a MidiDict object.
 
@@ -77,6 +78,17 @@ class Tokenizer:
         detokenization. The default behaviour is to call detokenize_midi_dict.
         """
         return self.detokenize_midi_dict(tokenized_seq)
+
+    def export_data_aug(cls):
+        """Abstract method for exporting a list of all data augmentation
+        functions.
+
+        This function is used when setting data transformation functions in
+        TrainingDatase, e.g.
+
+        PretrainingDataset.set_transform(Tokenizer.export_data_aug())
+        """
+        raise NotImplementedError
 
     def encode(self, unencoded_seq: list):
         """Converts tokenized sequence into a list/torch.Tensor of ids."""
@@ -295,6 +307,13 @@ class AbsTokenizer(Tokenizer):
             + self.onset_tokens
         )
         self.pad_id = self.tok_to_id[self.pad_tok]
+
+    def export_data_aug(self):
+        return [
+            self.export_tempo_aug(tempo_aug_range=0.2, mixup=True),
+            self.export_pitch_aug(5),
+            self.export_velocity_aug(1),
+        ]
 
     def _quantize_dur(self, time: int):
         # This function will return values res >= 0 (inc. 0)
@@ -656,7 +675,7 @@ class AbsTokenizer(Tokenizer):
 
         # See functools.partial docs
         return functools.partial(
-            pitch_aug_seq,
+            self.export_aug_fn_concat(aug_fn=pitch_aug_seq),
             unk_tok=self.unk_tok,
             _aug_range=aug_range,
         )
@@ -715,177 +734,132 @@ class AbsTokenizer(Tokenizer):
 
         # See functools.partial docs
         return functools.partial(
-            velocity_aug_seq,
+            self.export_aug_fn_concat(aug_fn=velocity_aug_seq),
             velocity_step=self.velocity_step,
             max_velocity=self.max_velocity,
             _aug_steps_range=aug_steps_range,
         )
 
-    # NOT TESTED
-    def export_tempo_aug(self, tempo_aug_range: float):
-        def tempo_aug_seq(
+    def export_tempo_aug(self, tempo_aug_range, mixup: bool):
+        # Chord mix up will randomly reorder concurrent notes. A concurrent
+        # notes are those which occur at the onset.
+        def tempo_aug(
             src: list,
             abs_time_step: int,
             max_dur: int,
-            time_step: int,
+            unk_tok: str,
             time_tok: str,
-            instruments_nd: list,
+            dim_tok: str,
+            start_tok: str,
+            end_tok: str,
+            instruments_wd: list,
             _tempo_aug_range: float,
+            _mixup: bool,
         ):
             """This must be used with export_aug_fn_concat in order to work
             properly for concatenated sequences."""
             tempo_aug = random.uniform(
-                1 - tempo_aug_range, 1 + _tempo_aug_range
+                1 - _tempo_aug_range, 1 + _tempo_aug_range
             )
 
-            res = []
-            src_time = 0  # Needed?
             src_time_tok_cnt = 0
-            tgt_time_tok_cnt = 0
-            for tok_1, tok_2, tok_3 in zip(src, src[1:], src[2:]):
-                if tok_1 == time_tok:  # Stand in for special tokens
-                    _tok_type = "time"
-                elif isinstance(tok_1, str):  # Stand in for special tokens
-                    _tok_type = "special"
-                else:
-                    _tok_type = tok_1[0]
-
-                if _tok_type == "special" or _tok_type == "prefix":
-                    res.append(tok_1)
-                    continue
-                elif _tok_type == "time":
-                    src_time_tok_cnt += 1
-                    continue
-                elif _tok_type == "onset" or _tok_type == "dur":
-                    continue
-                else:
-                    src_time = src_time_tok_cnt * abs_time_step + tok_2[1]
-
-                # Add time tokens to tgt if necessary
-                tgt_time = round(src_time * tempo_aug)
-                for _ in range(tgt_time_tok_cnt, tgt_time // abs_time_step):
-                    res.append(time_tok)
-                    tgt_time_tok_cnt += 1
-
-                # Add note or drum:
-                rel_tgt_time = tgt_time % abs_time_step
-                if _tok_type == "drum":
-                    (_instrument, _pitch) = tok_1
-                    src.append((_instrument, _pitch))
-                    src.append(("onset", rel_tgt_time))
-                elif _tok_type in instruments_nd:  # Make sure this works
-                    _src_dur = tok_3[1]
-                    _tgt_dur = time_step * (
-                        round(float(tempo_aug * _src_dur) / time_step)
-                    )
-                    if _tgt_dur > max_dur:
-                        _tgt_dur = max_dur
-
-                    (_instrument, _pitch, _velocity) = tok_1
-                    src.append((_instrument, _pitch, _velocity))
-                    src.append(("onset", rel_tgt_time))
-                    src.append(("dur", _tgt_dur))
-
-            for tok in src[-2:]:
-                if tok == time_tok:  # Stand in for special tokens
-                    _tok_type = "time"
-                elif isinstance(tok, str):  # Stand in for special tokens
-                    _tok_type = "special"
-                else:
-                    _tok_type = tok[0]
-
-                if _tok_type == "special":
-                    src.append(tok)
-
-            return src
-
-        return functools.partial(
-            self.export_aug_fn_concat(aug_fn=tempo_aug_seq),
-            abs_time_step=self.abs_time_step,
-            max_dur=self.max_dur,
-            time_step=self.time_step,
-            time_tok=self.time_tok,
-            instruments_nd=self.instruments_nd,
-            _tempo_aug_range=tempo_aug_range,
-        )
-
-    # NOT TESTED
-    def export_chord_mixup(self):
-        # Chord mix up will randomly reorder concurrent notes. A concurrent
-        # notes are those which occur at the onset.
-        def chord_mixup(
-            src: list,
-            unk_tok: str,
-            time_tok: str,
-            end_tok: str,
-            instruments_wd: list,
-        ):
-            """This must be used with export_aug_fn_concat in order to work
-            properly for concatenated sequences."""
-
-            time_tok_cnt = 0
-            start = True
+            dim_tok_seen = None
             res = []
             buffer = defaultdict(lambda: defaultdict(list))
             for tok_1, tok_2, tok_3 in zip(src, src[1:], src[2:]):
                 if tok_1 == time_tok:
-                    start = False
                     _tok_type = "time"
-                if tok_1 == unk_tok:
-                    start = False
+                elif tok_1 == unk_tok:
                     _tok_type = "unk"
-                elif tok_1 in instruments_wd:
-                    start = False
-                    _tok_type = tok_1[0]
-                elif start == True:
+                elif tok_1 == start_tok:
                     res.append(tok_1)
                     continue
+                elif tok_1 == dim_tok and note_buffer:
+                    dim_tok_seen = (src_time_tok_cnt, note_buffer["onset"][1])
+                    continue
+                elif tok_1[0] == "prefix":
+                    res.append(tok_1)
+                    continue
+                elif tok_1[0] in instruments_wd:
+                    _tok_type = tok_1[0]
                 else:
+                    # This only triggers for incomplete notes at the beginning,
+                    # e.g. an offset token before a note token is seen
                     continue
 
                 if _tok_type == "time":
-                    time_tok_cnt += 1
+                    src_time_tok_cnt += 1
                 elif _tok_type == "drum":
-                    buffer[time_tok_cnt][tok_2[1]].append(
-                        {
-                            "note": tok_1,
-                            "onset": tok_2,
-                            "dur": None,
-                        }
-                    )
-                else:
-                    buffer[time_tok_cnt][tok_2[1]].append(
-                        {
-                            "note": tok_1,
-                            "onset": tok_2,
-                            "dur": tok_3,
-                        }
-                    )
+                    note_buffer = {
+                        "note": tok_1,
+                        "onset": tok_2,
+                        "dur": None,
+                    }
+                    buffer[src_time_tok_cnt][tok_2[1]].append(note_buffer)
+                else:  # unk or in instruments_wd
+                    note_buffer = {
+                        "note": tok_1,
+                        "onset": tok_2,
+                        "dur": tok_3,
+                    }
+                    buffer[src_time_tok_cnt][tok_2[1]].append(note_buffer)
 
-            start = True
-            for interval_notes in sorted(buffer).values():
-                if not start:
-                    res.append(time_tok)
-                for notes_by_onset in sorted(interval_notes).values():
-                    random.shuffle(notes_by_onset)
+            prev_tgt_time_tok_cnt = 0
+            for src_time_tok_cnt, interval_notes in sorted(buffer.items()):
+                for src_onset, notes_by_onset in sorted(interval_notes.items()):
+                    src_time = src_time_tok_cnt * abs_time_step + src_onset
+                    tgt_time = round(src_time * tempo_aug)
+                    curr_tgt_time_tok_cnt = tgt_time // abs_time_step
+                    curr_tgt_onset = tgt_time % abs_time_step
+
+                    for _ in range(
+                        curr_tgt_time_tok_cnt - prev_tgt_time_tok_cnt
+                    ):
+                        res.append(time_tok)
+                    prev_tgt_time_tok_cnt = curr_tgt_time_tok_cnt
+
+                    if _mixup == True:
+                        random.shuffle(notes_by_onset)
+
                     for note in notes_by_onset:
-                        res.append(note["note"])
-                        res.append(note["note"])
-                        if note["dur"]:
-                            res.append(note["dur"])
-                start = False
+                        _src_note_tok = note["note"]
+                        _src_dur_tok = note["dur"]
+
+                        if _src_dur_tok is not None:
+                            tgt_dur = round(_src_dur_tok[1] * tempo_aug)
+                            tgt_dur = min(tgt_dur, max_dur)
+                        else:
+                            tgt_dur = None
+
+                        res.append(_src_note_tok)
+                        res.append(("onset", curr_tgt_onset))
+                        if tgt_dur:
+                            res.append(("dur", tgt_dur))
+
+                        if dim_tok_seen is not None and dim_tok_seen == (
+                            src_time_tok_cnt,
+                            src_onset,
+                        ):
+                            res.append(dim_tok)
+                            dim_tok_seen = None
 
             if src[-1] == end_tok:
                 res.append(end_tok)
 
-            return src
+            return res
 
         return functools.partial(
-            self.export_aug_fn_concat(aug_fn=chord_mixup),
+            self.export_aug_fn_concat(aug_fn=tempo_aug),
+            abs_time_step=self.abs_time_step,
+            max_dur=self.max_dur,
             unk_tok=self.unk_tok,
             time_tok=self.time_tok,
+            dim_tok=self.dim_tok,
             end_tok=self.eos_tok,
+            start_tok=self.bos_tok,
             instruments_wd=self.instruments_wd,
+            _tempo_aug_range=tempo_aug_range,
+            _mixup=mixup,
         )
 
 
