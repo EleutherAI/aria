@@ -14,13 +14,11 @@ import shutil
 from pathlib import Path
 from typing import Callable, Iterable
 from collections import defaultdict
-from copy import deepcopy
 from multiprocessing import Pool, Process, Queue
 
 from aria.config import load_config
 from aria.tokenizer import Tokenizer, TokenizerLazy
 from aria.data.midi import MidiDict, get_test_fn
-import tqdm
 
 
 def setup_logger():
@@ -210,7 +208,7 @@ def _get_mididict(path: Path):
 
         return _mid_dict
 
-    logger = logging.getLogger(__name__)
+    logger = setup_logger()
     config = load_config()["data"]
 
     try:
@@ -439,59 +437,66 @@ class TrainingDataset(torch.utils.data.Dataset):
             raise ValueError("Must provide function or list of functions.")
 
 
+def _get_seqs(_entry: MidiDict | dict, _tokenizer: Tokenizer):
+    logger = setup_logger()
+
+    if isinstance(_entry, str):
+        _midi_dict = MidiDict.from_msg_dict(json.loads(_entry.rstrip()))
+    else:
+        _midi_dict = _entry
+
+    try:
+        _tokenized_seq = _tokenizer.tokenize(_midi_dict)
+    except Exception as e:
+        logger.info(f"Skipping midi_dict: {e}")
+        return
+    else:
+        if _tokenizer.unk_tok in _tokenized_seq:
+            logger.warning("Unknown token seen while tokenizing midi_dict")
+        return _tokenized_seq
+
+
+def _worker(input_queue: Queue, output_queue: Queue, _tokenizer: Tokenizer):
+    while True:
+        _entry = input_queue.get()
+        if _entry is None:
+            break
+        output_queue.put(_get_seqs(_entry=_entry, _tokenizer=_tokenizer))
+
+
+def _enqueue(iq: Queue, midi_dict_iter: Iterable, _num_proc: int):
+    for midi_dict in midi_dict_iter:
+        iq.put(midi_dict)
+    for _ in range(_num_proc):
+        iq.put(None)
+
+
 def get_seqs(
     tokenizer: Tokenizer,
     midi_dict_iter: Iterable,
 ):
-    def _get_seqs(_entry: MidiDict | dict, _tokenizer: Tokenizer):
-        if isinstance(_entry, str):
-            _midi_dict = MidiDict.from_msg_dict(json.loads(_entry.rstrip()))
-        else:
-            _midi_dict = _entry
-
-        try:
-            _tokenized_seq = _tokenizer.tokenize(_midi_dict)
-        except Exception as e:
-            logger.info(f"Skipping midi_dict: {e}")
-            return
-        else:
-            if _tokenizer.unk_tok in _tokenized_seq:
-                logger.warning("Unknown token seen while tokenizing midi_dict")
-            return _tokenized_seq
-
-    def _worker(input_queue: Queue, output_queue: Queue, _tokenizer: Tokenizer):
-        while True:
-            _entry = input_queue.get()
-            if _entry is None:
-                break
-            output_queue.put(_get_seqs(_entry=_entry, _tokenizer=_tokenizer))
-
     # TokenizerLazy is the only supported tokenizer due to the truncate
     # and stride logic in _get_tokenized_seqs
     assert isinstance(tokenizer, TokenizerLazy), "Unsupported tokenizer"
-    logger = setup_logger()
 
     iq = Queue()
     oq = Queue()
 
-    _num_proc = os.cpu_count()
+    num_proc = os.cpu_count()
     workers = [
         Process(
             target=functools.partial(_worker, _tokenizer=tokenizer),
             args=(iq, oq),
         )
-        for _ in range(_num_proc)
+        for _ in range(num_proc)
     ]
     for w in workers:
         w.start()
 
-    def _enqueue(iq):
-        for midi_dict in midi_dict_iter:
-            iq.put(midi_dict)
-        for _ in range(_num_proc):
-            iq.put(None)
-
-    enqueue = Process(target=_enqueue, args=(iq,))
+    enqueue = Process(
+        target=functools.partial(_enqueue, _num_proc=num_proc),
+        args=(iq, midi_dict_iter),
+    )
     enqueue.start()
 
     while True:

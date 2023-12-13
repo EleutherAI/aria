@@ -267,7 +267,7 @@ def build_pretraining_dataset(args):
 def _parse_finetune_dataset_args():
     argp = argparse.ArgumentParser(prog="aria finetune-dataset")
     argp.add_argument("load_path", help="path midi_dict dataset")
-    argp.add_argument("save_dir", help="path to save dataset")
+    argp.add_argument("save_path", help="path to save dataset")
     argp.add_argument("-l", help="max sequence length", type=int, default=2048)
     argp.add_argument("-s", help="stride length", type=int, default=512)
 
@@ -282,7 +282,7 @@ def build_finetune_dataset(args):
     tokenizer = TokenizerLazy()
     dataset = FinetuningDataset.build(
         tokenizer=tokenizer,
-        save_dir=args.save_dir,
+        save_path=args.save_path,
         max_seq_len=args.l,
         stride_len=args.s,
         midi_dataset_path=args.load_path,
