@@ -641,6 +641,7 @@ class PretrainingDataset(TrainingDataset):
                 )
 
                 buffer = []
+                # TODO: Profile why mp takes a while to spit up
                 for entry in get_seqs(tokenizer, _midi_dataset):
                     if entry is not None:
                         buffer += entry
