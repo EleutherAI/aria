@@ -42,7 +42,7 @@ class TestModel(unittest.TestCase):
         assert torch.allclose(q, q_ref, atol=1e-5)
 
     def test_attn_mask(self):
-        tokenizer = TokenizerLazy(return_tensors=True)
+        tokenizer = AbsTokenizer(return_tensors=True)
         model_config = ModelConfig(**load_model_config("test"))
         model_config.set_vocab_size(tokenizer.vocab_size)
         model = TransformerLM(model_config)
@@ -64,7 +64,7 @@ class TestModel(unittest.TestCase):
         assert torch.allclose(out[:, -5:], out2, atol=1e-5)
 
     def test_generation(self):
-        tokenizer = TokenizerLazy(return_tensors=True)
+        tokenizer = AbsTokenizer(return_tensors=True)
         model_config = ModelConfig(**load_model_config("test"))
         model_config.set_vocab_size(tokenizer.vocab_size)
         model = TransformerLM(model_config)
