@@ -4,3 +4,4 @@ mido
 jsonlines
 pydub
 safetensors
+tqdm
