@@ -878,8 +878,6 @@ def convert_cp_from_accelerate(
     try:
         state_dict = _load_state_dict(_tokenizer=AbsTokenizer())
     except:
-        pass
-    else:
         state_dict = _load_state_dict(_tokenizer=RelTokenizer())
 
     for key in list(state_dict.keys()):
