@@ -45,6 +45,8 @@ class Tokenizer:
 
         # These must be implemented in child class (abstract params)
         self.vocab = ()
+        self.instruments_wd = []
+        self.instruments_nd = []
         self.config = {}
         self.tok_to_id = {}
         self.id_to_tok = {}
@@ -237,6 +239,8 @@ class Tokenizer:
 
 
 class AbsTokenizer(Tokenizer):
+    """MidiDict tokenizer implemented with absolute onset timings"""
+
     def __init__(self, return_tensors: bool = False):
         super().__init__(return_tensors)
         self.config = load_config()["tokenizer"]["abs"]
@@ -247,7 +251,6 @@ class AbsTokenizer(Tokenizer):
         self.max_dur = self.config["max_dur_ms"]
         self.time_step = self.config["time_step_ms"]
 
-        # TODO: Test that these are both correct
         self.dur_time_quantizations = [
             self.time_step * i
             for i in range((self.max_dur // self.time_step) + 1)
@@ -317,19 +320,15 @@ class AbsTokenizer(Tokenizer):
 
     def _quantize_dur(self, time: int):
         # This function will return values res >= 0 (inc. 0)
-        return TokenizerLazy._find_closest_int(
-            time, self.dur_time_quantizations
-        )
+        return self._find_closest_int(time, self.dur_time_quantizations)
 
     def _quantize_onset(self, time: int):
         # This function will return values res >= 0 (inc. 0)
-        return TokenizerLazy._find_closest_int(
-            time, self.onset_time_quantizations
-        )
+        return self._find_closest_int(time, self.onset_time_quantizations)
 
     def _quantize_velocity(self, velocity: int):
         # This function will return values in the range 0 < res =< 127
-        velocity_quantized = TokenizerLazy._find_closest_int(
+        velocity_quantized = self._find_closest_int(
             velocity, self.velocity_quantizations
         )
 
@@ -747,6 +746,7 @@ class AbsTokenizer(Tokenizer):
             src: list,
             abs_time_step: int,
             max_dur: int,
+            time_step: int,
             unk_tok: str,
             time_tok: str,
             dim_tok: str,
@@ -758,6 +758,10 @@ class AbsTokenizer(Tokenizer):
         ):
             """This must be used with export_aug_fn_concat in order to work
             properly for concatenated sequences."""
+
+            def _quantize_time(_n: int):
+                return round(_n / time_step) * time_step
+
             tempo_aug = random.uniform(
                 1 - _tempo_aug_range, 1 + _tempo_aug_range
             )
@@ -784,7 +788,7 @@ class AbsTokenizer(Tokenizer):
                     _tok_type = tok_1[0]
                 else:
                     # This only triggers for incomplete notes at the beginning,
-                    # e.g. an offset token before a note token is seen
+                    # e.g. an onset token before a note token is seen
                     continue
 
                 if _tok_type == "time":
@@ -810,7 +814,7 @@ class AbsTokenizer(Tokenizer):
                     src_time = src_time_tok_cnt * abs_time_step + src_onset
                     tgt_time = round(src_time * tempo_aug)
                     curr_tgt_time_tok_cnt = tgt_time // abs_time_step
-                    curr_tgt_onset = tgt_time % abs_time_step
+                    curr_tgt_onset = _quantize_time(tgt_time % abs_time_step)
 
                     for _ in range(
                         curr_tgt_time_tok_cnt - prev_tgt_time_tok_cnt
@@ -826,7 +830,9 @@ class AbsTokenizer(Tokenizer):
                         _src_dur_tok = note["dur"]
 
                         if _src_dur_tok is not None:
-                            tgt_dur = round(_src_dur_tok[1] * tempo_aug)
+                            tgt_dur = _quantize_time(
+                                round(_src_dur_tok[1] * tempo_aug)
+                            )
                             tgt_dur = min(tgt_dur, max_dur)
                         else:
                             tgt_dur = None
@@ -852,6 +858,7 @@ class AbsTokenizer(Tokenizer):
             self.export_aug_fn_concat(aug_fn=tempo_aug),
             abs_time_step=self.abs_time_step,
             max_dur=self.max_dur,
+            time_step=self.time_step,
             unk_tok=self.unk_tok,
             time_tok=self.time_tok,
             dim_tok=self.dim_tok,
@@ -863,13 +870,13 @@ class AbsTokenizer(Tokenizer):
         )
 
 
-class TokenizerLazy(Tokenizer):
-    """Lazy MidiDict Tokenizer"""
+class RelTokenizer(Tokenizer):
+    """MidiDict tokenizer implemented with relative onset timings"""
 
     def __init__(self, return_tensors: bool = False):
         super().__init__(return_tensors)
-        self.config = load_config()["tokenizer"]["lazy"]
-        self.name = "lazy"
+        self.config = load_config()["tokenizer"]["rel"]
+        self.name = "rel"
 
         # Calculate time quantizations (in ms)
         self.num_time_step = self.config["time_quantization"]["num_steps"]
@@ -927,15 +934,21 @@ class TokenizerLazy(Tokenizer):
         )
         self.pad_id = self.tok_to_id[self.pad_tok]
 
+    def export_data_aug(self):
+        return [
+            self.export_chord_mixup(),
+            self.export_tempo_aug(tempo_aug_range=0.2),
+            self.export_pitch_aug(5),
+            self.export_velocity_aug(1),
+        ]
+
     def _quantize_time(self, time: int):
         # This function will return values res >= 0 (inc. 0)
-        return TokenizerLazy._find_closest_int(
-            time, self.time_step_quantizations
-        )
+        return self._find_closest_int(time, self.time_step_quantizations)
 
     def _quantize_velocity(self, velocity: int):
         # This function will return values in the range 0 < res =< 127
-        velocity_quantized = TokenizerLazy._find_closest_int(
+        velocity_quantized = self._find_closest_int(
             velocity, self.velocity_quantizations
         )
 
@@ -1064,6 +1077,8 @@ class TokenizerLazy(Tokenizer):
 
     def detokenize_midi_dict(self, tokenized_seq: list):
         instrument_programs = self.config["instrument_programs"]
+        # NOTE: These values chosen so that 1000 ticks = 1000ms, allowing us to
+        # skip converting between ticks and ms
         TICKS_PER_BEAT = 500
         TEMPO = 500000
 

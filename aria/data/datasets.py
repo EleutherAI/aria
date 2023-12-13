@@ -17,7 +17,7 @@ from collections import defaultdict
 from multiprocessing import Pool, Process, Queue, get_start_method
 
 from aria.config import load_config
-from aria.tokenizer import Tokenizer, TokenizerLazy
+from aria.tokenizer import Tokenizer
 from aria.data.midi import MidiDict, get_test_fn
 
 
@@ -367,6 +367,7 @@ class TrainingDataset(torch.utils.data.Dataset):
         src = seq
         tgt = seq[1:] + [self.tokenizer.pad_tok]
 
+        # Fine till here
         return self.tokenizer.encode(src), self.tokenizer.encode(tgt)
 
     def check_config(self):
@@ -480,10 +481,6 @@ def get_seqs(
     tokenizer: Tokenizer,
     midi_dict_iter: Iterable,
 ):
-    # TokenizerLazy is the only supported tokenizer due to the truncate
-    # and stride logic in _get_tokenized_seqs
-    assert isinstance(tokenizer, TokenizerLazy), "Unsupported tokenizer"
-
     iq = Queue()
     oq = Queue()
 
@@ -556,7 +553,6 @@ class PretrainingDataset(TrainingDataset):
             os.path.join(self.dir_path, file_name) for file_name in file_names
         ]
 
-        # Check correct formatting
         present_epochs = []
         for file_name in file_names:
             if not re.match(r"^epoch\d+\.jsonl$", file_name):
@@ -649,7 +645,7 @@ class PretrainingDataset(TrainingDataset):
 
         logger.info(
             f"Building PretrainingDataset with config: "
-            f"max_seq_len={max_seq_len} "
+            f"max_seq_len={max_seq_len}, "
             f"tokenizer_name={tokenizer.name}"
         )
         _num_proc = os.cpu_count()
@@ -657,7 +653,7 @@ class PretrainingDataset(TrainingDataset):
             logger.warning(
                 "Number of processes is close to the number of MidiDicts "
                 "in the dataset. This can result in shuffling not working "
-                "as intended when building different epochs."
+                "as intended when building different epochs"
             )
         for idx in range(num_epochs):
             logger.info(f"Building epoch {idx}/{num_epochs - 1}...")
@@ -703,8 +699,9 @@ class FinetuningDataset(TrainingDataset):
         midi_dataset: MidiDataset = None,
         midi_dataset_path: str = None,
     ):
-        """Builds and returns PretrainingDataset."""
+        """Builds and returns FinetuningDataset."""
 
+        # This function should be made more robust in the future
         def _truncate_and_stride(_tokenized_seq: list):
             prefix = []
 
@@ -730,13 +727,12 @@ class FinetuningDataset(TrainingDataset):
 
                 # Checks that next start note will not be cutoff midway
                 while idx < seq_len:
-                    # Break loop when a non 'wait' or 'dur' is seen
                     if _tokenized_seq[idx] in tokenizer.special_tokens:
                         break
-                    elif _tokenized_seq[idx][0] in {"wait", "dur"}:
-                        idx += 1
-                    else:
+                    elif _tokenized_seq[idx][0] in tokenizer.instruments_wd:
                         break
+                    else:
+                        idx += 1
 
             # Add the last sequence
             _seq = prefix + _tokenized_seq[idx : idx + max_seq_len - prefix_len]
@@ -758,7 +754,7 @@ class FinetuningDataset(TrainingDataset):
                 )
                 logger.info(
                     f"Building FinetuningDataset with config: "
-                    f"tokenizer_name=tokenizer.name"
+                    f"tokenizer_name={tokenizer.name}, "
                     f"max_seq_len={max_seq_len} "
                     f"stride_len={stride_len}"
                 )

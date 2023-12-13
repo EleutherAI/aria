@@ -16,103 +16,103 @@ if not os.path.isdir("tests/test_results"):
 
 # TODO: Implement with tokenizer functions
 def get_short_seq_abs(tknzr: tokenizer.AbsTokenizer):
-    assert tknzr.time_step == 10, "invalid config"
-    assert tknzr.dur_time_quantizations[-1] == 5000, "invalid config"
     return [
         ("prefix", "instrument", "piano"),
         ("prefix", "instrument", "drum"),
         "<S>",
-        ("piano", 62, 45),
-        ("onset", 0),
-        ("dur", 50),
+        ("piano", 62, tknzr._quantize_velocity(45)),
+        ("onset", tknzr._quantize_onset(0)),
+        ("dur", tknzr._quantize_dur(50)),
         ("drum", 50),
-        ("onset", 100),
-        ("piano", 64, 75),
-        ("onset", 100),
-        ("dur", 5000),
+        ("onset", tknzr._quantize_onset(100)),
+        ("piano", 64, tknzr._quantize_velocity(75)),
+        ("onset", tknzr._quantize_onset(100)),
+        ("dur", tknzr._quantize_dur(5000)),
         "<T>",
         "<T>",
         "<T>",
-        ("piano", 65, 75),
-        ("onset", 170),
-        ("dur", 100),
+        ("piano", 65, tknzr._quantize_velocity(75)),
+        ("onset", tknzr._quantize_onset(170)),
+        ("dur", tknzr._quantize_dur(100)),
         "<D>",
-        ("piano", 60, 45),
-        ("onset", 270),
-        ("dur", 60),
+        ("piano", 60, tknzr._quantize_velocity(45)),
+        ("onset", tknzr._quantize_onset(270)),
+        ("dur", tknzr._quantize_dur(60)),
         "<U>",
-        ("onset", 270),
-        ("dur", 70),
+        ("onset", tknzr._quantize_onset(270)),
+        ("dur", tknzr._quantize_dur(70)),
         ("drum", 50),
-        ("onset", 270),
+        ("onset", tknzr._quantize_onset(270)),
         "<T>",
-        ("piano", 80, 45),
-        ("onset", 270),
-        ("dur", 80),
+        ("piano", 80, tknzr._quantize_velocity(45)),
+        ("onset", tknzr._quantize_onset(270)),
+        ("dur", tknzr._quantize_dur(80)),
         "<E>",
     ]
 
 
 def get_concat_seq_abs(tknzr: tokenizer.AbsTokenizer):
-    assert tknzr.time_step == 10, "invalid config"
-    assert tknzr.dur_time_quantizations[-1] == 5000, "invalid config"
     return [
-        ("onset", 270),
-        ("dur", 60),
-        ("piano", 70, 45),
-        ("onset", 270),
-        ("dur", 70),
+        ("onset", tknzr._quantize_onset(270)),
+        ("dur", tknzr._quantize_dur(60)),
+        "<U>",
+        ("onset", tknzr._quantize_onset(270)),
+        ("dur", tknzr._quantize_dur(70)),
         ("drum", 50),
-        ("onset", 270),
-        ("piano", 80, 45),
-        ("onset", 270),
-        ("dur", 80),
+        ("onset", tknzr._quantize_onset(270)),
+        "<T>",
+        ("piano", 80, tknzr._quantize_velocity(45)),
+        ("onset", tknzr._quantize_onset(270)),
+        ("dur", tknzr._quantize_dur(80)),
         "<E>",
         ("prefix", "instrument", "piano"),
         ("prefix", "instrument", "drum"),
         "<S>",
-        ("piano", 62, 45),
-        ("onset", 0),
-        ("dur", 50),
+        ("piano", 62, tknzr._quantize_velocity(45)),
+        ("onset", tknzr._quantize_onset(0)),
+        ("dur", tknzr._quantize_dur(50)),
         ("drum", 50),
-        ("onset", 100),
-        ("piano", 64, 75),
-        ("onset", 100),
-        ("dur", 5000),
+        ("onset", tknzr._quantize_onset(100)),
+        ("piano", 64, tknzr._quantize_velocity(75)),
+        ("onset", tknzr._quantize_onset(100)),
+        ("dur", tknzr._quantize_dur(5000)),
         "<T>",
         "<T>",
         "<T>",
-        ("piano", 65, 75),
-        ("onset", 170),
-        ("dur", 100),
+        ("piano", 65, tknzr._quantize_velocity(75)),
+        ("onset", tknzr._quantize_onset(170)),
+        ("dur", tknzr._quantize_dur(100)),
         "<D>",
-        ("piano", 60, 45),
-        ("onset", 270),
-        ("dur", 60),
-        ("piano", 70, 45),
-        ("onset", 270),
-        ("dur", 70),
+        ("piano", 60, tknzr._quantize_velocity(45)),
+        ("onset", tknzr._quantize_onset(270)),
+        ("dur", tknzr._quantize_dur(60)),
+        "<U>",
+        ("onset", tknzr._quantize_onset(270)),
+        ("dur", tknzr._quantize_dur(70)),
         ("drum", 50),
-        ("onset", 270),
-        ("piano", 80, 45),
-        ("onset", 270),
-        ("dur", 80),
+        ("onset", tknzr._quantize_onset(270)),
+        "<T>",
+        ("piano", 80, tknzr._quantize_velocity(45)),
+        ("onset", tknzr._quantize_onset(270)),
+        ("dur", tknzr._quantize_dur(80)),
         "<E>",
+        ("prefix", "instrument", "piano"),
+        ("prefix", "instrument", "drum"),
         "<S>",
-        ("piano", 62, 45),
-        ("onset", 0),
-        ("dur", 50),
+        ("piano", 62, tknzr._quantize_velocity(45)),
+        ("onset", tknzr._quantize_onset(0)),
+        ("dur", tknzr._quantize_dur(50)),
         ("drum", 50),
-        ("onset", 100),
-        ("piano", 64, 75),
-        ("onset", 100),
-        ("dur", 5000),
+        ("onset", tknzr._quantize_onset(100)),
+        ("piano", 64, tknzr._quantize_velocity(75)),
+        ("onset", tknzr._quantize_onset(100)),
+        ("dur", tknzr._quantize_dur(5000)),
         "<T>",
         "<T>",
     ]
 
 
-def get_short_seq_rel(tknzr: tokenizer.TokenizerLazy):
+def get_short_seq_rel(tknzr: tokenizer.RelTokenizer):
     return [
         ("prefix", "instrument", "piano"),
         ("prefix", "instrument", "drum"),
@@ -121,7 +121,7 @@ def get_short_seq_rel(tknzr: tokenizer.TokenizerLazy):
         ("piano", 62, tknzr._quantize_velocity(50)),
         ("dur", tknzr._quantize_time(50)),
         ("wait", tknzr._quantize_time(100)),
-        ("drum", tknzr._quantize_time(50)),
+        ("drum", 50),
         ("piano", 64, tknzr._quantize_velocity(70)),
         ("dur", tknzr._quantize_time(1000000)),
         ("wait", tknzr._quantize_time(1000000)),
@@ -143,7 +143,7 @@ def get_short_seq_rel(tknzr: tokenizer.TokenizerLazy):
     ]
 
 
-def get_concat_seq_rel(tknzr: tokenizer.TokenizerLazy):
+def get_concat_seq_rel(tknzr: tokenizer.RelTokenizer):
     return [
         ("dur", tknzr._quantize_time(1000000)),
         ("wait", tknzr._quantize_time(1000000)),
@@ -295,8 +295,6 @@ class TestAbsTokenizer(unittest.TestCase):
         tknzr = tokenizer.AbsTokenizer()
         mid_dict = MidiDict.from_midi("tests/test_data/beethoven.mid")
         tokenized_seq = tknzr.tokenize(mid_dict)[:4096]
-        print(len(tokenized_seq))
-
         pitch_aug_fn = tknzr.export_pitch_aug(aug_range=5)
         velocity_aug_fn = tknzr.export_velocity_aug(aug_steps_range=2)
         tempo_aug_fn = tknzr.export_tempo_aug(tempo_aug_range=0.5, mixup=True)
@@ -340,7 +338,7 @@ class TestAbsTokenizer(unittest.TestCase):
         _test_no_unk_token("beethoven_moonlight.mid")
 
 
-class TestLazyTokenizer(unittest.TestCase):
+class TestRelTokenizer(unittest.TestCase):
     def test_tokenize_detokenize_mididict(self):
         def tokenize_detokenize(file_name: str):
             mid_path = f"tests/test_data/{file_name}"
@@ -350,7 +348,7 @@ class TestLazyTokenizer(unittest.TestCase):
             res = detokenized_midi_dict.to_midi()
             res.save(f"tests/test_results/{file_name}")
 
-        tknzr = tokenizer.TokenizerLazy(return_tensors=False)
+        tknzr = tokenizer.RelTokenizer(return_tensors=False)
 
         tokenize_detokenize("basic.mid")
         tokenize_detokenize("arabesque.mid")
@@ -361,7 +359,7 @@ class TestLazyTokenizer(unittest.TestCase):
         tokenize_detokenize("beethoven_moonlight.mid")
 
     def test_aug(self):
-        tknzr = tokenizer.TokenizerLazy(return_tensors=False)
+        tknzr = tokenizer.RelTokenizer(return_tensors=False)
         seq = get_short_seq_rel(tknzr)
         seq_concat = get_concat_seq_rel(tknzr)
         pitch_aug_fn = tknzr.export_pitch_aug(aug_range=5)
@@ -406,7 +404,7 @@ class TestLazyTokenizer(unittest.TestCase):
         )
 
     def test_aug_time(self):
-        tknzr = tokenizer.TokenizerLazy()
+        tknzr = tokenizer.RelTokenizer()
         mid_dict = MidiDict.from_midi("tests/test_data/beethoven.mid")
         tokenized_seq = tknzr.tokenize(mid_dict)[:4096]
 
@@ -444,20 +442,20 @@ class TestLazyTokenizer(unittest.TestCase):
         self.assertLessEqual(t_mixup_aug, 50)
 
     def test_encode_decode(self):
-        tknzr = tokenizer.TokenizerLazy(return_tensors=True)
+        tknzr = tokenizer.RelTokenizer(return_tensors=True)
         seq = get_short_seq_rel(tknzr)
         enc_dec_seq = tknzr.decode(tknzr.encode(seq))
         for x, y in zip(seq, enc_dec_seq):
             self.assertEqual(x, y)
 
-        tknzr = tokenizer.TokenizerLazy(return_tensors=False)
+        tknzr = tokenizer.RelTokenizer(return_tensors=False)
         seq = get_short_seq_rel(tknzr)
         enc_dec_seq = tknzr.decode(tknzr.encode(seq))
         for x, y in zip(seq, enc_dec_seq):
             self.assertEqual(x, y)
 
     def test_no_unk_token(self):
-        tknzr = tokenizer.TokenizerLazy()
+        tknzr = tokenizer.RelTokenizer()
         seq = get_short_seq_rel(tknzr)
         enc_dec_seq = tknzr.decode(tknzr.encode(seq))
         for tok in enc_dec_seq:

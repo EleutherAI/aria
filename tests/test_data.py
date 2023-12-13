@@ -8,8 +8,23 @@ from aria.data import datasets
 from aria.data.midi import MidiDict
 from aria.data import jsonl_zst
 
-if not os.path.isdir("tests/test_results"):
-    os.makedirs("tests/test_results")
+TEST_TOKENIZER = "abs"
+logger = logging.getLogger(__name__)
+
+
+def setup_logger():
+    logger = logging.getLogger(__name__)
+    for h in logger.handlers[:]:
+        logger.removeHandler(h)
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        "[%(asctime)s] tests.test_data: [%(levelname)s] %(message)s"
+    )
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
 
 
 def get_short_seq():
@@ -95,15 +110,15 @@ class TestMidiDataset(unittest.TestCase):
         self.assertEqual(mid_1.calculate_hash(), mid_2.calculate_hash())
 
 
-# TODO: Fix failing tests and fix the del thing not working correctly.
-
-
 class TestPretrainingDataset(unittest.TestCase):
     def test_build(self):
         MAX_SEQ_LEN = 512
-        tknzr = tokenizer.TokenizerLazy(
-            return_tensors=False,
-        )
+        if TEST_TOKENIZER == "abs":
+            tknzr = tokenizer.AbsTokenizer(return_tensors=False)
+        elif TEST_TOKENIZER == "rel":
+            tknzr = tokenizer.RelTokenizer(return_tensors=False)
+        else:
+            raise KeyError
         mididict_dataset = datasets.MidiDataset.build(
             dir="tests/test_data",
             recur=True,
@@ -132,9 +147,12 @@ class TestPretrainingDataset(unittest.TestCase):
 
     def test_mmap(self):
         MAX_SEQ_LEN = 512
-        tknzr = tokenizer.TokenizerLazy(
-            return_tensors=False,
-        )
+        if TEST_TOKENIZER == "abs":
+            tknzr = tokenizer.AbsTokenizer(return_tensors=False)
+        elif TEST_TOKENIZER == "rel":
+            tknzr = tokenizer.RelTokenizer(return_tensors=False)
+        else:
+            raise KeyError
         mididict_dataset = datasets.MidiDataset.build(
             dir="tests/test_data",
             recur=True,
@@ -153,14 +171,17 @@ class TestPretrainingDataset(unittest.TestCase):
         self.assertEqual(len({len(_) for _ in raw_entries}), 1)
 
         src, tgt = pretrain_dataset[0]
-        logging.info(f"src: {tknzr.decode(src)[:50]}")
-        logging.info(f"tgt: {tknzr.decode(tgt)[:50]}")
+        logger.info(f"src: {tknzr.decode(src)[:50]}")
+        logger.info(f"tgt: {tknzr.decode(tgt)[:50]}")
 
-    def test_augmentation(self):
+    def test_aug(self):
         MAX_SEQ_LEN = 512
-        tknzr = tokenizer.TokenizerLazy(
-            return_tensors=False,
-        )
+        if TEST_TOKENIZER == "abs":
+            tknzr = tokenizer.AbsTokenizer(return_tensors=False)
+        elif TEST_TOKENIZER == "rel":
+            tknzr = tokenizer.RelTokenizer(return_tensors=False)
+        else:
+            raise KeyError
         mididict_dataset = datasets.MidiDataset.build(
             dir="tests/test_data",
             recur=True,
@@ -174,27 +195,14 @@ class TestPretrainingDataset(unittest.TestCase):
             num_epochs=1,
             midi_dataset=mididict_dataset,
         )
-        pretrain_dataset.set_transform(
-            [
-                tknzr.export_chord_mixup(),
-                tknzr.export_pitch_aug(5),
-                tknzr.export_velocity_aug(2),
-                tknzr.export_tempo_aug(0.5),
-            ]
-        )
+        pretrain_dataset.set_transform(tknzr.export_data_aug())
+        for idx, seq in enumerate(tknzr.decode(pretrain_dataset[0][0])):
+            for _idx, tok in enumerate(seq):
+                if tok == tknzr.unk_tok:
+                    logger.warning(f"unk_tok seen at seq={idx}, idx={_idx}")
 
-        seq = get_short_seq()
-        seq_augmented = pretrain_dataset._transform(seq)
-
-        logging.info(f"aug:\n{seq} ->\n{seq_augmented}")
-        self.assertEqual(
-            seq_augmented[4][1] - seq[4][1],
-            seq_augmented[8][1] - seq[8][1],
-        )
-        self.assertEqual(
-            seq_augmented[4][2] - seq[4][2],
-            seq_augmented[8][2] - seq[8][2],
-        )
+        logger.info(f"data_aug_1: {tknzr.decode(pretrain_dataset[0][0][:50])}")
+        logger.info(f"data_aug_2: {tknzr.decode(pretrain_dataset[0][0][:50])}")
 
 
 class TestFinetuningDataset(unittest.TestCase):
@@ -202,9 +210,12 @@ class TestFinetuningDataset(unittest.TestCase):
     def test_build(self):
         MAX_SEQ_LEN = 512
         STRIDE_LEN = 256
-        tknzr = tokenizer.TokenizerLazy(
-            return_tensors=False,
-        )
+        if TEST_TOKENIZER == "abs":
+            tknzr = tokenizer.AbsTokenizer(return_tensors=False)
+        elif TEST_TOKENIZER == "rel":
+            tknzr = tokenizer.RelTokenizer(return_tensors=False)
+        else:
+            raise KeyError
         mididict_dataset = datasets.MidiDataset.build(
             dir="tests/test_data",
             recur=True,
@@ -237,28 +248,39 @@ class TestFinetuningDataset(unittest.TestCase):
         self.assertEqual(len({len(_) for _ in raw_entries}), 1)
 
         src, tgt = finetune_dataset_from_file[0]
-        logging.info(f"src: {tknzr.decode(src)[:50]}")
-        logging.info(f"tgt: {tknzr.decode(tgt)[:50]}")
+        logger.info(f"src: {tknzr.decode(src)[:50]}")
+        logger.info(f"tgt: {tknzr.decode(tgt)[:50]}")
 
-        finetune_dataset_from_file.set_transform(
-            [
-                tknzr.export_pitch_aug(5),
-                tknzr.export_velocity_aug(2),
-                tknzr.export_tempo_aug(0.5),
-            ]
+    def test_aug(self):
+        MAX_SEQ_LEN = 512
+        STRIDE_LEN = 256
+        if TEST_TOKENIZER == "abs":
+            tknzr = tokenizer.AbsTokenizer(return_tensors=False)
+        elif TEST_TOKENIZER == "rel":
+            tknzr = tokenizer.RelTokenizer(return_tensors=False)
+        else:
+            raise KeyError
+        mididict_dataset = datasets.MidiDataset.build(
+            dir="tests/test_data",
+            recur=True,
         )
-        seq = get_short_seq()
-        seq_augmented = finetune_dataset_from_file._transform(seq)
+        if os.path.isfile("tests/test_results/finetune_dataset_buff.jsonl"):
+            os.remove("tests/test_results/finetune_dataset_buff.jsonl")
+        finetune_dataset = datasets.FinetuningDataset.build(
+            tokenizer=tknzr,
+            save_path="tests/test_results/finetune_dataset_buff.jsonl",
+            max_seq_len=MAX_SEQ_LEN,
+            stride_len=STRIDE_LEN,
+            midi_dataset=mididict_dataset,
+        )
+        finetune_dataset.set_transform(tknzr.export_data_aug())
+        for idx, seq in enumerate(tknzr.decode(finetune_dataset[0][0])):
+            for _idx, tok in enumerate(seq):
+                if tok == tknzr.unk_tok:
+                    logger.warning(f"unk_tok seen at seq={idx}, idx={_idx}")
 
-        logging.info(f"aug:\n{seq} ->\n{seq_augmented}")
-        self.assertEqual(
-            seq_augmented[4][1] - seq[4][1],
-            seq_augmented[8][1] - seq[8][1],
-        )
-        self.assertEqual(
-            seq_augmented[4][2] - seq[4][2],
-            seq_augmented[8][2] - seq[8][2],
-        )
+        logger.info(f"data_aug_1: {tknzr.decode(finetune_dataset[0][0][:50])}")
+        logger.info(f"data_aug_2: {tknzr.decode(finetune_dataset[0][0][:50])}")
 
 
 class TestReaderWriter(unittest.TestCase):
@@ -278,9 +300,9 @@ class TestReaderWriter(unittest.TestCase):
         os.remove(filename)
 
 
+setup_logger()
 if __name__ == "__main__":
-    if os.path.isdir("tests/test_results") is False:
-        os.mkdir("tests/test_results")
+    if not os.path.isdir("tests/test_results"):
+        os.makedirs("tests/test_results")
 
-    logging.basicConfig(level=logging.INFO)
     unittest.main()

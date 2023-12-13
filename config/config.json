@@ -74,7 +74,7 @@
     },
 
     "tokenizer": {
-        "lazy": {
+        "rel": {
             "ignore_instruments": {
                 "piano": false,
                 "chromatic": true,
