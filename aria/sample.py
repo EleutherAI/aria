@@ -1,7 +1,7 @@
 """Contains generation/sampling code"""
 
 # This file contains code from https://github.com/facebookresearch/llama which
-# is available under the following licence:
+# is available under the following license:
 
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # This software may be used and distributed according to the terms of the GNU

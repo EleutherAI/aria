@@ -8,8 +8,15 @@ import pathlib
 import warnings
 
 
+# TODO: Implement a way of inferring the tokenizer name automatically
 def _parse_sample_args():
     argp = argparse.ArgumentParser(prog="aria sample")
+    argp.add_argument(
+        "-tok",
+        help="name of tokenizer",
+        choices=["abs", "rel"],
+        required=True,
+    )
     argp.add_argument("-m", help="name of model config file")
     argp.add_argument("-c", help="path to model checkpoint")
     argp.add_argument("-p", help="path to midi file")
@@ -96,7 +103,7 @@ def sample(args):
     from torch.cuda import is_available as cuda_is_available
     from aria.model import TransformerLM, ModelConfig
     from aria.config import load_model_config
-    from aria.tokenizer import TokenizerLazy
+    from aria.tokenizer import RelTokenizer, AbsTokenizer
     from aria.sample import greedy_sample
     from aria.data.midi import MidiDict
     from aria.utils import midi_to_audio
@@ -121,11 +128,21 @@ def sample(args):
     truncate_len = args.trunc
     force_end = args.e
 
-    tokenizer = TokenizerLazy(return_tensors=True)
+    if args.tok == "abs":
+        tokenizer = AbsTokenizer(return_tensors=True)
+    elif args.tok == "rel":
+        tokenizer = RelTokenizer(return_tensors=True)
+
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerLM(model_config).to(device)
-    model.load_state_dict(model_state)
+    try:
+        model.load_state_dict(model_state)
+    except:
+        print(
+            "Failed to load state_dict, this could be because the wrong "
+            "tokenizer was selected"
+        )
     if args.q:
         if device.type != "cpu":
             warnings.warn(
@@ -251,6 +268,9 @@ def _parse_pretrain_dataset_args():
     argp = argparse.ArgumentParser(prog="aria pretrain-dataset")
     argp.add_argument("load_path", help="path midi_dict dataset")
     argp.add_argument("save_dir", help="path to save dataset")
+    argp.add_argument(
+        "tokenizer_name", help="tokenizer name", choices=["abs", "rel"]
+    )
     argp.add_argument("-l", help="max sequence length", type=int, default=2048)
     argp.add_argument("-e", help="num epochs", type=int, default=1)
 
@@ -258,10 +278,14 @@ def _parse_pretrain_dataset_args():
 
 
 def build_pretraining_dataset(args):
-    from aria.tokenizer import TokenizerLazy
+    from aria.tokenizer import AbsTokenizer, RelTokenizer
     from aria.data.datasets import PretrainingDataset
 
-    tokenizer = TokenizerLazy()
+    if args.tokenizer_name == "abs":
+        tokenizer = AbsTokenizer()
+    elif args.tokenizer_name == "rel":
+        tokenizer = RelTokenizer()
+
     dataset = PretrainingDataset.build(
         tokenizer=tokenizer,
         save_dir=args.save_dir,
@@ -275,18 +299,24 @@ def _parse_finetune_dataset_args():
     argp = argparse.ArgumentParser(prog="aria finetune-dataset")
     argp.add_argument("load_path", help="path midi_dict dataset")
     argp.add_argument("save_path", help="path to save dataset")
+    argp.add_argument(
+        "tokenizer_name", help="tokenizer name", choices=["abs", "rel"]
+    )
     argp.add_argument("-l", help="max sequence length", type=int, default=2048)
     argp.add_argument("-s", help="stride length", type=int, default=512)
 
     return argp.parse_args(sys.argv[2:])
 
 
-# This might not be correct - double check
 def build_finetune_dataset(args):
-    from aria.tokenizer import TokenizerLazy
+    from aria.tokenizer import AbsTokenizer, RelTokenizer
     from aria.data.datasets import FinetuningDataset
 
-    tokenizer = TokenizerLazy()
+    if args.tokenizer_name == "abs":
+        tokenizer = AbsTokenizer()
+    elif args.tokenizer_name == "rel":
+        tokenizer = RelTokenizer()
+
     dataset = FinetuningDataset.build(
         tokenizer=tokenizer,
         save_path=args.save_path,

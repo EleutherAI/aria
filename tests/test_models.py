@@ -4,12 +4,12 @@ import unittest
 from aria.model import ModelConfig, TransformerLM
 from aria.config import load_model_config
 from aria.model.model import YaRNConfig
-from aria.tokenizer import TokenizerLazy
+from aria.tokenizer import AbsTokenizer
 
 
 class TestModel(unittest.TestCase):
     def test_yarn_config(self):
-        tokenizer = TokenizerLazy(return_tensors=True)
+        tokenizer = AbsTokenizer(return_tensors=True)
         model_config = ModelConfig(**load_model_config("test"))
         model_config.set_vocab_size(tokenizer.vocab_size)
         model = TransformerLM(model_config)
