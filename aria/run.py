@@ -332,7 +332,12 @@ def main():
     parser.add_argument(
         "command",
         help="command to run",
-        choices=("sample", "midi-dataset", "pretrain-dataset"),
+        choices=(
+            "sample",
+            "midi-dataset",
+            "pretrain-dataset",
+            "finetune-dataset",
+        ),
     )
 
     # parse_args defaults to [1:] for args, but you need to
