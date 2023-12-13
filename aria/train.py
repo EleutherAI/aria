@@ -17,8 +17,12 @@ from tqdm import tqdm
 
 from aria.config import load_model_config
 from aria.model import ModelConfig, TransformerLM
-from aria.tokenizer import TokenizerLazy
-from aria.data.datasets import PretrainingDataset, FinetuningDataset
+from aria.tokenizer import Tokenizer, AbsTokenizer, RelTokenizer
+from aria.data.datasets import (
+    TrainingDataset,
+    PretrainingDataset,
+    FinetuningDataset,
+)
 
 
 # ----- USAGE -----
@@ -81,6 +85,21 @@ def setup_logger(project_dir: str):
     logger.addHandler(ch)
 
     return get_logger(__name__)  # using accelerate.logging.get_logger()
+
+
+def get_tokenizer_name(
+    train_data_path: str,
+    val_data_path: str,
+):
+    """This will throw an error if there is a tokenizer mismatch"""
+    train_config = TrainingDataset.get_config_from_path(train_data_path)
+    val_config = TrainingDataset.get_config_from_path(val_data_path)
+
+    assert (
+        train_config["tokenizer_name"] == val_config["tokenizer_name"]
+    ), "Dataset tokenizers don't match"
+
+    return train_config["tokenizer_name"]
 
 
 def setup_project_dir(project_dir: str | None):
@@ -208,7 +227,7 @@ def get_finetune_optim(
 def get_pretrain_dataloaders(
     train_data_dir: str,
     val_data_dir: str,
-    tokenizer: TokenizerLazy,
+    tokenizer: Tokenizer,
     batch_size: int,
     num_workers: int,
     init_epoch: int | None = None,
@@ -259,7 +278,7 @@ def get_pretrain_dataloaders(
 def get_finetune_dataloaders(
     train_data_path: str,
     val_data_path: str,
-    tokenizer: TokenizerLazy,
+    tokenizer: Tokenizer,
     batch_size: int,
     num_workers: int,
     apply_aug: bool = True,
@@ -275,14 +294,7 @@ def get_finetune_dataloaders(
     )
 
     if apply_aug:
-        train_dataset.set_transform(
-            [
-                tokenizer.export_chord_mixup(),
-                tokenizer.export_velocity_aug(1),
-                tokenizer.export_pitch_aug(5),
-                tokenizer.export_tempo_aug(0.2),
-            ]
-        )
+        train_dataset.set_transform(tokenizer.export_data_aug())
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -579,6 +591,14 @@ def resume_train(
     else:
         raise Exception
 
+    tokenizer_name = get_tokenizer_name(train_data_path, val_data_path)
+    if tokenizer_name == "abs":
+        tokenizer = AbsTokenizer(return_tensors=True)
+    elif tokenizer_name == "rel":
+        tokenizer = RelTokenizer(return_tensors=True)
+    else:
+        raise Exception("Invalid tokenizer name")
+
     # TODO: Add support for verifying the resume_step and epoch, keep these
     # save these variables as part of the state during checkpointing
     project_dir = setup_project_dir(project_dir)
@@ -607,7 +627,6 @@ def resume_train(
         logger.info(f"Creating checkpoints every {steps_per_checkpoint}")
 
     # Init model
-    tokenizer = TokenizerLazy(return_tensors=True)
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = torch.compile(TransformerLM(model_config), mode="default")
@@ -665,10 +684,17 @@ def resume_train(
         scheduler,
     )
 
-    accelerator.load_state(checkpoint_dir)
+    try:
+        accelerator.load_state(checkpoint_dir)
+    except Exception as e:
+        raise Exception(
+            f"Failed to load checkpoint: {e}\n"
+            "This could be due to a mismatch between the tokenizer used "
+            "to build the pre-training and fine-tuning datasets"
+        )
     logger.info(f"Loaded checkpoint at {checkpoint_dir}")
-
     logger.info("Starting train job")
+
     _train(
         epochs=epochs,
         accelerator=accelerator,
@@ -717,6 +743,14 @@ def train(
     else:
         raise Exception
 
+    tokenizer_name = get_tokenizer_name(train_data_path, val_data_path)
+    if tokenizer_name == "abs":
+        tokenizer = AbsTokenizer(return_tensors=True)
+    elif tokenizer_name == "rel":
+        tokenizer = RelTokenizer(return_tensors=True)
+    else:
+        raise Exception("Invalid tokenizer name")
+
     project_dir = setup_project_dir(project_dir)
     accelerator = accelerate.Accelerator(project_dir=project_dir)
     logger = setup_logger(project_dir)
@@ -731,13 +765,19 @@ def train(
     )
 
     # Init model
-    tokenizer = TokenizerLazy(return_tensors=True)
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerLM(model_config)
     logger.info(f"Loaded model with config: {load_model_config(model_name)}")
     if mode == "finetune":
-        model.load_state_dict(torch.load(finetune_cp_path))
+        try:
+            model.load_state_dict(torch.load(finetune_cp_path))
+        except Exception as e:
+            raise Exception(
+                f"Failed to load checkpoint: {e}\n"
+                "This could be due to a mismatch between the tokenizer used "
+                "to build the pre-training and fine-tuning datasets"
+            )
         logger.info(
             f"Loaded finetune checkpoint located at: {finetune_cp_path}"
         )
@@ -822,16 +862,26 @@ def convert_cp_from_accelerate(
     model_name: str, checkpoint_dir: str, save_path: str
 ):
     # Converts a compiled model checkpoint into one that can be loaded directly
+    def _load_state_dict(_tokenizer: Tokenizer):
+        model_config = ModelConfig(**load_model_config(model_name))
+        model_config.set_vocab_size(_tokenizer.vocab_size)
+        model = torch.compile(TransformerLM(model_config), mode="default")
+        model = accelerator.prepare(model)
+        accelerator.load_state(checkpoint_dir)
+
+        return model.state_dict()
+
     logger = get_logger(__name__)
     accelerator = accelerate.Accelerator()
-    tokenizer = TokenizerLazy(return_tensors=True)
-    model_config = ModelConfig(**load_model_config(model_name))
-    model_config.set_vocab_size(tokenizer.vocab_size)
-    model = torch.compile(TransformerLM(model_config), mode="default")
 
-    model = accelerator.prepare(model)
-    accelerator.load_state(checkpoint_dir)
-    state_dict = model.state_dict()
+    # Try both tokenizers
+    try:
+        state_dict = _load_state_dict(_tokenizer=AbsTokenizer())
+    except:
+        pass
+    else:
+        state_dict = _load_state_dict(_tokenizer=RelTokenizer())
+
     for key in list(state_dict.keys()):
         if key.startswith("_orig_mod."):
             new_key = key[len("_orig_mod.") :]

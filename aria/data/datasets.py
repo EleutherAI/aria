@@ -337,6 +337,27 @@ class TrainingDataset(torch.utils.data.Dataset):
     def build(**kwargs):
         raise NotImplementedError
 
+    @classmethod
+    def get_config_from_path(cls, path: str):
+        """Returns config dict from dataset file/directory.
+
+        If a directory provided, it is assumed t"""
+
+        def _get_config_from_fp(_path):
+            # Finetuning Dataset
+            return FinetuningDataset.get_config_from_path(path=_path)
+
+        def _get_config_from_dir(_path):
+            # Pretraining Dataset
+            return PretrainingDataset.get_config_from_path(path=_path)
+
+        if os.path.isfile(path):
+            return _get_config_from_fp(path)
+        elif os.path.isdir(path):
+            return _get_config_from_dir(path)
+        else:
+            raise FileNotFoundError("Invalid path provided")
+
     def close(self):
         if self.file_buff:
             self.file_buff.close()
@@ -522,6 +543,19 @@ class PretrainingDataset(TrainingDataset):
     def __len__(self):
         return len(self.index)
 
+    @classmethod
+    def get_config_from_path(cls, path: str):
+        """Returns config dict from dataset directory.
+
+        Note that this will return the config corresponding to epoch0.jsonl.
+        """
+        assert os.path.isdir(path), "directory not found"
+        assert os.path.isfile(
+            epoch0_path := os.path.join(path, "epoch0.jsonl")
+        ), "epoch file not found"
+        with open(epoch0_path) as f:
+            return json.loads(f.readline())
+
     def init_epoch(self, idx: int | None = None):
         if idx is None:
             idx = self.curr_epoch + 1
@@ -684,6 +718,13 @@ class FinetuningDataset(TrainingDataset):
 
     def __len__(self):
         return len(self.index)
+
+    @classmethod
+    def get_config_from_path(cls, path: str):
+        """Returns config dict from dataset file"""
+        assert os.path.isfile(path), "dataset file not found"
+        with open(path) as f:
+            return json.loads(f.readline())
 
     # Do nothing in this case
     def init_epoch(self, idx: int | None = None):

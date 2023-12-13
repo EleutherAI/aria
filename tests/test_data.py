@@ -10,6 +10,8 @@ from aria.data import jsonl_zst
 
 TEST_TOKENIZER = "abs"
 logger = logging.getLogger(__name__)
+if not os.path.isdir("tests/test_results"):
+    os.makedirs("tests/test_results")
 
 
 def setup_logger():
@@ -302,7 +304,4 @@ class TestReaderWriter(unittest.TestCase):
 
 setup_logger()
 if __name__ == "__main__":
-    if not os.path.isdir("tests/test_results"):
-        os.makedirs("tests/test_results")
-
     unittest.main()
