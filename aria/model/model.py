@@ -1,11 +1,14 @@
 """Includes (PyTorch) transformer model and config classes."""
 from dataclasses import dataclass
+from typing import Optional, Union
+
 import torch
 import torch.utils.checkpoint
 
 from torch import nn as nn
 from torch.nn import functional as F
-from aria.model.dynamic_yarn import DynamicYaRNScaledRotaryEmbedding
+from aria.model.yarn_rotary_embedding import YaRNScaledRotaryEmbedding
+from aria.model.cache import KVCache
 
 
 @dataclass
@@ -25,9 +28,14 @@ class YaRNConfig:
 
     beta_fast: int = 16
     beta_slow: int = 1
-    scale: int = 1.0
-    mscale_coeff: int = 0.07
+    # `max_len * scale` would be the actual max context length for the run
+    scale: float = 1.0
+    mscale_coeff: float = 0.1
     base: float = 10000.0
+    # Whether the underlying weights are already finetuned with YaRN
+    finetuned: bool = False
+    # Whether to use dynamic YaRN beyond the context length * scale
+    dynamic: bool = True
 
 
 @dataclass
@@ -37,9 +45,10 @@ class ModelConfig:
     n_layers: int
     ff_mult: int
     drop_p: float
-    max_seq_len: int
+    max_seq_len: int  # The original context length *WITHOUT* considering YaRN
     grad_checkpoint: bool
-    yarn_config: dict | YaRNConfig | None = None
+    yarn_config: Optional[Union[dict, YaRNConfig]] = None
+    vocab_size: Optional[int] = None
 
     def __post_init__(self):
         if self.yarn_config is not None and isinstance(self.yarn_config, dict):
@@ -47,80 +56,6 @@ class ModelConfig:
 
     def set_vocab_size(self, vocab_size: int):
         self.vocab_size = vocab_size
-
-
-# Taken from GPT-NeoX see:
-# https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt_neox/modeling_gpt_neox.py
-class RotaryEmbedding(torch.nn.Module):
-    def __init__(
-        self,
-        dim,
-        max_position_embeddings=2048,
-        base=10000,
-    ):
-        super().__init__()
-
-        self.dim = dim
-        self.max_position_embeddings = max_position_embeddings
-        self.base = base
-        inv_freq = 1.0 / (
-            self.base ** (torch.arange(0, self.dim, 2).float() / self.dim)
-        )
-        self.register_buffer("inv_freq", inv_freq)
-
-        # Build here to make `torch.jit.trace` work.
-        self._set_cos_sin_cache(
-            seq_len=max_position_embeddings,
-            device=self.inv_freq.device,
-            dtype=torch.get_default_dtype(),
-        )
-
-    def _set_cos_sin_cache(self, seq_len, device, dtype):
-        self.max_seq_len_cached = seq_len
-        t = torch.arange(
-            self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype
-        )
-
-        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-        # Different from paper, but it uses a different permutation in order to
-        # obtain the same calculation
-        emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer(
-            "cos_cached", emb.cos().to(dtype), persistent=False
-        )
-        self.register_buffer(
-            "sin_cached", emb.sin().to(dtype), persistent=False
-        )
-
-    def forward(self, x, seq_len=None):
-        # x: [bs, num_attention_heads, seq_len, head_size]
-        if seq_len > self.max_seq_len_cached:
-            self._set_cos_sin_cache(
-                seq_len=seq_len, device=x.device, dtype=x.dtype
-            )
-
-        return (
-            self.cos_cached[:seq_len].to(dtype=x.dtype),
-            self.sin_cached[:seq_len].to(dtype=x.dtype),
-        )
-
-
-def rotate_half(x):
-    x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
-
-    return torch.cat(
-        (-x2, x1), dim=x1.ndim - 1
-    )  # dim=-1 triggers a bug in earlier torch versions
-
-
-@torch.jit.script
-def apply_rotary_pos_emb(q, k, cos, sin, past_len: int = 0):
-    """Returns tuple (xq, xk). Expects shape (s_len, b_sz, n_head, d_head)."""
-    cos = cos[past_len : past_len + q.size(0), None, None]
-    sin = sin[past_len : past_len + q.size(0), None, None]
-    return (q * cos) + (rotate_half(q) * sin), (k * cos) + (
-        rotate_half(k) * sin
-    )
 
 
 class FusedEncoderBlock(nn.Module):
@@ -147,20 +82,18 @@ class FusedEncoderBlock(nn.Module):
         self.max_seq_len = model_config.max_seq_len
 
         # Positional embeddings
-        if model_config.yarn_config is not None:
-            # TODO: Need more testing on this;
-            cfg = model_config.yarn_config
-            self.rotary_emb = DynamicYaRNScaledRotaryEmbedding(
-                self.d_head,
-                max_position_embeddings=round(self.max_seq_len * cfg.scale),
-                original_max_position_embeddings=self.max_seq_len,
-                beta_fast=cfg.beta_fast,
-                beta_slow=cfg.beta_slow,
-                base=cfg.base,
-                mscale_coeff=cfg.mscale_coeff,
-            )
-        else:
-            self.rotary_emb = RotaryEmbedding(self.d_head)
+        cfg = model_config.yarn_config or YaRNConfig()
+        self.rotary_emb = YaRNScaledRotaryEmbedding(
+            self.d_head,
+            original_context_length=self.max_seq_len,
+            scaling_factor=cfg.scale,
+            beta_fast=cfg.beta_fast,
+            beta_slow=cfg.beta_slow,
+            base=cfg.base,
+            mscale_coeff=cfg.mscale_coeff,
+            finetuned=cfg.finetuned,
+            dynamic=cfg.dynamic,
+        )
 
         # Attention
         self.mixed_qkv = nn.Linear(
@@ -190,43 +123,83 @@ class FusedEncoderBlock(nn.Module):
         self.norm1 = nn.LayerNorm(model_config.d_model)
         self.norm2 = nn.LayerNorm(model_config.d_model)
 
-    def forward(self, x: torch.Tensor, use_cache=False, past_kv=None):
-        att, kv = self._att_block(
-            self.norm1(x), use_cache=use_cache, past_kv=past_kv
+    def forward(self, x: torch.Tensor, attn_mask=None, past_kv=None):
+        att = self._att_block(
+            self.norm1(x), attn_mask=attn_mask, past_kv=past_kv
         )
         x = x + att
         x = x + self._ff_block(self.norm2(x))
 
-        return x, kv
+        return x
 
-    def _att_block(self, x: torch.Tensor, use_cache=False, past_kv=None):
+    @staticmethod
+    def _create_mask(
+        q_len: int,
+        k_len: int,
+        attn_mask: Optional[torch.Tensor] = None,
+        device=None,
+    ):
+        # Could have cached some of these masks (not the entire (seq_len, seq_len)!!).
+        # But profiler seems to show that their impact is negligible.
+
+        # attn_mask: (b_sz, k_len)
+        mask = torch.ones(q_len, k_len, dtype=torch.bool, device=device)
+        mask = torch.tril(mask, diagonal=k_len - q_len)
+        if attn_mask is not None:
+            # (1, q_len, k_len) & (b_sz, 1, k_len)
+            mask = mask[None, ...] & attn_mask[:, None, :]
+            return mask[:, None]
+        else:
+            return mask
+
+    def _att_block(
+        self,
+        x: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        input_positions: Optional[torch.Tensor] = None,
+        max_pos: Optional[int] = None,
+        past_kv: Optional[KVCache] = None,
+    ):
+        """
+        Args:
+            x: (b_sz, s_len, d_model)
+            attn_mask: (b_sz, s_len). The attention mask. `False` masks the column(keys)
+                in the attention matrix.
+            input_positions: (s_len,). The absolute position of each token.
+                If None, we assume that the input positions are contiguous.
+            max_pos: The maximum position of the input. Only used when input_positions
+                is not None. Can be inferred as input_positions.max(), but such an
+                operation makes the cache update slower due to dynamic shape.
+            past_kv: A KVCache object.
+        """
         batch_size, seq_len, _ = x.shape
+        past_len = 0 if past_kv is None else past_kv.next_pos
+
         mixed_qkv = self.mixed_qkv(x)
         xq, xk, xv = mixed_qkv.chunk(3, -1)
 
         # Reshape for rotary embeddings
-        xq = xq.view(batch_size, seq_len, self.n_heads, self.d_head)
-        xk = xk.view(batch_size, seq_len, self.n_heads, self.d_head)
+        # Need contiguous for q, k since in-place RoPE cannot be applied on a view
+        xq = xq.reshape(
+            batch_size, seq_len, self.n_heads, self.d_head
+        ).contiguous()
+        xk = xk.reshape(
+            batch_size, seq_len, self.n_heads, self.d_head
+        ).contiguous()
         xv = xv.view(batch_size, seq_len, self.n_heads, self.d_head)
 
-        past_len = 0 if past_kv is None else past_kv[0].size(1)
-        # apply_rotary_post_emb expects: (s_len, b_sz, n_head, d_head)
-        cos, sin = self.rotary_emb(x=xv, seq_len=seq_len + past_len)
-        xq, xk = xq.transpose(0, 1), xk.transpose(0, 1)
-        xq, xk = apply_rotary_pos_emb(
-            q=xq, k=xk, cos=cos, sin=sin, past_len=past_len
+        # apply_rotary_post_emb expects: (b_sz, s_len, n_head, d_head)
+        xq, xk = self.rotary_emb(
+            xq, xk, input_positions=input_positions, past_len=past_len
         )
-        xq, xk = xq.transpose(0, 1), xk.transpose(0, 1)
         # xq, xk: (b_sz, s_len, n_head, d_head)
         if past_kv is not None:
-            assert len(past_kv) == 2
-            xk = torch.concat([past_kv[0], xk], axis=1)
-            xv = torch.concat([past_kv[1], xv], axis=1)
-        kv = (xk, xv)
+            xk, xv = past_kv.update(
+                xk, xv, pos=input_positions, max_pos=max_pos
+            )
+
         # Reshape for attention calculation: (b_sz, n_head, s_len, d_head)
-        xq = xq.transpose(1, 2)
-        xk = xk.transpose(1, 2)
-        xv = xv.transpose(1, 2)
+        xq, xk, xv = map(lambda t: t.transpose(1, 2), (xq, xk, xv))
 
         # Required as we are not using a nn.Dropout layer
         if self.training:
@@ -234,9 +207,10 @@ class FusedEncoderBlock(nn.Module):
         else:
             att_dropout = 0.0
 
-        # Using beta torch functionality (subject to change)
-        # See - https://shorturl.at/jtI17
-        if past_kv is None:
+        # Calculate attention
+        # Note: we avoid explicitly saving a (seq_len, seq_len) cache in order to
+        #       save vRAM.
+        if past_kv is None and attn_mask is None:
             att = F.scaled_dot_product_attention(
                 query=xq,
                 key=xk,
@@ -245,8 +219,9 @@ class FusedEncoderBlock(nn.Module):
                 is_causal=True,
             )
         else:
-            assert xq.size(2) == 1
-            mask = torch.ones(1, xk.size(2), dtype=bool, device=xk.device)
+            mask = self._create_mask(
+                xq.size(2), xk.size(2), attn_mask=attn_mask, device=xk.device
+            )
             att = F.scaled_dot_product_attention(
                 query=xq,
                 key=xk,
@@ -255,15 +230,14 @@ class FusedEncoderBlock(nn.Module):
                 is_causal=False,
                 attn_mask=mask,
             )
+            # If masked token show up in query, they come out as nan. Need to set to zero.
+            att = torch.nan_to_num(att, nan=0.0)
 
         # Reshape for out: (b_sz, s_len, n_head, d_head)
         out = att.transpose(1, 2).contiguous()
         out = out.view(batch_size, seq_len, self.n_heads * self.d_head)
 
-        return (
-            self.resid_dropout(self.att_proj_linear(out)),
-            kv if use_cache else None,
-        )
+        return self.resid_dropout(self.att_proj_linear(out))
 
     def _ff_block(self, x: torch.Tensor):
         x = self.ff_linear_2(self.ff_activation(self.ff_linear_1(x)))
@@ -292,12 +266,21 @@ class Transformer(nn.Module):
         for _ in range(model_config.n_layers):
             self.encode_layers.append(FusedEncoderBlock(model_config))
 
-    def forward(self, src: torch.Tensor, use_cache=False, past_kv=None):
+    def forward(
+        self,
+        src: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        past_kv: Optional[list[KVCache]] = None,
+    ):
         """Forward pass of Transformer.
 
         Args:
             src (torch.tensor): Input to encoder block, of shape (batch_size,
                 seq_len, d_model).
+            attn_mask (Optional[torch.tensor]): Attention mask of shape
+                (batch_size, seq_len). Defaults to None.
+            past_kv (Optional[list[KVCache]]): a list of kv caches. The list index
+                corresponds to the layer index.
 
         Returns:
             torch.tensor: Model outputs with shape (batch_size, seq_len,
@@ -305,13 +288,11 @@ class Transformer(nn.Module):
         """
         hidden_states = self.tok_embeddings(src)
 
-        assert src.shape[1] <= self.model_config.max_seq_len, "Too long."
-
         # NOTE: If you want to use gradient checkpointing then you must
         # remove torch.compile from the train script as this is not currently
         # supported.
         # Implements gradient checkpoints on Encoder Layers.
-        if self.model_config.grad_checkpoint is True and not use_cache:
+        if self.model_config.grad_checkpoint is True:
             for layer in self.encode_layers:
 
                 def create_custom_forward(module):
@@ -320,27 +301,23 @@ class Transformer(nn.Module):
 
                     return custom_forward
 
-                hidden_states, _ = torch.utils.checkpoint.checkpoint(
+                hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(layer),
                     hidden_states,
+                    attn_mask,
                     preserve_rng_state=True,
                     use_reentrant=True,
                 )
         else:
-            new_past_kv = []
             past_kv = (
                 [None] * len(self.encode_layers) if past_kv is None else past_kv
             )
             for layer, _kv in zip(self.encode_layers, past_kv):
-                hidden_states, kv = layer(
-                    hidden_states, use_cache=use_cache, past_kv=_kv
+                hidden_states = layer(
+                    hidden_states, attn_mask=attn_mask, past_kv=_kv
                 )
-                new_past_kv.append(kv)
 
-        return (
-            self.out_layer_norm(hidden_states),
-            new_past_kv if use_cache else None,
-        )
+        return self.out_layer_norm(hidden_states)
 
 
 class TransformerLM(nn.Module):
@@ -359,21 +336,47 @@ class TransformerLM(nn.Module):
             model_config.d_model, model_config.vocab_size, bias=False
         )
 
-    def forward(self, src: torch.Tensor, use_cache=False, past_kv=None):
+    def forward(
+        self,
+        src: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        past_kv: Optional[list[KVCache]] = None,
+    ):
         """Forward pass of Transformer decoder with LM head.
 
         Args:
             src (torch.tensor): Input to encoder block, of shape (batch_size,
                 seq_len, d_model).
+            attn_mask (Optional[torch.tensor]): Attention mask of shape
+                (batch_size, seq_len). Defaults to None.
+            past_kv (Optional[list[KVCache]]): a list of kv caches. The list index
+                corresponds to the layer index.
 
         Returns:
             torch.tensor: Forward pass of src through Transformer and LM head.
                 Has shape (batch_size, seq_len, vocab_size).
         """
-        hidden, past_kv = self.model(src, use_cache=use_cache, past_kv=past_kv)
+        hidden = self.model(src, attn_mask=attn_mask, past_kv=past_kv)
         logits = self.lm_head(hidden)
 
-        if use_cache:
-            return logits, past_kv
-        else:
-            return logits
+        return logits
+
+    def get_cache(
+        self, max_batch_size: int = 16, max_len: int = 2048, device=None
+    ):
+        """
+        Initialize an empty kv cache according to the model parameters.
+        We do not make KVCache a part of the model because one may apply techniques
+        such as CFG utilizing multiple caches.
+        """
+        return [
+            KVCache(
+                max_batch_size=max_batch_size,
+                max_size=max_len,
+                n_head=self.model.model_config.n_heads,
+                d_head=self.model.model_config.d_model
+                // self.model.model_config.n_heads,
+                dtype=next(self.parameters()).dtype,
+            ).to(device)
+            for _ in range(self.model.model_config.n_layers)
+        ]

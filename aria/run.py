@@ -176,14 +176,8 @@ def sample(args):
         args.p
     )  # let user input midi path if not provided
 
-    if args.l and 0 < args.l < model.max_seq_len:
-        max_gen_len = args.l
-    else:
-        max_gen_len = model.max_seq_len
-
-    assert (
-        truncate_len < model_config.max_seq_len
-    ), "Truncate length longer than maximum length supported by the model."
+    assert args.l > 0, "Generation length must be positive."
+    max_new_tokens = args.l
 
     # Load and format prompts
     midi_dict = MidiDict.from_midi(mid_path=midi_path)
@@ -199,8 +193,7 @@ def sample(args):
         prompts,
         device=device,
         force_end=force_end,
-        max_seq_len=model_config.max_seq_len,
-        max_gen_len=max_gen_len,
+        max_new_tokens=max_new_tokens,
     )
 
     if os.path.isdir("samples") is False:
