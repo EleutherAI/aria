@@ -21,10 +21,18 @@ def _parse_sample_args():
     argp.add_argument("-c", help="path to model checkpoint")
     argp.add_argument("-p", help="path to midi file")
     argp.add_argument(
-        "-cfg", help="change cfg value", type=float, required=False
+        "-cfg",
+        help="change cfg value",
+        type=float,
+        required=False,
+        default=1.4,
     )
     argp.add_argument(
-        "-temp", help="change temp value", type=float, required=False
+        "-temp",
+        help="change temp value",
+        type=float,
+        required=False,
+        default=0.85,
     )
     argp.add_argument(
         "-var",
@@ -223,8 +231,8 @@ def sample(args):
         device=device,
         force_end=force_end,
         max_new_tokens=max_new_tokens,
-        cfg_gamma=args.cfg if args.cfg else None,
-        temperature=args.temp if args.temp else None,
+        cfg_gamma=args.cfg,
+        temperature=args.temp,
     )
 
     if os.path.isdir("samples") is False:
