@@ -345,6 +345,7 @@ def _train(
     steps_per_checkpoint: int | None = None,
     resume_step: int | None = None,
     resume_epoch: int | None = None,
+    project_dir: str | None = None,
 ):
     def profile_flops(dataloader: DataLoader):
         def _bench():
@@ -499,7 +500,6 @@ def _train(
     logger = get_logger(__name__)  # Accelerate logger
     loss_fn = nn.CrossEntropyLoss(ignore_index=PAD_ID)
     profile_flops(dataloader=train_dataloader)
-    project_dir = accelerator.project_dir
 
     if accelerator.is_main_process:
         loss_csv = open(os.path.join(project_dir, "loss.csv"), "w")
@@ -709,6 +709,7 @@ def resume_train(
         steps_per_checkpoint=steps_per_checkpoint,
         resume_step=resume_step,
         resume_epoch=resume_epoch,
+        project_dir=project_dir,
     )
 
 
@@ -757,7 +758,6 @@ def train(
     accelerator = accelerate.Accelerator(project_dir=project_dir)
     if accelerator.is_main_process:
         project_dir = setup_project_dir(project_dir)
-        accelerator.project_dir = project_dir
         logger = setup_logger(project_dir)
 
     logger = get_logger(__name__)
@@ -853,6 +853,7 @@ def train(
         optimizer=optimizer,
         scheduler=scheduler,
         steps_per_checkpoint=steps_per_checkpoint,
+        project_dir=project_dir,
     )
 
 
