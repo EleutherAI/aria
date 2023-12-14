@@ -365,13 +365,13 @@ def _train(
             f"{'{:,}'.format(sum(p.numel() for p in model.parameters() if p.requires_grad))} "
             "parameters"
         )
-        logger.info("Profiling FLOP/s")
+        logger.info("Profiling FLOP")
         _bench()
 
         with flop_counter:
             _bench()
-        total_flops = sum(flop_counter.get_flop_counts()["Global"].values())
-        logger.info(f"Forwards & backwards flops: {total_flops / 1e12} TF")
+        total_flop = sum(flop_counter.get_flop_counts()["Global"].values())
+        logger.info(f"Forwards & backwards FLOP: {total_flop / 1e12} TF")
 
     def make_checkpoint(_accelerator, _epoch: int, _step: int):
         checkpoint_dir = os.path.join(
