@@ -497,16 +497,17 @@ def _train(
     TRAILING_LOSS_STEPS = 200
     PAD_ID = train_dataloader.dataset.tokenizer.pad_id
     logger = get_logger(__name__)  # Accelerate logger
-    project_dir = accelerator.project_dir
     loss_fn = nn.CrossEntropyLoss(ignore_index=PAD_ID)
     profile_flops(dataloader=train_dataloader)
+    project_dir = accelerator.project_dir
 
-    loss_csv = open(os.path.join(project_dir, "loss.csv"), "w")
-    loss_writer = csv.writer(loss_csv)
-    loss_writer.writerow(["epoch", "step", "loss"])
-    epoch_csv = open(os.path.join(project_dir, "epoch.csv"), "w")
-    epoch_writer = csv.writer(epoch_csv)
-    epoch_writer.writerow(["epoch", "avg_train_loss", "avg_val_loss"])
+    if accelerator.is_main_process():
+        loss_csv = open(os.path.join(project_dir, "loss.csv"), "w")
+        loss_writer = csv.writer(loss_csv)
+        loss_writer.writerow(["epoch", "step", "loss"])
+        epoch_csv = open(os.path.join(project_dir, "epoch.csv"), "w")
+        epoch_writer = csv.writer(epoch_csv)
+        epoch_writer.writerow(["epoch", "avg_train_loss", "avg_val_loss"])
 
     if resume_epoch is not None:
         start_epoch = resume_epoch + 1
@@ -529,21 +530,26 @@ def _train(
             _resume_step=resume_step,
         )
         avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=resume_epoch)
-        epoch_writer.writerow([0, avg_train_loss, avg_val_loss])
-        epoch_csv.flush()
-        make_checkpoint(_accelerator=accelerator, _epoch=start_epoch, _step=0)
+        if accelerator.is_main_process():
+            epoch_writer.writerow([0, avg_train_loss, avg_val_loss])
+            epoch_csv.flush()
+            make_checkpoint(
+                _accelerator=accelerator, _epoch=start_epoch, _step=0
+            )
 
     for epoch in range(start_epoch, epochs + start_epoch):
         train_dataloader.dataset.init_epoch(epoch)
         avg_train_loss = train_loop(dataloader=train_dataloader, _epoch=epoch)
         avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=epoch)
-        epoch_writer.writerow([epoch, avg_train_loss, avg_val_loss])
-        epoch_csv.flush()
-        make_checkpoint(_accelerator=accelerator, _epoch=epoch + 1, _step=0)
+        if accelerator.is_main_process():
+            epoch_writer.writerow([epoch, avg_train_loss, avg_val_loss])
+            epoch_csv.flush()
+            make_checkpoint(_accelerator=accelerator, _epoch=epoch + 1, _step=0)
 
-    loss_csv.close()
-    epoch_csv.close()
     logging.shutdown()
+    if accelerator.is_main_process():
+        loss_csv.close()
+        epoch_csv.close()
 
 
 # NOTE: Any differences observed when resuming training are most likely the
@@ -595,9 +601,12 @@ def resume_train(
 
     # TODO: Add support for verifying the resume_step and epoch, keep these
     # save these variables as part of the state during checkpointing
-    project_dir = setup_project_dir(project_dir)
     accelerator = accelerate.Accelerator(project_dir=project_dir)
-    logger = setup_logger(project_dir)
+    if accelerator.is_main_process():
+        project_dir = setup_project_dir(project_dir)
+        logger = setup_logger(project_dir)
+
+    logger = get_logger(__name__)
     logger.info(f"Using project directory {project_dir} ")
     logger.warning(
         "Please insure that the training config and resume step are set "
@@ -745,9 +754,12 @@ def train(
     else:
         raise Exception("Invalid tokenizer name")
 
-    project_dir = setup_project_dir(project_dir)
     accelerator = accelerate.Accelerator(project_dir=project_dir)
-    logger = setup_logger(project_dir)
+    if accelerator.is_main_process():
+        project_dir = setup_project_dir(project_dir)
+        logger = setup_logger(project_dir)
+
+    logger = get_logger(__name__)
     logger.info(f"Using project directory {project_dir}")
     logger.info(
         f"Using training config: "
