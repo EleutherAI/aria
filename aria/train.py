@@ -501,7 +501,7 @@ def _train(
     profile_flops(dataloader=train_dataloader)
     project_dir = accelerator.project_dir
 
-    if accelerator.is_main_process():
+    if accelerator.is_main_process:
         loss_csv = open(os.path.join(project_dir, "loss.csv"), "w")
         loss_writer = csv.writer(loss_csv)
         loss_writer.writerow(["epoch", "step", "loss"])
@@ -530,7 +530,7 @@ def _train(
             _resume_step=resume_step,
         )
         avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=resume_epoch)
-        if accelerator.is_main_process():
+        if accelerator.is_main_process:
             epoch_writer.writerow([0, avg_train_loss, avg_val_loss])
             epoch_csv.flush()
             make_checkpoint(
@@ -541,13 +541,13 @@ def _train(
         train_dataloader.dataset.init_epoch(epoch)
         avg_train_loss = train_loop(dataloader=train_dataloader, _epoch=epoch)
         avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=epoch)
-        if accelerator.is_main_process():
+        if accelerator.is_main_process:
             epoch_writer.writerow([epoch, avg_train_loss, avg_val_loss])
             epoch_csv.flush()
             make_checkpoint(_accelerator=accelerator, _epoch=epoch + 1, _step=0)
 
     logging.shutdown()
-    if accelerator.is_main_process():
+    if accelerator.is_main_process:
         loss_csv.close()
         epoch_csv.close()
 
@@ -602,7 +602,7 @@ def resume_train(
     # TODO: Add support for verifying the resume_step and epoch, keep these
     # save these variables as part of the state during checkpointing
     accelerator = accelerate.Accelerator(project_dir=project_dir)
-    if accelerator.is_main_process():
+    if accelerator.is_main_process:
         project_dir = setup_project_dir(project_dir)
         logger = setup_logger(project_dir)
 
@@ -755,7 +755,7 @@ def train(
         raise Exception("Invalid tokenizer name")
 
     accelerator = accelerate.Accelerator(project_dir=project_dir)
-    if accelerator.is_main_process():
+    if accelerator.is_main_process:
         project_dir = setup_project_dir(project_dir)
         logger = setup_logger(project_dir)
 
