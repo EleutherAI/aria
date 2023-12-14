@@ -14,10 +14,10 @@ import shutil
 from pathlib import Path
 from typing import Callable, Iterable
 from collections import defaultdict
-from multiprocessing import Pool, Process, Queue
+from multiprocessing import Pool, Process, Queue, get_start_method
 
 from aria.config import load_config
-from aria.tokenizer import Tokenizer, TokenizerLazy
+from aria.tokenizer import Tokenizer
 from aria.data.midi import MidiDict, get_test_fn
 
 
@@ -277,6 +277,11 @@ def build_mididict_dataset(
                     yield mid_dict
 
     logger = setup_logger()
+    if get_start_method() == "spawn":
+        logger.warning(
+            'The current multiprocessing start method is "spawn", this '
+            "will slow down dataset building"
+        )
 
     paths = []
     if recur is True:
@@ -332,6 +337,27 @@ class TrainingDataset(torch.utils.data.Dataset):
     def build(**kwargs):
         raise NotImplementedError
 
+    @classmethod
+    def get_config_from_path(cls, path: str):
+        """Returns config dict from dataset file/directory.
+
+        If a directory provided, it is assumed t"""
+
+        def _get_config_from_fp(_path):
+            # Finetuning Dataset
+            return FinetuningDataset.get_config_from_path(path=_path)
+
+        def _get_config_from_dir(_path):
+            # Pretraining Dataset
+            return PretrainingDataset.get_config_from_path(path=_path)
+
+        if os.path.isfile(path):
+            return _get_config_from_fp(path)
+        elif os.path.isdir(path):
+            return _get_config_from_dir(path)
+        else:
+            raise FileNotFoundError("Invalid path provided")
+
     def close(self):
         if self.file_buff:
             self.file_buff.close()
@@ -362,6 +388,7 @@ class TrainingDataset(torch.utils.data.Dataset):
         src = seq
         tgt = seq[1:] + [self.tokenizer.pad_tok]
 
+        # Fine till here
         return self.tokenizer.encode(src), self.tokenizer.encode(tgt)
 
     def check_config(self):
@@ -475,10 +502,6 @@ def get_seqs(
     tokenizer: Tokenizer,
     midi_dict_iter: Iterable,
 ):
-    # TokenizerLazy is the only supported tokenizer due to the truncate
-    # and stride logic in _get_tokenized_seqs
-    assert isinstance(tokenizer, TokenizerLazy), "Unsupported tokenizer"
-
     iq = Queue()
     oq = Queue()
 
@@ -520,6 +543,19 @@ class PretrainingDataset(TrainingDataset):
     def __len__(self):
         return len(self.index)
 
+    @classmethod
+    def get_config_from_path(cls, path: str):
+        """Returns config dict from dataset directory.
+
+        Note that this will return the config corresponding to epoch0.jsonl.
+        """
+        assert os.path.isdir(path), "directory not found"
+        assert os.path.isfile(
+            epoch0_path := os.path.join(path, "epoch0.jsonl")
+        ), "epoch file not found"
+        with open(epoch0_path) as f:
+            return json.loads(f.readline())
+
     def init_epoch(self, idx: int | None = None):
         if idx is None:
             idx = self.curr_epoch + 1
@@ -551,7 +587,6 @@ class PretrainingDataset(TrainingDataset):
             os.path.join(self.dir_path, file_name) for file_name in file_names
         ]
 
-        # Check correct formatting
         present_epochs = []
         for file_name in file_names:
             if not re.match(r"^epoch\d+\.jsonl$", file_name):
@@ -606,6 +641,7 @@ class PretrainingDataset(TrainingDataset):
                 )
 
                 buffer = []
+                # TODO: Profile why mp takes a while to spit up
                 for entry in get_seqs(tokenizer, _midi_dataset):
                     if entry is not None:
                         buffer += entry
@@ -617,6 +653,11 @@ class PretrainingDataset(TrainingDataset):
         logger = setup_logger()
         assert max_seq_len > 0, "max_seq_len must be greater than 0"
         assert num_epochs > 0, "num_epochs must be greater than 0"
+        if get_start_method() == "spawn":
+            logger.warning(
+                'The current multiprocessing start method is "spawn", this '
+                "will slow down dataset building"
+            )
 
         if os.path.isdir(save_dir) and os.listdir(save_dir):
             print(
@@ -632,6 +673,7 @@ class PretrainingDataset(TrainingDataset):
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
 
+        # TODO: This is very slow right now
         if not midi_dataset:
             midi_dataset = MidiDataset.load(midi_dataset_path)
         else:
@@ -639,7 +681,7 @@ class PretrainingDataset(TrainingDataset):
 
         logger.info(
             f"Building PretrainingDataset with config: "
-            f"max_seq_len={max_seq_len} "
+            f"max_seq_len={max_seq_len}, "
             f"tokenizer_name={tokenizer.name}"
         )
         _num_proc = os.cpu_count()
@@ -647,7 +689,7 @@ class PretrainingDataset(TrainingDataset):
             logger.warning(
                 "Number of processes is close to the number of MidiDicts "
                 "in the dataset. This can result in shuffling not working "
-                "as intended when building different epochs."
+                "as intended when building different epochs"
             )
         for idx in range(num_epochs):
             logger.info(f"Building epoch {idx}/{num_epochs - 1}...")
@@ -655,6 +697,7 @@ class PretrainingDataset(TrainingDataset):
                 _save_path=os.path.join(save_dir, f"epoch{idx}.jsonl"),
                 _midi_dataset=midi_dataset,
             )
+            # TODO: This is very slow for large datasets
             midi_dataset.shuffle()
 
         logger.info(
@@ -679,6 +722,13 @@ class FinetuningDataset(TrainingDataset):
     def __len__(self):
         return len(self.index)
 
+    @classmethod
+    def get_config_from_path(cls, path: str):
+        """Returns config dict from dataset file"""
+        assert os.path.isfile(path), "dataset file not found"
+        with open(path) as f:
+            return json.loads(f.readline())
+
     # Do nothing in this case
     def init_epoch(self, idx: int | None = None):
         self.logger.info(f"Successful initiated epoch {idx}")
@@ -693,8 +743,9 @@ class FinetuningDataset(TrainingDataset):
         midi_dataset: MidiDataset = None,
         midi_dataset_path: str = None,
     ):
-        """Builds and returns PretrainingDataset."""
+        """Builds and returns FinetuningDataset."""
 
+        # This function should be made more robust in the future
         def _truncate_and_stride(_tokenized_seq: list):
             prefix = []
 
@@ -720,13 +771,12 @@ class FinetuningDataset(TrainingDataset):
 
                 # Checks that next start note will not be cutoff midway
                 while idx < seq_len:
-                    # Break loop when a non 'wait' or 'dur' is seen
                     if _tokenized_seq[idx] in tokenizer.special_tokens:
                         break
-                    elif _tokenized_seq[idx][0] in {"wait", "dur"}:
-                        idx += 1
-                    else:
+                    elif _tokenized_seq[idx][0] in tokenizer.instruments_wd:
                         break
+                    else:
+                        idx += 1
 
             # Add the last sequence
             _seq = prefix + _tokenized_seq[idx : idx + max_seq_len - prefix_len]
@@ -748,8 +798,8 @@ class FinetuningDataset(TrainingDataset):
                 )
                 logger.info(
                     f"Building FinetuningDataset with config: "
-                    f"tokenizer_name=tokenizer.name"
-                    f"max_seq_len={max_seq_len} "
+                    f"tokenizer_name={tokenizer.name}, "
+                    f"max_seq_len={max_seq_len}, "
                     f"stride_len={stride_len}"
                 )
 
@@ -760,6 +810,11 @@ class FinetuningDataset(TrainingDataset):
 
         logger = setup_logger()
         assert max_seq_len > 0, "max_seq_len must be greater than 0"
+        if get_start_method() == "spawn":
+            logger.warning(
+                'The current multiprocessing start method is "spawn", this '
+                "will slow down dataset building"
+            )
 
         if os.path.isfile(save_path):
             print(

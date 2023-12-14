@@ -6,3 +6,4 @@ test:
 .PHONY: format
 format:
 	black --line-length 80 ./aria
+	black --line-length 80 ./tests

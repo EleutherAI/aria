@@ -4,7 +4,7 @@ import unittest
 import logging
 
 from aria.train import train, resume_train, convert_cp_from_accelerate
-from aria.tokenizer import TokenizerLazy
+from aria.tokenizer import RelTokenizer, AbsTokenizer
 from aria.data.midi import MidiDict
 from aria.data.datasets import (
     MidiDataset,
@@ -12,6 +12,7 @@ from aria.data.datasets import (
     FinetuningDataset,
 )
 
+TEST_TOKENIZER = "abs"
 PT_TRAIN_DATA_PATH = "tests/test_results/pretrain_dataset_train"
 PT_VAL_DATA_PATH = "tests/test_results/pretrain_dataset_val"
 FT_TRAIN_DATA_PATH = "tests/test_results/finetune_dataset_train.jsonl"
@@ -36,7 +37,13 @@ class TestTraining(unittest.TestCase):
         val_mididict = MidiDict.from_midi("tests/test_data/arabesque.mid")
         train_midi_dataset = MidiDataset([train_mididict])
         val_midi_dataset = MidiDataset([val_mididict])
-        tokenizer = TokenizerLazy(return_tensors=True)
+
+        if TEST_TOKENIZER == "abs":
+            tokenizer = AbsTokenizer(return_tensors=False)
+        elif TEST_TOKENIZER == "rel":
+            tokenizer = RelTokenizer(return_tensors=False)
+        else:
+            raise KeyError
 
         # PRETRAINING
         if os.path.exists(PT_TRAIN_DATA_PATH):
@@ -151,6 +158,6 @@ class TestTraining(unittest.TestCase):
         )
 
 
+logging.basicConfig(level=logging.INFO)
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     unittest.main()

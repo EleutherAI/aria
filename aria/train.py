@@ -17,8 +17,12 @@ from tqdm import tqdm
 
 from aria.config import load_model_config
 from aria.model import ModelConfig, TransformerLM
-from aria.tokenizer import TokenizerLazy
-from aria.data.datasets import PretrainingDataset, FinetuningDataset
+from aria.tokenizer import Tokenizer, AbsTokenizer, RelTokenizer
+from aria.data.datasets import (
+    TrainingDataset,
+    PretrainingDataset,
+    FinetuningDataset,
+)
 
 
 # ----- USAGE -----
@@ -81,6 +85,21 @@ def setup_logger(project_dir: str):
     logger.addHandler(ch)
 
     return get_logger(__name__)  # using accelerate.logging.get_logger()
+
+
+def get_tokenizer_name(
+    train_data_path: str,
+    val_data_path: str,
+):
+    """This will throw an error if there is a tokenizer mismatch"""
+    train_config = TrainingDataset.get_config_from_path(train_data_path)
+    val_config = TrainingDataset.get_config_from_path(val_data_path)
+
+    assert (
+        train_config["tokenizer_name"] == val_config["tokenizer_name"]
+    ), "Dataset tokenizers don't match"
+
+    return train_config["tokenizer_name"]
 
 
 def setup_project_dir(project_dir: str | None):
@@ -208,7 +227,7 @@ def get_finetune_optim(
 def get_pretrain_dataloaders(
     train_data_dir: str,
     val_data_dir: str,
-    tokenizer: TokenizerLazy,
+    tokenizer: Tokenizer,
     batch_size: int,
     num_workers: int,
     init_epoch: int | None = None,
@@ -238,14 +257,7 @@ def get_pretrain_dataloaders(
     ), "val-data directory should only contain one epoch"
 
     if apply_aug:
-        train_dataset.set_transform(
-            [
-                tokenizer.export_chord_mixup(),
-                tokenizer.export_velocity_aug(1),
-                tokenizer.export_pitch_aug(5),
-                tokenizer.export_tempo_aug(0.2),
-            ]
-        )
+        train_dataset.set_transform(tokenizer.export_data_aug())
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -266,7 +278,7 @@ def get_pretrain_dataloaders(
 def get_finetune_dataloaders(
     train_data_path: str,
     val_data_path: str,
-    tokenizer: TokenizerLazy,
+    tokenizer: Tokenizer,
     batch_size: int,
     num_workers: int,
     apply_aug: bool = True,
@@ -282,14 +294,7 @@ def get_finetune_dataloaders(
     )
 
     if apply_aug:
-        train_dataset.set_transform(
-            [
-                tokenizer.export_chord_mixup(),
-                tokenizer.export_velocity_aug(1),
-                tokenizer.export_pitch_aug(5),
-                tokenizer.export_tempo_aug(0.2),
-            ]
-        )
+        train_dataset.set_transform(tokenizer.export_data_aug())
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -360,19 +365,13 @@ def _train(
             f"{'{:,}'.format(sum(p.numel() for p in model.parameters() if p.requires_grad))} "
             "parameters"
         )
-        logger.info("Profiling FLOP/s")
+        logger.info("Profiling FLOP")
         _bench()
 
         with flop_counter:
             _bench()
-        total_flops = sum(flop_counter.get_flop_counts()["Global"].values())
-        ms_per_iter = do_bench(_bench)
-        iters_per_second = 1e3 / ms_per_iter
-
-        logger.info(
-            f"{total_flops / 1e12} TF, "
-            f"{iters_per_second * total_flops / 1e12} TF/s (not warm)"
-        )
+        total_flop = sum(flop_counter.get_flop_counts()["Global"].values())
+        logger.info(f"Forwards & backwards FLOP: {total_flop / 1e12} TF")
 
     def make_checkpoint(_accelerator, _epoch: int, _step: int):
         checkpoint_dir = os.path.join(
@@ -586,6 +585,14 @@ def resume_train(
     else:
         raise Exception
 
+    tokenizer_name = get_tokenizer_name(train_data_path, val_data_path)
+    if tokenizer_name == "abs":
+        tokenizer = AbsTokenizer(return_tensors=True)
+    elif tokenizer_name == "rel":
+        tokenizer = RelTokenizer(return_tensors=True)
+    else:
+        raise Exception("Invalid tokenizer name")
+
     # TODO: Add support for verifying the resume_step and epoch, keep these
     # save these variables as part of the state during checkpointing
     project_dir = setup_project_dir(project_dir)
@@ -614,10 +621,9 @@ def resume_train(
         logger.info(f"Creating checkpoints every {steps_per_checkpoint}")
 
     # Init model
-    tokenizer = TokenizerLazy(return_tensors=True)
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
-    model = torch.compile(TransformerLM(model_config), mode="default")
+    model = TransformerLM(model_config)
 
     if mode == "pretrain":
         train_dataloader, val_dataloader = get_pretrain_dataloaders(
@@ -672,10 +678,17 @@ def resume_train(
         scheduler,
     )
 
-    accelerator.load_state(checkpoint_dir)
+    try:
+        accelerator.load_state(checkpoint_dir)
+    except Exception as e:
+        raise Exception(
+            f"Failed to load checkpoint: {e}\n"
+            "This could be due to a mismatch between the tokenizer used "
+            "to build the pre-training and fine-tuning datasets"
+        )
     logger.info(f"Loaded checkpoint at {checkpoint_dir}")
-
     logger.info("Starting train job")
+
     _train(
         epochs=epochs,
         accelerator=accelerator,
@@ -724,6 +737,14 @@ def train(
     else:
         raise Exception
 
+    tokenizer_name = get_tokenizer_name(train_data_path, val_data_path)
+    if tokenizer_name == "abs":
+        tokenizer = AbsTokenizer(return_tensors=True)
+    elif tokenizer_name == "rel":
+        tokenizer = RelTokenizer(return_tensors=True)
+    else:
+        raise Exception("Invalid tokenizer name")
+
     project_dir = setup_project_dir(project_dir)
     accelerator = accelerate.Accelerator(project_dir=project_dir)
     logger = setup_logger(project_dir)
@@ -738,17 +759,22 @@ def train(
     )
 
     # Init model
-    tokenizer = TokenizerLazy(return_tensors=True)
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerLM(model_config)
     logger.info(f"Loaded model with config: {load_model_config(model_name)}")
     if mode == "finetune":
-        model.load_state_dict(torch.load(finetune_cp_path))
+        try:
+            model.load_state_dict(torch.load(finetune_cp_path))
+        except Exception as e:
+            raise Exception(
+                f"Failed to load checkpoint: {e}\n"
+                "This could be due to a mismatch between the tokenizer used "
+                "to build the pre-training and fine-tuning datasets"
+            )
         logger.info(
             f"Loaded finetune checkpoint located at: {finetune_cp_path}"
         )
-    model = torch.compile(model, mode="default")
 
     if mode == "pretrain":
         train_dataloader, val_dataloader = get_pretrain_dataloaders(
@@ -828,23 +854,22 @@ def convert_cp_from_safetensors(checkpoint_path: str, save_path: str):
 def convert_cp_from_accelerate(
     model_name: str, checkpoint_dir: str, save_path: str
 ):
-    # Converts a compiled model checkpoint into one that can be loaded directly
-    logger = get_logger(__name__)
-    accelerator = accelerate.Accelerator()
-    tokenizer = TokenizerLazy(return_tensors=True)
-    model_config = ModelConfig(**load_model_config(model_name))
-    model_config.set_vocab_size(tokenizer.vocab_size)
-    model = torch.compile(TransformerLM(model_config), mode="default")
+    def _load_state_dict(_tokenizer: Tokenizer):
+        model_config = ModelConfig(**load_model_config(model_name))
+        model_config.set_vocab_size(_tokenizer.vocab_size)
+        model = TransformerLM(model_config)
+        model = accelerator.prepare(model)
+        accelerator.load_state(checkpoint_dir)
 
-    model = accelerator.prepare(model)
-    accelerator.load_state(checkpoint_dir)
-    state_dict = model.state_dict()
-    for key in list(state_dict.keys()):
-        if key.startswith("_orig_mod."):
-            new_key = key[len("_orig_mod.") :]
-            state_dict[new_key] = state_dict.pop(key)
-        else:
-            logger.warning(f"Found unexpected key: {key}")
+        return model.state_dict()
+
+    accelerator = accelerate.Accelerator()
+
+    # Try both tokenizers
+    try:
+        state_dict = _load_state_dict(_tokenizer=AbsTokenizer())
+    except:
+        state_dict = _load_state_dict(_tokenizer=RelTokenizer())
 
     torch.save(state_dict, save_path)
 
@@ -872,8 +897,8 @@ def parse_resume_args():
 def parse_pretrain_args():
     argp = argparse.ArgumentParser(prog="python aria/train.py pretrain")
     argp.add_argument("model", help="name of model config file")
-    argp.add_argument("train_dir", help="path to train dir")
-    argp.add_argument("val_data", help="path to val data")
+    argp.add_argument("train_data", help="path to train dir")
+    argp.add_argument("val_data", help="path to val dir")
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
     argp.add_argument("-bs", help="batch size", type=int, default=32)
     argp.add_argument("-workers", help="number workers", type=int, default=1)

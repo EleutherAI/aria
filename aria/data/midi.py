@@ -393,6 +393,14 @@ def dict_to_midi(mid_data: dict):
     Returns:
         mido.MidiFile: The MIDI parsed from the input data.
     """
+
+    # Magic sorting function
+    def _sort_fn(msg):
+        if hasattr(msg, "velocity"):
+            return (msg.time, msg.velocity)
+        else:
+            return (msg.time, 1000)
+
     assert mid_data.keys() == {
         "meta_msgs",
         "tempo_msgs",
@@ -475,7 +483,7 @@ def dict_to_midi(mid_data: dict):
                 )
 
     # Sort and convert from abs_time -> delta_time
-    track = sorted(track, key=lambda msg: msg.time)
+    track = sorted(track, key=_sort_fn)
     tick = 0
     for msg in track:
         msg.time -= tick
