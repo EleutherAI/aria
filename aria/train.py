@@ -913,8 +913,8 @@ def parse_resume_args():
 def parse_pretrain_args():
     argp = argparse.ArgumentParser(prog="python aria/train.py pretrain")
     argp.add_argument("model", help="name of model config file")
-    argp.add_argument("train_dir", help="path to train dir")
-    argp.add_argument("val_data", help="path to val data")
+    argp.add_argument("train_data", help="path to train dir")
+    argp.add_argument("val_data", help="path to val dir")
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
     argp.add_argument("-bs", help="batch size", type=int, default=32)
     argp.add_argument("-workers", help="number workers", type=int, default=1)

@@ -769,6 +769,7 @@ class AbsTokenizer(Tokenizer):
             src_time_tok_cnt = 0
             dim_tok_seen = None
             res = []
+            note_buffer = None
             buffer = defaultdict(lambda: defaultdict(list))
             for tok_1, tok_2, tok_3 in zip(src, src[1:], src[2:]):
                 if tok_1 == time_tok:

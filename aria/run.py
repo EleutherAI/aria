@@ -96,6 +96,8 @@ def _get_midi_path(midi_path: str | None) -> str:
     return midi_path
 
 
+# TODO: Add arg for supressing the audio conversion, and commands for changing
+# the sampling params from the cli
 def sample(args):
     """Entrypoint for sampling"""
 

@@ -673,6 +673,7 @@ class PretrainingDataset(TrainingDataset):
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
 
+        # TODO: This is very slow right now
         if not midi_dataset:
             midi_dataset = MidiDataset.load(midi_dataset_path)
         else:
@@ -696,6 +697,7 @@ class PretrainingDataset(TrainingDataset):
                 _save_path=os.path.join(save_dir, f"epoch{idx}.jsonl"),
                 _midi_dataset=midi_dataset,
             )
+            # TODO: This is very slow for large datasets
             midi_dataset.shuffle()
 
         logger.info(
