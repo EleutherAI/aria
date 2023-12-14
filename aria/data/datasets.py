@@ -799,7 +799,7 @@ class FinetuningDataset(TrainingDataset):
                 logger.info(
                     f"Building FinetuningDataset with config: "
                     f"tokenizer_name={tokenizer.name}, "
-                    f"max_seq_len={max_seq_len} "
+                    f"max_seq_len={max_seq_len}, "
                     f"stride_len={stride_len}"
                 )
 

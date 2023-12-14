@@ -629,7 +629,7 @@ def resume_train(
     # Init model
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
-    model = torch.compile(TransformerLM(model_config), mode="default")
+    model = TransformerLM(model_config)
 
     if mode == "pretrain":
         train_dataloader, val_dataloader = get_pretrain_dataloaders(
@@ -781,7 +781,6 @@ def train(
         logger.info(
             f"Loaded finetune checkpoint located at: {finetune_cp_path}"
         )
-    model = torch.compile(model, mode="default")
 
     if mode == "pretrain":
         train_dataloader, val_dataloader = get_pretrain_dataloaders(
@@ -861,17 +860,15 @@ def convert_cp_from_safetensors(checkpoint_path: str, save_path: str):
 def convert_cp_from_accelerate(
     model_name: str, checkpoint_dir: str, save_path: str
 ):
-    # Converts a compiled model checkpoint into one that can be loaded directly
     def _load_state_dict(_tokenizer: Tokenizer):
         model_config = ModelConfig(**load_model_config(model_name))
         model_config.set_vocab_size(_tokenizer.vocab_size)
-        model = torch.compile(TransformerLM(model_config), mode="default")
+        model = TransformerLM(model_config)
         model = accelerator.prepare(model)
         accelerator.load_state(checkpoint_dir)
 
         return model.state_dict()
 
-    logger = get_logger(__name__)
     accelerator = accelerate.Accelerator()
 
     # Try both tokenizers
@@ -879,13 +876,6 @@ def convert_cp_from_accelerate(
         state_dict = _load_state_dict(_tokenizer=AbsTokenizer())
     except:
         state_dict = _load_state_dict(_tokenizer=RelTokenizer())
-
-    for key in list(state_dict.keys()):
-        if key.startswith("_orig_mod."):
-            new_key = key[len("_orig_mod.") :]
-            state_dict[new_key] = state_dict.pop(key)
-        else:
-            logger.warning(f"Found unexpected key: {key}")
 
     torch.save(state_dict, save_path)
 
