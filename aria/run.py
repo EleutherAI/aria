@@ -21,6 +21,20 @@ def _parse_sample_args():
     argp.add_argument("-c", help="path to model checkpoint")
     argp.add_argument("-p", help="path to midi file")
     argp.add_argument(
+        "-cfg",
+        help="change cfg value",
+        type=float,
+        required=False,
+        default=1.4,
+    )
+    argp.add_argument(
+        "-temp",
+        help="change temp value",
+        type=float,
+        required=False,
+        default=0.85,
+    )
+    argp.add_argument(
         "-var",
         help="number of variations",
         type=int,
@@ -138,6 +152,10 @@ def sample(args):
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerLM(model_config).to(device)
+
+    if args.trunc + args.l > model_config.max_seq_len:
+        print("WARNING - required context exceeds max_seq_len")
+
     try:
         model.load_state_dict(model_state)
     except:
@@ -213,6 +231,8 @@ def sample(args):
         device=device,
         force_end=force_end,
         max_new_tokens=max_new_tokens,
+        cfg_gamma=args.cfg,
+        temperature=args.temp,
     )
 
     if os.path.isdir("samples") is False:
