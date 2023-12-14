@@ -432,7 +432,8 @@ def _train(
                 f"trailing_loss={round(trailing_loss, 4)}, "
                 f"average_loss={round(avg_train_loss, 4)}"
             )
-            loss_writer.writerow([_epoch, step, loss.item()])
+            if accelerator.is_main_process:
+                loss_writer.writerow([_epoch, step, loss.item()])
             pbar.set_postfix_str(
                 f"lr={lr_for_print}, "
                 f"loss={round(loss.item(), 4)}, "
