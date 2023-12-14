@@ -757,6 +757,7 @@ def train(
     accelerator = accelerate.Accelerator(project_dir=project_dir)
     if accelerator.is_main_process:
         project_dir = setup_project_dir(project_dir)
+        accelerator.project_dir = project_dir
         logger = setup_logger(project_dir)
 
     logger = get_logger(__name__)
