@@ -371,13 +371,7 @@ def _train(
         with flop_counter:
             _bench()
         total_flops = sum(flop_counter.get_flop_counts()["Global"].values())
-        ms_per_iter = do_bench(_bench)
-        iters_per_second = 1e3 / ms_per_iter
-
-        logger.info(
-            f"{total_flops / 1e12} TF, "
-            f"{iters_per_second * total_flops / 1e12} TF/s (not warm)"
-        )
+        logger.info(f"Forwards & backwards flops: {total_flops / 1e12} TF")
 
     def make_checkpoint(_accelerator, _epoch: int, _step: int):
         checkpoint_dir = os.path.join(
