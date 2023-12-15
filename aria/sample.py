@@ -16,6 +16,12 @@ from aria.model import TransformerLM
 from aria.tokenizer import Tokenizer
 
 
+# TODO:
+# - Truncate if end token seen
+# - Fix the issue with onset tokens being <U> (5000ms?)
+# - Fix the issue with dim tok being inserted at the wrong time
+
+
 def _get_cfg_coeff(cfg_gamma, cfg_mode, cur_pos, start_pos, total_len):
     if cfg_mode is None:
         return cfg_gamma
@@ -243,10 +249,9 @@ def greedy_sample(
         # Insert dim tokens
         if force_end and cur_pos >= total_len - 130:
             for _idx in range(tokens.size(0)):
-                if (
-                    dim_tok_inserted[_idx] is False
-                    and tokenizer.id_to_tok[next_token[_idx].item()][0] != "dur"
-                ):
+                if dim_tok_inserted[_idx] is False and tokenizer.id_to_tok[
+                    next_token[_idx].item()
+                ][0] not in ("dur", "onset"):
                     next_token[_idx] = tokenizer.tok_to_id[tokenizer.dim_tok]
 
         # Update dim_tok_inserted
@@ -266,6 +271,11 @@ def greedy_sample(
         except ValueError:
             pass
         decoded.append(tokenizer.decode(seq))
+
+    for idx, seq in enumerate(decoded):
+        if tokenizer.eos_tok in seq:
+            eos_idx = seq.index(tokenizer.eos_tok)
+            decoded[idx] = seq[:eos_idx]
 
     return decoded
 

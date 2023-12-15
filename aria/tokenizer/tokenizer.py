@@ -817,6 +817,9 @@ class AbsTokenizer(Tokenizer):
                     curr_tgt_time_tok_cnt = tgt_time // abs_time_step
                     curr_tgt_onset = _quantize_time(tgt_time % abs_time_step)
 
+                    if curr_tgt_onset == abs_time_step:
+                        curr_tgt_onset -= time_step
+
                     for _ in range(
                         curr_tgt_time_tok_cnt - prev_tgt_time_tok_cnt
                     ):
