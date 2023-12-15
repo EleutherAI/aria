@@ -49,6 +49,9 @@ def _parse_sample_args():
     argp.add_argument("-e", action="store_true", help="enable force end")
     argp.add_argument("-l", type=int, help="generation length", default=1024)
     argp.add_argument("-q", action="store_true", help="quantize the model")
+    argp.add_argument(
+        "-sup", action="store_true", help="suppress fluidsynth", default=False
+    )
 
     return argp.parse_args(sys.argv[2:])
 
@@ -242,7 +245,8 @@ def sample(args):
         res_midi_dict = tokenizer.detokenize(tokenized_seq)
         res_midi = res_midi_dict.to_midi()
         res_midi.save(f"samples/res_{idx + 1}.mid")
-        midi_to_audio(f"samples/res_{idx + 1}.mid")
+        if args.sup is False:
+            midi_to_audio(f"samples/:res_{idx + 1}.mid")
 
     print("Results saved to samples/")
 
