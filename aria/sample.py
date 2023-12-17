@@ -118,7 +118,7 @@ def greedy_sample(
     temperature: float = 0.85,
     top_p: float = 0.9,
     stream_tokens: bool = False,
-    verbose: bool = False,
+    verbose: bool = True,
 ):
     """Performs greedy (top_p) autoregressive sampling on a batch of prompts.
 

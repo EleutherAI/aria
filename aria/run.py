@@ -245,7 +245,7 @@ def sample(args):
         output_queue = Queue()
         player = Thread(target=_play, args=(input_queue, output_queue))
         player.start()
-        for token in greedy_sample(**kwargs, stream_tokens=True, verbose=True):
+        for token in greedy_sample(**kwargs, stream_tokens=True, verbose=False):
             input_queue.put_nowait(tokenizer.decode(token)[0])
         input_queue.put(None)
         player.join()

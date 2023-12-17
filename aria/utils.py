@@ -88,6 +88,7 @@ def _play(input_queue: Queue, output_queue: Queue):
     Credits to @maxreciprocate
     """
     SOUNDFONT_PATH = "fluidsynth/DoreMarkYamahaS6-v1.6.sf2"
+    _catch_up_warned = False
 
     if not _get_soundfont(SOUNDFONT_PATH):
         return
@@ -137,4 +138,7 @@ def _play(input_queue: Queue, output_queue: Queue):
                         del open_notes[note]
                         fs.noteoff(0, note)
         else:
+            if not _catch_up_warned:
+                print("Warning: token generation is falling behind")
+                _catch_up_warned = True
             time.sleep(0.1)
