@@ -161,6 +161,7 @@ def sample(args):
 
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
+    model_config.grad_checkpoint = False
     model = TransformerLM(model_config).to(device)
 
     if args.trunc + args.l > model_config.max_seq_len:
