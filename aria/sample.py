@@ -9,7 +9,7 @@
 import math
 import torch
 
-from typing import List
+from typing import List, Iterator
 from tqdm import tqdm
 
 from aria.model import TransformerLM
@@ -120,7 +120,7 @@ def greedy_sample(
     rolling: int = 0,
     stream_tokens: bool = False,
     verbose: bool = True,
-):
+) -> Iterator[list]:
     """Performs greedy (top_p) autoregressive sampling on a batch of prompts.
 
     Args:
@@ -150,7 +150,7 @@ def greedy_sample(
         stream_tokens (bool, optional): Whether to stream tokens as a generator. Defaults to False.
         verbose (bool, optional): Whether to print progress. Defaults to False.
     Returns:
-        List[list]: The list of samples, decoded by the tokenizer.
+        Iterator[list]: An iterator of samples, decoded by the tokenizer.
     """
     assert tokenizer.return_tensors is True, "tokenizer must return tensors."
     device = device or torch.device("cuda")
@@ -289,23 +289,15 @@ def greedy_sample(
         next_token = next_token.unsqueeze(1)  # (bsz) -> (bsz, 1)
 
     if not stream_tokens:
-        decoded = []
         for idx, seq in enumerate(tokens.tolist()):
             if cfg_gamma is not None and 2 * idx >= tokens.size(0):
                 break
             # Cut to eos tok if any
             try:
-                seq = seq[: seq.index(eos_id)]
+                end = seq.index(eos_id)
+                yield tokenizer.decode(seq[:end])
             except ValueError:
-                pass
-            decoded.append(tokenizer.decode(seq))
-
-        for idx, seq in enumerate(decoded):
-            if tokenizer.eos_tok in seq:
-                eos_idx = seq.index(tokenizer.eos_tok)
-                decoded[idx] = seq[:eos_idx]
-
-        return decoded
+                yield tokenizer.decode(seq)
 
 
 def sample_top_p(probs, p):

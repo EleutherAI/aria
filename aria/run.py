@@ -275,7 +275,7 @@ def sample(args):
             res_midi = res_midi_dict.to_midi()
             res_midi.save(f"samples/res_{idx + 1}.mid")
             if args.sup is False:
-                midi_to_audio(f"samples/:res_{idx + 1}.mid")
+                midi_to_audio(f"samples/res_{idx + 1}.mid")
 
         print("Results saved to samples/")
 
