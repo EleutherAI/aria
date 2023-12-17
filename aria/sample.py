@@ -92,6 +92,12 @@ def _batch_encode(tokenizer, prompts: list[list]) -> torch.Tensor:
     return torch.stack([tokenizer.encode(p) for p in prompts], dim=0)
 
 
+def _process_output(tokens: torch.Tensor, use_cfg: bool) -> torch.Tensor:
+    if use_cfg:
+        tokens = tokens[: tokens.size(0) // 2]
+    return tokens.cpu().view(-1)
+
+
 # Some good settings:
 # temp=0.85, top_p=0.9, cfg_gamma=1.4
 
@@ -108,9 +114,11 @@ def greedy_sample(
     neg_prompts: List[list] | None = None,
     neg_prompt_len: int | None = None,
     alpha: float | None = 0.4,
-    force_end=False,
+    force_end: bool = False,
     temperature: float = 0.85,
     top_p: float = 0.9,
+    stream_tokens: bool = False,
+    verbose: bool = False,
 ):
     """Performs greedy (top_p) autoregressive sampling on a batch of prompts.
 
@@ -137,7 +145,8 @@ def greedy_sample(
         force_end (bool, optional): Whether to force the end of the prompt. Defaults to False.
         temperature (float, optional): Sampling temperature. Defaults to 0.75.
         top_p (float, optional): Parameter for top-p sampling. Defaults to 0.95.
-
+        stream_tokens (bool, optional): Whether to stream tokens as a generator. Defaults to False.
+        verbose (bool, optional): Whether to print progress. Defaults to False.
     Returns:
         List[list]: The list of samples, decoded by the tokenizer.
     """
@@ -200,20 +209,23 @@ def greedy_sample(
         max_batch_size=tokens.size(0), max_len=total_len, device=device
     )
 
+    next_token = tokens[:, :start_pos]
+    if stream_tokens:
+        for i in range(start_pos):
+            yield _process_output(
+                next_token[:, i], use_cfg=cfg_gamma is not None
+            )
+
     for cur_pos in (
         pbar := tqdm(
             range(start_pos, total_len),
             total=total_len - start_pos,
             leave=False,
+            disable=not verbose,
         )
     ):
-        if cur_pos == start_pos:
-            token = tokens[:, :start_pos]
-        else:
-            token = tokens[:, cur_pos - 1 : cur_pos]
-
         logits = model.forward(
-            token, attn_mask=attn_mask[:, :cur_pos], past_kv=past_kv
+            next_token, attn_mask=attn_mask[:, :cur_pos], past_kv=past_kv
         )
         logits = logits[:, -1, :]
 
@@ -259,25 +271,32 @@ def greedy_sample(
             if next_token[_idx] == tokenizer.tok_to_id[tokenizer.dim_tok]:
                 dim_tok_inserted[_idx] = True
 
-        tokens[:, cur_pos] = next_token
+        if stream_tokens:
+            # Yield tokens as they are generated
+            yield _process_output(next_token, use_cfg=cfg_gamma is not None)
+        else:
+            # Update tokens
+            tokens[:, cur_pos] = next_token
+        next_token = next_token.unsqueeze(1)  # (bsz) -> (bsz, 1)
 
-    decoded = []
-    for idx, seq in enumerate(tokens.tolist()):
-        if cfg_gamma is not None and 2 * idx >= tokens.size(0):
-            break
-        # Cut to eos tok if any
-        try:
-            seq = seq[: seq.index(eos_id)]
-        except ValueError:
-            pass
-        decoded.append(tokenizer.decode(seq))
+    if not stream_tokens:
+        decoded = []
+        for idx, seq in enumerate(tokens.tolist()):
+            if cfg_gamma is not None and 2 * idx >= tokens.size(0):
+                break
+            # Cut to eos tok if any
+            try:
+                seq = seq[: seq.index(eos_id)]
+            except ValueError:
+                pass
+            decoded.append(tokenizer.decode(seq))
 
-    for idx, seq in enumerate(decoded):
-        if tokenizer.eos_tok in seq:
-            eos_idx = seq.index(tokenizer.eos_tok)
-            decoded[idx] = seq[:eos_idx]
+        for idx, seq in enumerate(decoded):
+            if tokenizer.eos_tok in seq:
+                eos_idx = seq.index(tokenizer.eos_tok)
+                decoded[idx] = seq[:eos_idx]
 
-    return decoded
+        return decoded
 
 
 def sample_top_p(probs, p):
