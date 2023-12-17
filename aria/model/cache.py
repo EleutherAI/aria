@@ -48,8 +48,8 @@ class KVCache(torch.nn.Module):
 
     def update(
         self,
-        k,
-        v,
+        k: torch.Tensor,
+        v: torch.Tensor,
         pos: Optional[torch.Tensor] = None,
         start_pos: int = 0,
         max_pos: Optional[int] = None,
@@ -71,8 +71,12 @@ class KVCache(torch.nn.Module):
                      due to dynamic shape.
         """
         if pos is None:
-            k_pos = torch.arange(self.next_pos, self.next_pos + k.size(1))
-            v_pos = torch.arange(self.next_pos, self.next_pos + v.size(1))
+            k_pos = torch.arange(
+                self.next_pos, self.next_pos + k.size(1), device=k.device
+            )
+            v_pos = torch.arange(
+                self.next_pos, self.next_pos + v.size(1), device=v.device
+            )
             if self.rolling:
                 k_pos = k_pos % self.shape[1]
                 v_pos = v_pos % self.shape[1]
