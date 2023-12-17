@@ -892,7 +892,7 @@ def convert_cp_from_accelerate(
 def parse_resume_args():
     argp = argparse.ArgumentParser(prog="python aria/train.py resume")
     argp.add_argument("model", help="name of model config file")
-    argp.add_argument("mode", help="training mode", choices=["pt", "ft"])
+    argp.add_argument("resume_mode", help="training mode", choices=["pt", "ft"])
     argp.add_argument("train_data", help="path to train data")
     argp.add_argument("val_data", help="path to val data")
     argp.add_argument("-cdir", help="checkpoint dir", type=str, required=True)
@@ -990,7 +990,7 @@ if __name__ == "__main__":
             model_name=pretrain_args.model,
             train_data_path=pretrain_args.train_data,
             val_data_path=pretrain_args.val_data,
-            mode="pretrain" if args.mode == "pt" else "finetune",
+            mode="pretrain" if args.resume_mode == "pt" else "finetune",
             num_workers=pretrain_args.workers,
             batch_size=pretrain_args.bs,
             epochs=pretrain_args.epochs,
