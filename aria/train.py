@@ -971,34 +971,34 @@ if __name__ == "__main__":
             project_dir=pretrain_args.pdir,
         )
     elif args.mode == "finetune":
-        pretrain_args = parse_finetune_args()
+        finetune_args = parse_finetune_args()
         train(
-            model_name=pretrain_args.model,
-            train_data_path=pretrain_args.train_data,
-            val_data_path=pretrain_args.val_data,
+            model_name=finetune_args.model,
+            train_data_path=finetune_args.train_data,
+            val_data_path=finetune_args.val_data,
             mode="finetune",
-            num_workers=pretrain_args.workers,
-            batch_size=pretrain_args.bs,
-            epochs=pretrain_args.epochs,
-            finetune_cp_path=args.cp,
-            steps_per_checkpoint=pretrain_args.spc,
-            project_dir=pretrain_args.pdir,
+            num_workers=finetune_args.workers,
+            batch_size=finetune_args.bs,
+            epochs=finetune_args.epochs,
+            finetune_cp_path=finetune_args.cp,
+            steps_per_checkpoint=finetune_args.spc,
+            project_dir=finetune_args.pdir,
         )
     elif args.mode == "resume":
-        pretrain_args = parse_resume_args()
+        resume_args = parse_resume_args()
         resume_train(
-            model_name=pretrain_args.model,
-            train_data_path=pretrain_args.train_data,
-            val_data_path=pretrain_args.val_data,
-            mode="pretrain" if args.resume_mode == "pt" else "finetune",
-            num_workers=pretrain_args.workers,
-            batch_size=pretrain_args.bs,
-            epochs=pretrain_args.epochs,
-            checkpoint_dir=pretrain_args.cdir,
-            resume_step=pretrain_args.rstep,
-            resume_epoch=pretrain_args.repoch,
-            steps_per_checkpoint=pretrain_args.spc,
-            project_dir=pretrain_args.pdir,
+            model_name=resume_args.model,
+            train_data_path=resume_args.train_data,
+            val_data_path=resume_args.val_data,
+            mode="pretrain" if resume_args.resume_mode == "pt" else "finetune",
+            num_workers=resume_args.workers,
+            batch_size=resume_args.bs,
+            epochs=resume_args.epochs,
+            checkpoint_dir=resume_args.cdir,
+            resume_step=resume_args.rstep,
+            resume_epoch=resume_args.repoch,
+            steps_per_checkpoint=resume_args.spc,
+            project_dir=resume_args.pdir,
         )
     else:
         print("Unrecognized command")
