@@ -4,6 +4,7 @@ import argparse
 import os
 import re
 import sys
+import tqdm
 import pathlib
 import warnings
 from queue import Queue
@@ -55,6 +56,9 @@ def _parse_sample_args():
         "-sup", action="store_true", help="suppress fluidsynth", default=False
     )
     argp.add_argument("-live", action="store_true", help="live playing mode")
+    argp.add_argument(
+        "-roll", type=int, help="inference on a rolling window", default=0
+    )
 
     return argp.parse_args(sys.argv[2:])
 
@@ -239,13 +243,23 @@ def sample(args):
         "max_new_tokens": max_new_tokens,
         "cfg_gamma": args.cfg,
         "temperature": args.temp,
+        "rolling": args.roll,
     }
     if args.live:
         input_queue = Queue()
-        output_queue = Queue()
-        player = Thread(target=_play, args=(input_queue, output_queue))
+
+        iterator = greedy_sample(
+            **kwargs,
+            stream_tokens=True,
+            verbose=True,
+        )
+        pbar = tqdm.tqdm(total=max_new_tokens)
+        player = Thread(
+            target=_play, args=(input_queue, args.tok == "rel", pbar)
+        )
         player.start()
-        for token in greedy_sample(**kwargs, stream_tokens=True, verbose=False):
+
+        for token in iterator:
             input_queue.put_nowait(tokenizer.decode(token)[0])
         input_queue.put(None)
         player.join()

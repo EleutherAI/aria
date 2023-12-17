@@ -5,9 +5,26 @@ import torch
 
 class KVCache(torch.nn.Module):
     def __init__(
-        self, max_batch_size, n_head, d_head, dtype=torch.float16, max_size=8192
+        self,
+        max_batch_size,
+        n_head,
+        d_head,
+        dtype=torch.float16,
+        max_size=8192,
+        rolling=True,
     ):
+        """
+        Cache for key-value pairs used in self-attention.
+        Args:
+            max_batch_size: the maximum batch size
+            n_head: the number of heads
+            d_head: the dimension of each head
+            dtype: the dtype of the cache
+            max_size: the maximum number of positions to cache
+            rolling: whether to roll when it is full
+        """
         super().__init__()
+        self.rolling = rolling
         self.shape = (max_batch_size, max_size, n_head, d_head)
         self.register_buffer(
             "k_cache", torch.empty(self.shape, dtype=dtype), persistent=False
@@ -16,6 +33,18 @@ class KVCache(torch.nn.Module):
             "v_cache", torch.empty(self.shape, dtype=dtype), persistent=False
         )
         self.next_pos = 0
+
+    def _get_tensor(self, cache, start_pos, next_pos):
+        if self.rolling and next_pos > self.shape[1]:
+            return torch.cat(
+                [
+                    cache[:, next_pos % self.shape[1] :],
+                    cache[:, : next_pos % self.shape[1]],
+                ],
+                dim=1,
+            )
+        else:
+            return cache[:, start_pos:next_pos]
 
     def update(
         self,
@@ -42,12 +71,13 @@ class KVCache(torch.nn.Module):
                      due to dynamic shape.
         """
         if pos is None:
-            self.k_cache[
-                : k.size(0), self.next_pos : self.next_pos + k.size(1)
-            ] = k
-            self.v_cache[
-                : v.size(0), self.next_pos : self.next_pos + v.size(1)
-            ] = v
+            k_pos = torch.arange(self.next_pos, self.next_pos + k.size(1))
+            v_pos = torch.arange(self.next_pos, self.next_pos + v.size(1))
+            if self.rolling:
+                k_pos = k_pos % self.shape[1]
+                v_pos = v_pos % self.shape[1]
+            self.k_cache[: k.size(0), k_pos] = k
+            self.v_cache[: v.size(0), v_pos] = v
             self.next_pos += k.size(1)
         else:
             assert pos.size(0) == k.size(1)
@@ -55,13 +85,15 @@ class KVCache(torch.nn.Module):
                 "Need to pass in `pos.max()` explicitly. "
                 "Doing `pos.max()` creates massive overhead."
             )
+            if self.rolling:
+                pos = pos % self.shape[1]
             self.k_cache[: k.size(0), pos] = k
             self.v_cache[: v.size(0), pos] = v
             # Update next_pos using the max entry.
             # Note: `self.next_pos = pos.max() + 1` could have worked, but it
             #       causes the shape to be dynamic and creates a massive overhead.
             self.next_pos = max_pos + 1
-        return (
-            self.k_cache[: k.size(0), start_pos : self.next_pos],
-            self.v_cache[: v.size(0), start_pos : self.next_pos],
-        )
+
+        return self._get_tensor(
+            self.k_cache, start_pos, self.next_pos
+        ), self._get_tensor(self.v_cache, start_pos, self.next_pos)

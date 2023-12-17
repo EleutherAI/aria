@@ -117,6 +117,7 @@ def greedy_sample(
     force_end: bool = False,
     temperature: float = 0.85,
     top_p: float = 0.9,
+    rolling: int = 0,
     stream_tokens: bool = False,
     verbose: bool = True,
 ):
@@ -145,6 +146,7 @@ def greedy_sample(
         force_end (bool, optional): Whether to force the end of the prompt. Defaults to False.
         temperature (float, optional): Sampling temperature. Defaults to 0.75.
         top_p (float, optional): Parameter for top-p sampling. Defaults to 0.95.
+        rolling (int, optional): Whether to roll the cache. Defaults to 0 (disabled).
         stream_tokens (bool, optional): Whether to stream tokens as a generator. Defaults to False.
         verbose (bool, optional): Whether to print progress. Defaults to False.
     Returns:
@@ -185,7 +187,8 @@ def greedy_sample(
         f"Using hyperparams: temp={temperature}, top_p={top_p}, gamma={cfg_gamma}, gen_len={max_new_tokens}"
     )
 
-    total_len = prompt_len + max_new_tokens
+    total_len = prompt_len + max_new_tokens  # total length of the sequence
+    window_len = total_len if not rolling else rolling  # rolling window size
     tokens = torch.full(
         (len(padded_combined_prompts), total_len), pad_id, device=device
     )
@@ -206,27 +209,33 @@ def greedy_sample(
     start_pos = prompt_len
 
     past_kv = model.get_cache(
-        max_batch_size=tokens.size(0), max_len=total_len, device=device
+        max_batch_size=tokens.size(0), max_len=window_len, device=device
     )
 
     next_token = tokens[:, :start_pos]
+
     if stream_tokens:
+        # Yield the prompt tokens first
         for i in range(start_pos):
             yield _process_output(
                 next_token[:, i], use_cfg=cfg_gamma is not None
             )
-
     for cur_pos in (
         pbar := tqdm(
             range(start_pos, total_len),
             total=total_len - start_pos,
             leave=False,
             disable=not verbose,
+            desc="Token generation progress",
         )
     ):
-        logits = model.forward(
-            next_token, attn_mask=attn_mask[:, :cur_pos], past_kv=past_kv
-        )
+        if rolling and cfg_gamma is not None:
+            # Have to use a fixed attn_mask if CFG is used.
+            # Otherwise, when the rolling window is filled, the both prompts become the same.
+            mask = attn_mask[:, : min(cur_pos, window_len)]
+        else:
+            mask = attn_mask[:, max(0, cur_pos - window_len) : cur_pos]
+        logits = model.forward(next_token, attn_mask=mask, past_kv=past_kv)
         logits = logits[:, -1, :]
 
         if cfg_gamma is not None:

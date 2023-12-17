@@ -3,6 +3,7 @@
 import os
 import subprocess
 import time
+import tqdm
 
 import requests
 from multiprocessing import Queue
@@ -82,10 +83,76 @@ def _get_soundfont(path: str) -> bool:
     return True
 
 
-def _play(input_queue: Queue, output_queue: Queue):
+def _handle_absolute(
+    m, fs, current_note, last_time, open_notes, abs_time_step_ms=5000, **kwargs
+):
+    if m[0] == "piano":
+        current_note = m
+    elif m[0] == "dur":
+        if current_note is not None:
+            open_notes[current_note] = m[1]
+            current_note = None
+    elif m[0] == "onset":
+        if m[1] < last_time:
+            raise ValueError(
+                "Sequence corrupted! Onset time is greater than current time"
+            )
+        time.sleep(
+            (m[1] - last_time) / 1000
+        )  # First wait for the time to update
+        if current_note is None or current_note[0] != "piano":
+            raise ValueError("Sequence corrupted! No current note to play")
+        fs.noteon(
+            0, current_note[1], current_note[2]
+        )  # Next play the previously received note
+
+        for note in list(open_notes.keys()):
+            open_notes[note] -= m[1] - last_time
+            if open_notes[note] <= 0:
+                del open_notes[note]
+                fs.noteoff(0, note[1])
+
+        last_time = m[1]
+    elif m == "<T>":
+        time.sleep(max(0, abs_time_step_ms - last_time) / 1000)
+        last_time = 0
+
+    return current_note, last_time
+
+
+def _handle_relative(m, fs, current_note, open_notes, **kwargs):
+    if m[0] == "piano":
+        fs.noteon(0, m[1], m[2])
+        current_note = m[1]
+    elif m[0] == "dur":
+        if current_note is not None:
+            open_notes[current_note] = m[1]
+            current_note = None
+    elif m[0] == "wait":
+        time.sleep(m[1] / 1000)
+
+        for note in list(open_notes.keys()):
+            open_notes[note] -= m[1]
+            if open_notes[note] <= 0:
+                del open_notes[note]
+                fs.noteoff(0, note)
+
+    return current_note
+
+
+def _play(
+    input_queue: Queue,
+    is_relative: bool = False,
+    pbar=None,
+    abs_time_step_ms=5000,
+):
     """
     Run in a separate process and receive tokens and play them with fluidsynth
     Credits to @maxreciprocate
+    Args:
+        input_queue: queue to receive tokens from
+        is_relative: whether the tokens are relative or absolute
+        pbar: tqdm progress bar
     """
     SOUNDFONT_PATH = "fluidsynth/DoreMarkYamahaS6-v1.6.sf2"
     _catch_up_warned = False
@@ -106,37 +173,43 @@ def _play(input_queue: Queue, output_queue: Queue):
 
     fs.program_select(0, sfid, 0, 0)
 
-    output_queue.put_nowait(True)
-
-    finish = False
     current_note = None
+    # Previous onset time (effective only when is_relative is False)
+    last_time = 0
+    # Currently open notes
     open_notes = {}
+    # The rolling log of the past 5 tokens
+    rolling_cache, rolling_index = [""] * 5, 0
     while True:
-        if finish and input_queue.empty():
-            output_queue.put_nowait(finish)
-            finish = False
-        elif not input_queue.empty():
+        if not input_queue.empty():
             m = input_queue.get()
-            print(m)
-            if m is None:  # exit
-                break
-            elif m == "<E>":
-                finish = True
-            elif m[0] == "piano":
-                fs.noteon(0, m[1], m[2])
-                current_note = m[1]
-            elif m[0] == "dur":
-                if current_note is not None:
-                    open_notes[current_note] = m[1]
-                    current_note = None
-            elif m[0] == "wait":
-                time.sleep(m[1] / 1000)
+            if pbar is not None:
+                rolling_cache[rolling_index] = (
+                    m[0] if isinstance(m, tuple) else m
+                )
+                pbar.update(1)
+                pbar.set_description(
+                    "Past tokens:"
+                    + ", ".join(
+                        rolling_cache[rolling_index:]
+                        + rolling_cache[:rolling_index]
+                    )
+                )
 
-                for note in list(open_notes.keys()):
-                    open_notes[note] -= m[1]
-                    if open_notes[note] <= 0:
-                        del open_notes[note]
-                        fs.noteoff(0, note)
+                rolling_index = (rolling_index + 1) % len(rolling_cache)
+            if m is None or m == "<E>":  # exit
+                break
+            elif is_relative:
+                current_note = _handle_relative(m, fs, current_note, open_notes)
+            else:
+                current_note, last_time = _handle_absolute(
+                    m,
+                    fs,
+                    current_note,
+                    last_time,
+                    open_notes,
+                    abs_time_step_ms=abs_time_step_ms,
+                )
         else:
             if not _catch_up_warned:
                 print("Warning: token generation is falling behind")
