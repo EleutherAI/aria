@@ -113,8 +113,6 @@ def _get_midi_path(midi_path: str | None) -> str:
     return midi_path
 
 
-# TODO: Add arg for supressing the audio conversion, and commands for changing
-# the sampling params from the cli
 def sample(args):
     """Entrypoint for sampling"""
 
@@ -154,6 +152,7 @@ def sample(args):
 
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
+    model_config.grad_checkpoint = False
     model = TransformerLM(model_config).to(device)
 
     if args.trunc + args.l > model_config.max_seq_len:
