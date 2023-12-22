@@ -16,11 +16,7 @@ from aria.model import TransformerLM
 from aria.tokenizer import Tokenizer
 
 
-# TODO:
-# - Truncate if end token seen
-# - Fix the issue with onset tokens being <U> (5000ms?)
-# - Fix the issue with dim tok being inserted at the wrong time
-
+# TODO: Add which instruments were detected in the prompt
 
 def _get_cfg_coeff(cfg_gamma, cfg_mode, cur_pos, start_pos, total_len):
     if cfg_mode is None:

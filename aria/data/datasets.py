@@ -833,7 +833,7 @@ class FinetuningDataset(TrainingDataset):
         _build(_midi_dataset=midi_dataset)
 
         logger.info(
-            f"Finished building, saved PretrainingDataset to {save_path}"
+            f"Finished building, saved Finetuning to {save_path}"
         )
 
         return cls(file_path=save_path, tokenizer=tokenizer)
