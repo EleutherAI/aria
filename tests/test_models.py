@@ -92,7 +92,7 @@ class TestModel(unittest.TestCase):
             device=torch.device("cpu"),
             max_new_tokens=50,
         )
-        assert [u == v for u, v in zip(out, out2[1:])]
+        assert [u == v for u, v in zip(out, list(out2)[1:])]
 
 
 if __name__ == "__main__":
