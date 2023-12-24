@@ -162,6 +162,7 @@ def _play(
         return
 
     import fluidsynth  # lazy import
+
     fs = fluidsynth.Synth()
 
     if platform.system() == "Linux":
@@ -220,6 +221,7 @@ def _play(
 def _ensure_fluidsynth():
     try:
         import fluidsynth  # lazy import
+
         fs = fluidsynth.Synth()
     except Exception as e:
         msg = (
