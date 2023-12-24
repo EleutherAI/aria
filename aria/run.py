@@ -130,7 +130,7 @@ def sample(args):
     from aria.tokenizer import RelTokenizer, AbsTokenizer
     from aria.sample import greedy_sample
     from aria.data.midi import MidiDict
-    from aria.utils import midi_to_audio, _play
+    from aria.utils import midi_to_audio, _play, _ensure_fluidsynth
 
     if not cuda_is_available():
         print("CUDA device is not available. Using CPU instead.")
@@ -245,6 +245,7 @@ def sample(args):
         "rolling": args.roll,
     }
     if args.live:
+        _ensure_fluidsynth()
         input_queue = Queue()
 
         iterator = greedy_sample(

@@ -1,6 +1,7 @@
 """Contains miscellaneous utilities"""
 
 import os
+import platform
 import subprocess
 import time
 import tqdm
@@ -161,9 +162,8 @@ def _play(
         return
 
     import fluidsynth  # lazy import
-    import platform
-
     fs = fluidsynth.Synth()
+
     if platform.system() == "Linux":
         fs.start(driver="pulseaudio")
     else:
@@ -215,3 +215,16 @@ def _play(
                 print("Warning: token generation is falling behind")
                 _catch_up_warned = True
             time.sleep(0.1)
+
+
+def _ensure_fluidsynth():
+    try:
+        import fluidsynth  # lazy import
+        fs = fluidsynth.Synth()
+    except Exception as e:
+        msg = (
+            f"\nError in loading pyfluidsynth library. Possible solutions are:\n"
+            f"  - install `pyfluidsynth` (pip install pyfluidsynth)\n"
+            f"  - make sure gcc is in the system (e.g. conda install -c conda-forge gcc)\n"
+        )
+        raise ImportError(msg) from e
