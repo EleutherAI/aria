@@ -4,8 +4,11 @@ import argparse
 import os
 import re
 import sys
+import tqdm
 import pathlib
 import warnings
+from queue import Queue
+from threading import Thread
 
 
 # TODO: Implement a way of inferring the tokenizer name automatically
@@ -51,6 +54,10 @@ def _parse_sample_args():
     argp.add_argument("-q", action="store_true", help="quantize the model")
     argp.add_argument(
         "-sup", action="store_true", help="suppress fluidsynth", default=False
+    )
+    argp.add_argument("-live", action="store_true", help="live playing mode")
+    argp.add_argument(
+        "-roll", type=int, help="inference on a rolling window", default=0
     )
 
     return argp.parse_args(sys.argv[2:])
@@ -123,7 +130,7 @@ def sample(args):
     from aria.tokenizer import RelTokenizer, AbsTokenizer
     from aria.sample import greedy_sample
     from aria.data.midi import MidiDict
-    from aria.utils import midi_to_audio
+    from aria.utils import midi_to_audio, _play, _ensure_fluidsynth
 
     if not cuda_is_available():
         print("CUDA device is not available. Using CPU instead.")
@@ -226,28 +233,50 @@ def sample(args):
     prompts = [prompt_seq for _ in range(num_variations)]
 
     # Sample
-    results = greedy_sample(
-        model,
-        tokenizer,
-        prompts,
-        device=device,
-        force_end=force_end,
-        max_new_tokens=max_new_tokens,
-        cfg_gamma=args.cfg,
-        temperature=args.temp,
-    )
+    kwargs = {
+        "model": model,
+        "tokenizer": tokenizer,
+        "prompts": prompts,
+        "device": device,
+        "force_end": force_end,
+        "max_new_tokens": max_new_tokens,
+        "cfg_gamma": args.cfg,
+        "temperature": args.temp,
+        "rolling": args.roll,
+    }
+    if args.live:
+        _ensure_fluidsynth()
+        input_queue = Queue()
 
-    if os.path.isdir("samples") is False:
-        os.mkdir("samples")
+        iterator = greedy_sample(
+            **kwargs,
+            stream_tokens=True,
+            verbose=True,
+        )
+        pbar = tqdm.tqdm(total=max_new_tokens)
+        player = Thread(
+            target=_play, args=(input_queue, args.tok == "rel", pbar)
+        )
+        player.start()
 
-    for idx, tokenized_seq in enumerate(results):
-        res_midi_dict = tokenizer.detokenize(tokenized_seq)
-        res_midi = res_midi_dict.to_midi()
-        res_midi.save(f"samples/res_{idx + 1}.mid")
-        if args.sup is False:
-            midi_to_audio(f"samples/:res_{idx + 1}.mid")
+        for token in iterator:
+            input_queue.put_nowait(tokenizer.decode(token)[0])
+        input_queue.put(None)
+        player.join()
+    else:
+        results = greedy_sample(**kwargs)
 
-    print("Results saved to samples/")
+        if os.path.isdir("samples") is False:
+            os.mkdir("samples")
+
+        for idx, tokenized_seq in enumerate(results):
+            res_midi_dict = tokenizer.detokenize(tokenized_seq)
+            res_midi = res_midi_dict.to_midi()
+            res_midi.save(f"samples/res_{idx + 1}.mid")
+            if args.sup is False:
+                midi_to_audio(f"samples/res_{idx + 1}.mid")
+
+        print("Results saved to samples/")
 
 
 def _parse_midi_dataset_args():
