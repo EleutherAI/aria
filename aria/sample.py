@@ -18,6 +18,7 @@ from aria.tokenizer import Tokenizer
 
 # TODO: Add which instruments were detected in the prompt
 
+
 def _get_cfg_coeff(cfg_gamma, cfg_mode, cur_pos, start_pos, total_len):
     if cfg_mode is None:
         return cfg_gamma

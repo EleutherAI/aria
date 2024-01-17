@@ -14,6 +14,7 @@ from aria.config import load_config
 
 # TODO:
 # - Possibly refactor names 'mid' to 'midi'
+# - When pedal goes on after note on - this leads to it being played incorrectly.
 
 
 class MidiDict:
@@ -556,7 +557,7 @@ def get_duration_ms(
     return duration
 
 
-def _match_composer(text: str, composer_name: str):
+def _match_word(text: str, composer_name: str):
     # If name="bach" this pattern will match "bach", "Bach" or "BACH" if
     # it is either proceeded or preceded by a "_" or " ".
     pattern = (
@@ -581,7 +582,7 @@ def meta_composer_filename(
     file_name = pathlib.Path(mid.filename).stem
     matched_names = set()
     for name in composer_names:
-        if _match_composer(file_name, name):
+        if _match_word(file_name, name):
             matched_names.add(name)
 
     # Only return data if only one composer is found
@@ -592,13 +593,28 @@ def meta_composer_filename(
         return {}
 
 
+def meta_form_filename(mid: mido.MidiFile, msg_data: dict, form_names: list):
+    file_name = pathlib.Path(mid.filename).stem
+    matched_names = set()
+    for name in form_names:
+        if _match_word(file_name, name):
+            matched_names.add(name)
+
+    # Only return data if only one composer is found
+    matched_names = list(matched_names)
+    if len(matched_names) == 1:
+        return {"form": matched_names[0]}
+    else:
+        return {}
+
+
 def meta_composer_metamsg(
     mid: mido.MidiFile, msg_data: dict, composer_names: list
 ):
     matched_names = set()
     for msg in msg_data["meta_msgs"]:
         for name in composer_names:
-            if _match_composer(msg["data"], name):
+            if _match_word(msg["data"], name):
                 matched_names.add(name)
 
     # Only return data if only one composer is found
@@ -614,6 +630,7 @@ def get_metadata_fn(metadata_proc_name: str):
     name_to_fn = {
         "composer_filename": meta_composer_filename,
         "composer_metamsg": meta_composer_metamsg,
+        "form_filename": meta_form_filename,
     }
 
     fn = name_to_fn.get(metadata_proc_name, None)

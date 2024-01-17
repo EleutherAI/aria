@@ -213,7 +213,7 @@ class TestAbsTokenizer(unittest.TestCase):
         tknzr = tokenizer.AbsTokenizer(return_tensors=False)
         tokenize_detokenize("basic.mid")
         tokenize_detokenize("arabesque.mid")
-        tokenize_detokenize("beethoven.mid")
+        tokenize_detokenize("beethoven_sonata.mid")
         tokenize_detokenize("bach.mid")
         tokenize_detokenize("expressive.mid")
         tokenize_detokenize("pop.mid")
@@ -249,7 +249,7 @@ class TestAbsTokenizer(unittest.TestCase):
         logging.info(f"pitch_aug_fn:\n{seq} ->\n\n{seq_pitch_augmented}\n")
         tokenize_aug_detokenize("basic.mid", pitch_aug_fn, "pitch")
         tokenize_aug_detokenize("arabesque.mid", pitch_aug_fn, "pitch")
-        tokenize_aug_detokenize("beethoven.mid", pitch_aug_fn, "pitch")
+        tokenize_aug_detokenize("beethoven_sonata.mid", pitch_aug_fn, "pitch")
         tokenize_aug_detokenize("bach.mid", pitch_aug_fn, "pitch")
         tokenize_aug_detokenize("expressive.mid", pitch_aug_fn, "pitch")
         tokenize_aug_detokenize("pop.mid", pitch_aug_fn, "pitch")
@@ -264,7 +264,9 @@ class TestAbsTokenizer(unittest.TestCase):
         )
         tokenize_aug_detokenize("basic.mid", velocity_aug_fn, "velocity")
         tokenize_aug_detokenize("arabesque.mid", velocity_aug_fn, "velocity")
-        tokenize_aug_detokenize("beethoven.mid", velocity_aug_fn, "velocity")
+        tokenize_aug_detokenize(
+            "beethoven_sonata.mid", velocity_aug_fn, "velocity"
+        )
         tokenize_aug_detokenize("bach.mid", velocity_aug_fn, "velocity")
         tokenize_aug_detokenize("expressive.mid", velocity_aug_fn, "velocity")
         tokenize_aug_detokenize("pop.mid", velocity_aug_fn, "velocity")
@@ -283,7 +285,7 @@ class TestAbsTokenizer(unittest.TestCase):
 
         tokenize_aug_detokenize("basic.mid", tempo_aug_fn, "tempo")
         tokenize_aug_detokenize("arabesque.mid", tempo_aug_fn, "tempo")
-        tokenize_aug_detokenize("beethoven.mid", tempo_aug_fn, "tempo")
+        tokenize_aug_detokenize("beethoven_sonata.mid", tempo_aug_fn, "tempo")
         tokenize_aug_detokenize("bach.mid", tempo_aug_fn, "tempo")
         tokenize_aug_detokenize("expressive.mid", tempo_aug_fn, "tempo")
         tokenize_aug_detokenize("pop.mid", tempo_aug_fn, "tempo")
@@ -293,7 +295,7 @@ class TestAbsTokenizer(unittest.TestCase):
 
     def test_aug_time(self):
         tknzr = tokenizer.AbsTokenizer()
-        mid_dict = MidiDict.from_midi("tests/test_data/beethoven.mid")
+        mid_dict = MidiDict.from_midi("tests/test_data/beethoven_sonata.mid")
         tokenized_seq = tknzr.tokenize(mid_dict)[:4096]
         pitch_aug_fn = tknzr.export_pitch_aug(aug_range=5)
         velocity_aug_fn = tknzr.export_velocity_aug(aug_steps_range=2)
@@ -352,7 +354,7 @@ class TestRelTokenizer(unittest.TestCase):
 
         tokenize_detokenize("basic.mid")
         tokenize_detokenize("arabesque.mid")
-        tokenize_detokenize("beethoven.mid")
+        tokenize_detokenize("beethoven_sonata.mid")
         tokenize_detokenize("bach.mid")
         tokenize_detokenize("expressive.mid")
         tokenize_detokenize("pop.mid")
@@ -405,7 +407,7 @@ class TestRelTokenizer(unittest.TestCase):
 
     def test_aug_time(self):
         tknzr = tokenizer.RelTokenizer()
-        mid_dict = MidiDict.from_midi("tests/test_data/beethoven.mid")
+        mid_dict = MidiDict.from_midi("tests/test_data/beethoven_sonata.mid")
         tokenized_seq = tknzr.tokenize(mid_dict)[:4096]
 
         pitch_aug_fn = tknzr.export_pitch_aug(aug_range=5)
