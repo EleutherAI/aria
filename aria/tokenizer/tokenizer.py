@@ -283,6 +283,8 @@ class AbsTokenizer(Tokenizer):
         self.prefix_tokens += [
             ("prefix", "composer", x) for x in self.composer_names
         ]
+        self.form_names = self.config["form_names"]
+        self.prefix_tokens += [("prefix", "form", x) for x in self.form_names]
 
         # Build vocab
         self.time_tok = "<T>"
@@ -388,6 +390,10 @@ class AbsTokenizer(Tokenizer):
         composer = midi_dict.metadata.get("composer")
         if composer and (composer in self.composer_names):
             prefix.insert(0, ("prefix", "composer", composer))
+
+        form = midi_dict.metadata.get("form")
+        if form and (form in self.form_names):
+            prefix.insert(0, ("prefix", "form", form))
 
         # NOTE: Any preceding silence is removed implicitly
         tokenized_seq = []
@@ -919,6 +925,8 @@ class RelTokenizer(Tokenizer):
         self.prefix_tokens += [
             ("prefix", "composer", x) for x in self.composer_names
         ]
+        self.form_names = self.config["form_names"]
+        self.prefix_tokens += [("prefix", "form", x) for x in self.form_names]
 
         # Build vocab
         self.wait_tokens = [("wait", i) for i in self.time_step_quantizations]
@@ -1011,6 +1019,10 @@ class RelTokenizer(Tokenizer):
         composer = midi_dict.metadata.get("composer")
         if composer and (composer in self.composer_names):
             prefix.insert(0, ("prefix", "composer", composer))
+
+        form = midi_dict.metadata.get("form")
+        if form and (form in self.form_names):
+            prefix.insert(0, ("prefix", "form", form))
 
         # NOTE: Any preceding silence is removed implicitly
         tokenized_seq = []
