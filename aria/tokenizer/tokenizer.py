@@ -381,25 +381,23 @@ class AbsTokenizer(Tokenizer):
             if channel_to_instrument.get(c) is None and c != 9:
                 channel_to_instrument[c] = "piano"
 
-        # Add non-drums to present_instruments (prefix)
+        # Calculate prefix
         prefix = [
             ("prefix", "instrument", x)
             for x in set(channel_to_instrument.values())
         ]
         if 9 in channels_used:
             prefix.append(("prefix", "instrument", "drum"))
-
         composer = midi_dict.metadata.get("composer")
         if composer and (composer in self.composer_names):
             prefix.insert(0, ("prefix", "composer", composer))
-
         form = midi_dict.metadata.get("form")
         if form and (form in self.form_names):
             prefix.insert(0, ("prefix", "form", form))
-
         genre = midi_dict.metadata.get("genre")
         if genre and (genre in self.genre_names):
             prefix.insert(0, ("prefix", "genre", genre))
+        random.shuffle(prefix)
 
         # NOTE: Any preceding silence is removed implicitly
         tokenized_seq = []
@@ -1016,25 +1014,23 @@ class RelTokenizer(Tokenizer):
             if channel_to_instrument.get(c) is None and c != 9:
                 channel_to_instrument[c] = "piano"
 
-        # Add non-drums to present_instruments (prefix)
+        # Calculate prefix
         prefix = [
             ("prefix", "instrument", x)
             for x in set(channel_to_instrument.values())
         ]
         if 9 in channels_used:
             prefix.append(("prefix", "instrument", "drum"))
-
         composer = midi_dict.metadata.get("composer")
         if composer and (composer in self.composer_names):
             prefix.insert(0, ("prefix", "composer", composer))
-
         form = midi_dict.metadata.get("form")
         if form and (form in self.form_names):
             prefix.insert(0, ("prefix", "form", form))
-
         genre = midi_dict.metadata.get("genre")
         if genre and (genre in self.genre_names):
             prefix.insert(0, ("prefix", "genre", genre))
+        random.shuffle(prefix)
 
         # NOTE: Any preceding silence is removed implicitly
         tokenized_seq = []
