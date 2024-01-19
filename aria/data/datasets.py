@@ -306,7 +306,7 @@ def build_mididict_dataset(
                     logger.info(f"Processed MIDI files: {idx}/{num_paths}")
 
                 if not success:
-                    failed_cnt = +1
+                    failed_cnt += 1
                     continue
                 else:
                     mid_dict, mid_hash, mid_path = result
