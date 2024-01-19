@@ -614,7 +614,8 @@ def resume_train(
         "correctly, the script does not currently check that this is the case. "
         "If the previous checkpoint was saved at step n, then resume_step "
         "should be n. If there is a mismatch between the batch size then the "
-        "script will resume at the wrong step."
+        "script will resume at the wrong step. It is also important that the "
+        "same distributed setup is used for training."
     )
     logger.info(
         f"Using training config: "

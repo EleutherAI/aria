@@ -111,6 +111,32 @@ class TestMidiDataset(unittest.TestCase):
 
         self.assertEqual(mid_1.calculate_hash(), mid_2.calculate_hash())
 
+    def test_concat(self):
+        if (
+            os.path.exists("tests/test_results/mididict_dataset_train.jsonl")
+            and os.path.exists("tests/test_results/mididict_dataset_val.jsonl")
+            and os.path.exists("tests/test_results/mididict_dataset.jsonl")
+        ):
+            datasets.MidiDataset.combine_datasets_from_file(
+                "tests/test_results/mididict_dataset_train.jsonl",
+                "tests/test_results/mididict_dataset_val.jsonl",
+                "tests/test_results/mididict_dataset.jsonl",
+                output_path="tests/test_results/mididict_dataset_concat.jsonl",
+            )
+
+            self.assertAlmostEqual(
+                len(
+                    datasets.MidiDataset.load(
+                        "tests/test_results/mididict_dataset_concat.jsonl"
+                    )
+                ),
+                len(
+                    datasets.MidiDataset.load(
+                        "tests/test_results/mididict_dataset.jsonl"
+                    )
+                ),
+            )
+
 
 class TestPretrainingDataset(unittest.TestCase):
     def test_build(self):

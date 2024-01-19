@@ -256,6 +256,13 @@ def _parse_midi_dataset_args():
     argp.add_argument("save_path", help="path to save dataset")
     argp.add_argument("-r", action="store_true", help="recursively search dirs")
     argp.add_argument(
+        "-metadata",
+        nargs=2,
+        metavar=("KEY", "VALUE"),
+        action="append",
+        help="manually add metadata key-value pair when building dataset",
+    )
+    argp.add_argument(
         "--split", type=float, help="create train/val split", required=False
     )
 
@@ -267,11 +274,13 @@ def build_midi_dataset(args):
     from aria.data.datasets import MidiDataset
 
     assert args.dir, "build directory must be provided"
+    manual_metadata = {k: v for k, v in args.metadata} if args.metadata else {}
     MidiDataset.build_to_file(
         dir=args.dir,
         save_path=args.save_path,
         recur=args.r,
         overwrite=True,
+        manual_metadata=manual_metadata,
     )
 
     if args.split:

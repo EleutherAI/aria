@@ -58,23 +58,28 @@
             }
         },
         "metadata": {
-            "composer_filename": {
-                "run": true,
-                "args": {
-                    "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"]
+            "functions": {
+                "composer_filename": {
+                    "run": true,
+                    "args": {
+                        "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"]
+                    }
+                },
+                "composer_metamsg": {
+                    "run": true,
+                    "args": {
+                        "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"]
+                    }
+                },
+                "form_filename": {
+                    "run": true,
+                    "args": {
+                        "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"]
+                    }
                 }
             },
-            "composer_metamsg": {
-                "run": true,
-                "args": {
-                    "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"]
-                }
-            },
-            "form_filename": {
-                "run": true,
-                "args": {
-                    "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"]
-                }
+            "manual": {
+                "genre": ["classical", "jazz"]
             }
         }
     },
@@ -126,7 +131,8 @@
                 "step": 10
             },
             "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"],
-            "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"]
+            "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"],
+            "genre_names": ["jazz", "classical"]
         },
         "abs": {
             "ignore_instruments": {
@@ -173,7 +179,8 @@
             "max_dur_ms": 5000,
             "time_step_ms": 10,
             "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"],
-            "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"]
+            "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"],
+            "genre_names": ["jazz", "classical"]
         }
     }
 }
