@@ -299,11 +299,14 @@ def build_mididict_dataset(
         with Pool() as pool:
             results = pool.imap(_get_mididict, _paths)
             seen_hashes = defaultdict(list)
+            dupe_cnt = 0
+            failed_cnt = 0
             for idx, (success, result) in enumerate(results):
                 if idx % 50 == 0 and idx != 0:
                     logger.info(f"Processed MIDI files: {idx}/{num_paths}")
 
                 if not success:
+                    failed_cnt = +1
                     continue
                 else:
                     mid_dict, mid_hash, mid_path = result
@@ -311,12 +314,16 @@ def build_mididict_dataset(
                 if seen_hashes.get(mid_hash):
                     logger.info(
                         f"MIDI located at '{mid_path}' is a duplicate - already"
-                        f" seen at: {seen_hashes[mid_hash]}"
+                        f" seen at: {seen_hashes[mid_hash][0]}"
                     )
                     seen_hashes[mid_hash].append(str(mid_path))
+                    dupe_cnt += 1
                 else:
                     seen_hashes[mid_hash].append(str(mid_path))
                     yield mid_dict
+
+        print(f"Total duplicates: {dupe_cnt}")
+        print(f"Total processing fails (tests or otherwise): {failed_cnt}")
 
     logger = setup_logger()
     if get_start_method() == "spawn":
