@@ -367,7 +367,7 @@ def midi_to_dict(mid: mido.MidiFile):
 
     # Add callbacks according to config here
     data["metadata"] = {}
-    for process_name, process_config in metadata_config.items():
+    for process_name, process_config in metadata_config["functions"].items():
         if process_config["run"] is True:
             metadata_fn = get_metadata_fn(process_name)
             fn_args = process_config["args"]

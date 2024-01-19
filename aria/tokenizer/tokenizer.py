@@ -280,11 +280,13 @@ class AbsTokenizer(Tokenizer):
             ("prefix", "instrument", x) for x in self.instruments_wd
         ]
         self.composer_names = self.config["composer_names"]
+        self.form_names = self.config["form_names"]
+        self.genre_names = self.config["genre_names"]
         self.prefix_tokens += [
             ("prefix", "composer", x) for x in self.composer_names
         ]
-        self.form_names = self.config["form_names"]
         self.prefix_tokens += [("prefix", "form", x) for x in self.form_names]
+        self.prefix_tokens += [("prefix", "genre", x) for x in self.genre_names]
 
         # Build vocab
         self.time_tok = "<T>"
@@ -394,6 +396,10 @@ class AbsTokenizer(Tokenizer):
         form = midi_dict.metadata.get("form")
         if form and (form in self.form_names):
             prefix.insert(0, ("prefix", "form", form))
+
+        genre = midi_dict.metadata.get("genre")
+        if genre and (genre in self.genre_names):
+            prefix.insert(0, ("prefix", "genre", genre))
 
         # NOTE: Any preceding silence is removed implicitly
         tokenized_seq = []
@@ -922,11 +928,13 @@ class RelTokenizer(Tokenizer):
             ("prefix", "instrument", x) for x in self.instruments_wd
         ]
         self.composer_names = self.config["composer_names"]
+        self.form_names = self.config["form_names"]
+        self.genre_names = self.config["form_names"]
         self.prefix_tokens += [
             ("prefix", "composer", x) for x in self.composer_names
         ]
-        self.form_names = self.config["form_names"]
         self.prefix_tokens += [("prefix", "form", x) for x in self.form_names]
+        self.prefix_tokens += [("prefix", "genre", x) for x in self.genre_names]
 
         # Build vocab
         self.wait_tokens = [("wait", i) for i in self.time_step_quantizations]
@@ -1023,6 +1031,10 @@ class RelTokenizer(Tokenizer):
         form = midi_dict.metadata.get("form")
         if form and (form in self.form_names):
             prefix.insert(0, ("prefix", "form", form))
+
+        genre = midi_dict.metadata.get("genre")
+        if genre and (genre in self.genre_names):
+            prefix.insert(0, ("prefix", "genre", genre))
 
         # NOTE: Any preceding silence is removed implicitly
         tokenized_seq = []

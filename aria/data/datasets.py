@@ -142,12 +142,19 @@ class MidiDataset:
         cls,
         dir: str,
         recur: bool = False,
+        manual_metadata: dict = {},
     ):
         """Builds are returns a MidiDataset, see build_mididict_dataset."""
+        valid_metadata = load_config()["data"]["metadata"]["manual"]
+        for k, v in manual_metadata.items():
+            assert k in valid_metadata.keys(), f"{manual_metadata} is invalid"
+            assert v in valid_metadata[k], f"{manual_metadata} is invalid"
+
         return cls(
             build_mididict_dataset(
                 dir=dir,
                 recur=recur,
+                manual_metadata=manual_metadata,
             )
         )
 
@@ -158,6 +165,7 @@ class MidiDataset:
         save_path: str,
         recur: bool = False,
         overwrite: bool = False,
+        manual_metadata: dict = {},
     ):
         """Builds MidiDataset, saving the results directly to a file.
 
@@ -165,11 +173,44 @@ class MidiDataset:
         for situations where the resulting MidiDataset will not fit in the
         system's memory.
         """
+        valid_metadata = load_config()["data"]["metadata"]["manual"]
+        for k, v in manual_metadata.items():
+            assert k in valid_metadata.keys(), f"{manual_metadata} is invalid"
+            assert v in valid_metadata[k], f"{manual_metadata} is invalid"
+
         build_mididict_dataset(
             dir=dir,
             recur=recur,
             stream_save_path=save_path,
             overwrite=overwrite,
+            manual_metadata=manual_metadata,
+        )
+
+    @classmethod
+    def combine_datasets_from_file(cls, *args: str, output_path: str):
+        """Function for concatenating jsonl files, checking for duplicates"""
+        logger = setup_logger()
+        dupe_cnt = 0
+        hashes = {}
+        with jsonlines.open(output_path, mode="w") as f_out:
+            for input_path in args:
+                assert (
+                    os.path.splitext(input_path)[-1] == ".jsonl"
+                ), "invalid dataset path"
+
+                with jsonlines.open(input_path, mode="r") as f_in:
+                    for msg_dict in f_in:
+                        midi_dict = MidiDict.from_msg_dict(msg_dict)
+                        midi_dict_hash = midi_dict.calculate_hash()
+                        if hashes.get(midi_dict_hash, False) is not False:
+                            dupe_cnt += 1
+                        else:
+                            f_out.write(msg_dict)
+                            hashes[midi_dict_hash] = True
+                logger.info(f"Finished processing: {input_path}")
+
+        logger.info(
+            f"Found {len(hashes)} unique midi_dicts and {dupe_cnt} duplicates"
         )
 
 
@@ -233,6 +274,7 @@ def build_mididict_dataset(
     recur: bool = False,
     stream_save_path: str = None,
     overwrite: bool = False,
+    manual_metadata: dict = {},
 ):
     """Builds dataset of MidiDicts.
 
@@ -300,6 +342,12 @@ def build_mididict_dataset(
         # Not streaming -> return entries directly
         entries = []
         for entry in _get_mididicts_mp(_paths=paths):
+            # manual_metadata should already be validated
+            for k, v in manual_metadata.items():
+                # Only add if it doesn't exist, stops overwriting
+                if entry.metadata.get(k) is None:
+                    entry.metadata[k] = v
+
             cnt += 1
             entries.append(entry)
 
@@ -311,6 +359,12 @@ def build_mididict_dataset(
 
         with jsonlines.open(stream_save_path, mode="w") as writer:
             for entry in _get_mididicts_mp(paths):
+                # manual_metadata should already be validated
+                for k, v in manual_metadata.items():
+                    # Only add if it doesn't exist, stops overwriting
+                    if entry.metadata.get(k) is None:
+                        entry.metadata[k] = v
+
                 cnt += 1
                 writer.write(entry.get_msg_dict())
 
