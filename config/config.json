@@ -4,7 +4,7 @@
             "max_programs":{
                 "run": true,
                 "args": {
-                    "max": 7
+                    "max": 12
                 }
             },
             "max_instruments":{
@@ -24,7 +24,7 @@
                 "run": true,
                 "args": {
                     "min_per_second": 0.5,
-                    "max_per_second": 15
+                    "max_per_second": 16
                 }
             },
             "min_length":{

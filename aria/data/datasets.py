@@ -190,6 +190,10 @@ class MidiDataset:
     def combine_datasets_from_file(cls, *args: str, output_path: str):
         """Function for concatenating jsonl files, checking for duplicates"""
         logger = setup_logger()
+        
+        for input_path in args:
+            assert os.path.isfile(input_path), f"{input_path} doesn't exist"
+
         dupe_cnt = 0
         hashes = {}
         with jsonlines.open(output_path, mode="w") as f_out:
@@ -208,6 +212,10 @@ class MidiDataset:
                             f_out.write(msg_dict)
                             hashes[midi_dict_hash] = True
                 logger.info(f"Finished processing: {input_path}")
+                logger.info(
+                    f"{len(hashes)} unique midi_dicts and {dupe_cnt} duplicates so far"
+                )
+
 
         logger.info(
             f"Found {len(hashes)} unique midi_dicts and {dupe_cnt} duplicates"
@@ -530,8 +538,12 @@ def _get_seqs(_entry: MidiDict | dict, _tokenizer: Tokenizer):
 
     if isinstance(_entry, str):
         _midi_dict = MidiDict.from_msg_dict(json.loads(_entry.rstrip()))
-    else:
+    elif isinstance(_entry, dict):
+        _midi_dict = MidiDict.from_msg_dict(_entry)
+    elif isinstance(_entry, MidiDict):
         _midi_dict = _entry
+    else:
+        raise Exception
 
     try:
         _tokenized_seq = _tokenizer.tokenize(_midi_dict)
@@ -591,6 +603,19 @@ def get_seqs(
             if not any(proc.is_alive() for proc in workers):
                 break
 
+def reservoir(_iterable: Iterable, k: int):
+    _reservoir = []
+    for entry in _iterable:
+        if entry is not None:
+            _reservoir.append(entry)
+
+        if len(_reservoir) >= k:
+            random.shuffle(_reservoir)
+            yield from _reservoir
+            _reservoir = []
+    
+    if _reservoir != []:
+        yield from _reservoir
 
 class PretrainingDataset(TrainingDataset):
     def __init__(self, dir_path: str, tokenizer: Tokenizer):
@@ -702,13 +727,18 @@ class PretrainingDataset(TrainingDataset):
                 )
 
                 buffer = []
-                # TODO: Profile why mp takes a while to spit up
-                for entry in get_seqs(tokenizer, _midi_dataset):
+                _idx = 0
+                for entry in reservoir(get_seqs(tokenizer, _midi_dataset), 5):
                     if entry is not None:
                         buffer += entry
                     while len(buffer) >= max_seq_len:
                         writer.write(buffer[:max_seq_len])
                         buffer = buffer[max_seq_len:]
+                        
+                    _idx += 1
+                    if _idx % 250 == 0:
+                        logger.info(f"Finished processing {_idx}")
+
                 buffer += [tokenizer.pad_tok] * (max_seq_len - len(buffer))
 
         logger = setup_logger()
@@ -734,32 +764,27 @@ class PretrainingDataset(TrainingDataset):
         if not os.path.exists(save_dir):
             os.mkdir(save_dir)
 
-        # TODO: This is very slow right now
-        if not midi_dataset:
-            midi_dataset = MidiDataset.load(midi_dataset_path)
-        else:
+        if not midi_dataset and not midi_dataset_path:
             Exception("Must provide either midi_dataset or midi_dataset_path")
+        if midi_dataset and midi_dataset_path:
+            Exception("Can't provide both midi_dataset and midi_dataset_path")
 
         logger.info(
             f"Building PretrainingDataset with config: "
             f"max_seq_len={max_seq_len}, "
             f"tokenizer_name={tokenizer.name}"
         )
-        _num_proc = os.cpu_count()
-        if 2 * _num_proc > len(midi_dataset):
-            logger.warning(
-                "Number of processes is close to the number of MidiDicts "
-                "in the dataset. This can result in shuffling not working "
-                "as intended when building different epochs"
-            )
         for idx in range(num_epochs):
             logger.info(f"Building epoch {idx}/{num_epochs - 1}...")
+            
+            # Reload the dataset on each iter
+            if midi_dataset_path:
+                midi_dataset = jsonlines.open(midi_dataset_path, "r")
+
             _build_epoch(
                 _save_path=os.path.join(save_dir, f"epoch{idx}.jsonl"),
                 _midi_dataset=midi_dataset,
             )
-            # TODO: This is very slow for large datasets
-            midi_dataset.shuffle()
 
         logger.info(
             f"Finished building, saved PretrainingDataset to {save_dir}"
