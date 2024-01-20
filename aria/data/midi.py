@@ -177,6 +177,7 @@ class MidiDict:
         msg_dict_to_hash = self.get_msg_dict()
         # Remove meta when calculating hash
         msg_dict_to_hash.pop("meta_msgs")
+        msg_dict_to_hash.pop("ticks_per_beat")
         msg_dict_to_hash.pop("metadata")
 
         return hashlib.md5(
