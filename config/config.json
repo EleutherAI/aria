@@ -79,7 +79,8 @@
                 }
             },
             "manual": {
-                "genre": ["classical", "jazz"]
+                "genre": ["classical", "jazz"],
+                "form": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"]
             }
         }
     },
