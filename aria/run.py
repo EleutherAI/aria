@@ -157,9 +157,12 @@ def sample(args):
 
     manual_metadata = {k: v for k, v in args.metadata} if args.metadata else {}
     valid_metadata = load_config()["data"]["metadata"]["manual"]
-    for k, v in manual_metadata.items():
+    for k, v in manual_metadata.copy().items():
         assert k in valid_metadata.keys(), f"{manual_metadata} is invalid"
-        assert v in valid_metadata[k], f"{manual_metadata} is invalid"
+        if v not in valid_metadata[k]:
+            print(f"Ignoring invalid manual metadata: {k}")
+            print(f"Please choose from {valid_metadata[k]}")
+            del manual_metadata[k]
 
     num_variations = args.var
     truncate_len = args.trunc
