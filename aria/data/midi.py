@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+import os
 import logging
 import pathlib
 import mido
@@ -558,16 +559,18 @@ def get_duration_ms(
     return duration
 
 
-def _match_word(text: str, composer_name: str):
+def _match_word(text: str, word: str):
     # If name="bach" this pattern will match "bach", "Bach" or "BACH" if
     # it is either proceeded or preceded by a "_" or " ".
+    word = word.replace("é", "e")
+    text = text.replace("é", "e")
     pattern = (
         r"(^|[\s_])("
-        + composer_name.lower()
+        + word.lower()
         + r"|"
-        + composer_name.upper()
+        + word.upper()
         + r"|"
-        + composer_name.capitalize()
+        + word.capitalize()
         + r")([\s_]|$)"
     )
 
@@ -626,12 +629,49 @@ def meta_composer_metamsg(
         return {}
 
 
+# This should only be used when processing MAESTRO, it requires maestro.json
+# to be in the working directory. This json files contains MAESTRO metadata in
+# the form file_name: {"composer": str, "title": str}
+def meta_maestro_json(
+    mid: mido.MidiFile, msg_data: dict, composer_names: list, form_names: list
+):
+    if os.path.isfile("maestro.json") is False:
+        return {}
+
+    file_name = pathlib.Path(mid.filename).name
+    with open("maestro.json", "r") as f:
+        metadata = json.load(f).get(file_name, None)
+    if metadata == None:
+        return {}
+
+    matched_forms = set()
+    for form in form_names:
+        if _match_word(metadata["title"], form):
+            matched_forms.add(form)
+
+    matched_composers = set()
+    for composer in composer_names:
+        if _match_word(metadata["composer"], composer):
+            matched_composers.add(composer)
+
+    res = {}
+    matched_composers = list(matched_composers)
+    matched_forms = list(matched_forms)
+    if len(matched_forms) == 1:
+        res["form"] = matched_forms[0]
+    if len(matched_composers) == 1:
+        res["composer"] = matched_composers[0]
+
+    return res
+
+
 def get_metadata_fn(metadata_proc_name: str):
     # Add additional test_names to this inventory
     name_to_fn = {
         "composer_filename": meta_composer_filename,
         "composer_metamsg": meta_composer_metamsg,
         "form_filename": meta_form_filename,
+        "maestro_csv": meta_maestro_csv,
     }
 
     fn = name_to_fn.get(metadata_proc_name, None)
