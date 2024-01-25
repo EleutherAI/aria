@@ -671,7 +671,7 @@ def get_metadata_fn(metadata_proc_name: str):
         "composer_filename": meta_composer_filename,
         "composer_metamsg": meta_composer_metamsg,
         "form_filename": meta_form_filename,
-        "maestro_csv": meta_maestro_csv,
+        "maestro_csv": meta_maestro_json,
     }
 
     fn = name_to_fn.get(metadata_proc_name, None)
