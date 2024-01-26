@@ -24,6 +24,7 @@ from aria.data.datasets import (
     PretrainingDataset,
     FinetuningDataset,
 )
+from aria.utils import _load_weight
 
 
 # ----- USAGE -----
@@ -785,7 +786,7 @@ def train(
     logger.info(f"Loaded model with config: {load_model_config(model_name)}")
     if mode == "finetune":
         try:
-            model.load_state_dict(torch.load(finetune_cp_path))
+            model.load_state_dict(_load_weight(finetune_cp_path))
         except Exception as e:
             raise Exception(
                 f"Failed to load checkpoint: {e}\n"

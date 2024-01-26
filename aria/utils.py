@@ -59,3 +59,16 @@ def midi_to_audio(mid_path: str, soundfont_path: str | None = None):
         print(e)
 
     print(f"Saved files: \n{wav_path}\n{mp3_path}")
+
+
+def _load_weight(ckpt_path: str, device="cpu"):
+    if ckpt_path.endswith("safetensors"):
+        try:
+            from safetensors.torch import load_file
+        except ImportError as e:
+            raise ImportError(
+                f"Please install safetensors in order to read from the checkpoint: {ckpt_path}"
+            ) from e
+        return load_file(ckpt_path, device=device)
+    else:
+        return torch.load(ckpt_path, map_location=device)
