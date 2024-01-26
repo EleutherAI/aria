@@ -25,14 +25,28 @@ def _parse_sample_args():
         help="change cfg value",
         type=float,
         required=False,
-        default=1.4,
+        default=1.05,
     )
     argp.add_argument(
         "-temp",
         help="change temp value",
         type=float,
         required=False,
-        default=0.85,
+        default=0.95,
+    )
+    argp.add_argument(
+        "-top_p",
+        help="change top_p value",
+        type=float,
+        required=False,
+        default=0.95,
+    )
+    argp.add_argument(
+        "-metadata",
+        nargs=2,
+        metavar=("KEY", "VALUE"),
+        action="append",
+        help="manually add metadata key-value pair when sampling",
     )
     argp.add_argument(
         "-var",
@@ -119,7 +133,7 @@ def sample(args):
     import torch
     from torch.cuda import is_available as cuda_is_available
     from aria.model import TransformerLM, ModelConfig
-    from aria.config import load_model_config
+    from aria.config import load_model_config, load_config
     from aria.tokenizer import RelTokenizer, AbsTokenizer
     from aria.sample import greedy_sample
     from aria.data.midi import MidiDict
@@ -149,6 +163,15 @@ def sample(args):
     model_name = _get_model_name(
         args.m, model_state
     )  # infer model name if not provided
+
+    manual_metadata = {k: v for k, v in args.metadata} if args.metadata else {}
+    valid_metadata = load_config()["data"]["metadata"]["manual"]
+    for k, v in manual_metadata.copy().items():
+        assert k in valid_metadata.keys(), f"{manual_metadata} is invalid"
+        if v not in valid_metadata[k]:
+            print(f"Ignoring invalid manual metadata: {k}")
+            print(f"Please choose from {valid_metadata[k]}")
+            del manual_metadata[k]
 
     num_variations = args.var
     truncate_len = args.trunc
@@ -227,11 +250,18 @@ def sample(args):
     assert args.l > 0, "Generation length must be positive."
     max_new_tokens = args.l
 
-    # Load and format prompts
+    # Load and format prompts and metadata
     midi_dict = MidiDict.from_midi(mid_path=midi_path)
+    for k, v in manual_metadata.items():
+        midi_dict.metadata[k] = v
+
     print(f"Extracted metadata: {midi_dict.metadata}")
+    print(
+        f"Instruments: {set([MidiDict.program_to_instrument[msg['data']] for msg in midi_dict.instrument_msgs])}"
+    )  # Not working with al.mid ?
     prompt_seq = tokenizer.tokenize(midi_dict=midi_dict)
     prompt_seq = prompt_seq[:truncate_len]
+    print(prompt_seq[: prompt_seq.index(tokenizer.bos_tok)])
     prompts = [prompt_seq for _ in range(num_variations)]
 
     # Sample
@@ -244,6 +274,7 @@ def sample(args):
         max_new_tokens=max_new_tokens,
         cfg_gamma=args.cfg,
         temperature=args.temp,
+        top_p=args.top_p,
     )
 
     if os.path.isdir("samples") is False:

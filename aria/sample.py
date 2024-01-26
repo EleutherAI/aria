@@ -107,8 +107,8 @@ def greedy_sample(
     neg_prompt_len: int | None = None,
     alpha: float | None = 0.4,
     force_end=False,
-    temperature: float = 0.85,
-    top_p: float = 0.9,
+    temperature: float = 0.95,
+    top_p: float = 0.95,
 ):
     """Performs greedy (top_p) autoregressive sampling on a batch of prompts.
 

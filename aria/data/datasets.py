@@ -84,11 +84,30 @@ class MidiDataset:
     @classmethod
     def load(cls, load_path: str):
         """Loads dataset from JSON file."""
-        # Iterable support removed - add this back in when needed
         with jsonlines.open(load_path) as reader:
             _entries = [MidiDict.from_msg_dict(_) for _ in reader]
 
         return cls(_entries)
+
+    @classmethod
+    def get_generator(cls, load_path: str):
+        """Given a MidiDataset jsonl file, returns a MidiDict generator.
+
+        This generator must be reloaded each time you want to iterate over the
+        file. Interally it iterating over the jsonl file located at load_path.
+        """
+
+        def generator():
+            with jsonlines.open(load_path, "r") as midi_dataset:
+                for entry in midi_dataset:
+                    try:
+                        midi_dict = MidiDict.from_msg_dict(entry)
+                    except Exception as e:
+                        logging.info(f"Failed to load MidiDict from file: {e}")
+                    else:
+                        yield midi_dict
+
+        return generator()
 
     @classmethod
     def split_from_file(
@@ -329,8 +348,10 @@ def build_mididict_dataset(
                     seen_hashes[mid_hash].append(str(mid_path))
                     yield mid_dict
 
-        print(f"Total duplicates: {dupe_cnt}")
-        print(f"Total processing fails (tests or otherwise): {failed_cnt}")
+        logger.info(f"Total duplicates: {dupe_cnt}")
+        logger.info(
+            f"Total processing fails (tests or otherwise): {failed_cnt}"
+        )
 
     logger = setup_logger()
     if get_start_method() == "spawn":
@@ -588,6 +609,13 @@ def get_seqs(
     for w in workers:
         w.start()
 
+    # Can't pickle geneator object when start method is spawn
+    if get_start_method() == "spawn":
+        logging.info(
+            "Converting generator to list due to multiprocessing start method"
+        )
+        midi_dict_iter = [_ for _ in midi_dict_iter]
+
     enqueue = Process(
         target=functools.partial(_enqueue, _num_proc=num_proc),
         args=(iq, midi_dict_iter),
@@ -661,7 +689,12 @@ class PretrainingDataset(TrainingDataset):
         )
         self.index = self._build_index()
         self.curr_epoch = idx
-        self.logger.info(f"Initiated epoch {idx} of PretrainingDataset")
+        try:
+            rank = torch.distributed.get_rank()
+        except Exception:
+            rank = 0
+
+        self.logger.info(f"{rank}: Initiated epoch {idx} of PretrainingDataset")
 
     def _get_epoch_files(self):
         """Validates and returns a sorted list of epoch dataset files."""
@@ -780,7 +813,7 @@ class PretrainingDataset(TrainingDataset):
 
             # Reload the dataset on each iter
             if midi_dataset_path:
-                midi_dataset = jsonlines.open(midi_dataset_path, "r")
+                midi_dataset = MidiDataset.get_generator(midi_dataset_path)
 
             _build_epoch(
                 _save_path=os.path.join(save_dir, f"epoch{idx}.jsonl"),
@@ -890,10 +923,15 @@ class FinetuningDataset(TrainingDataset):
                     f"stride_len={stride_len}"
                 )
 
+                _idx = 0
                 for entry in get_seqs(tokenizer, _midi_dataset):
                     if entry:
                         for _entry in _truncate_and_stride(entry):
                             writer.write(_entry)
+
+                    _idx += 1
+                    if _idx % 250 == 0:
+                        logger.info(f"Finished processing {_idx}")
 
         logger = setup_logger()
         assert max_seq_len > 0, "max_seq_len must be greater than 0"
@@ -902,6 +940,11 @@ class FinetuningDataset(TrainingDataset):
                 'The current multiprocessing start method is "spawn", this '
                 "will slow down dataset building"
             )
+
+        if not midi_dataset and not midi_dataset_path:
+            Exception("Must provide either midi_dataset or midi_dataset_path")
+        if midi_dataset and midi_dataset_path:
+            Exception("Can't provide both midi_dataset and midi_dataset_path")
 
         if os.path.isfile(save_path):
             print(
@@ -914,8 +957,8 @@ class FinetuningDataset(TrainingDataset):
             else:
                 os.remove(save_path)
 
-        if not midi_dataset:
-            midi_dataset = MidiDataset.load(midi_dataset_path)
+        if midi_dataset_path:
+            midi_dataset = MidiDataset.get_generator(midi_dataset_path)
 
         _build(_midi_dataset=midi_dataset)
 

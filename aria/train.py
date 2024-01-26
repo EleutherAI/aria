@@ -8,6 +8,7 @@ import accelerate
 
 from torch import nn as nn
 from torch.utils.data import DataLoader
+
 from torch.utils.flop_counter import FlopCounterMode
 from triton.testing import do_bench
 from accelerate.logging import get_logger
@@ -129,7 +130,7 @@ def setup_project_dir(project_dir: str | None):
         # Run checks on project directory
         if os.path.isdir(project_dir):
             assert (
-                len(os.listdir()) == 0
+                len(os.listdir(project_dir)) == 0
             ), "Provided project directory is not empty"
             project_dir_abs = os.path.abspath(project_dir)
         elif os.path.isfile(project_dir):
@@ -532,7 +533,7 @@ def _train(
         )
         avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=resume_epoch)
         if accelerator.is_main_process:
-            epoch_writer.writerow([0, avg_train_loss, avg_val_loss])
+            epoch_writer.writerow([resume_epoch, avg_train_loss, avg_val_loss])
             epoch_csv.flush()
             make_checkpoint(
                 _accelerator=accelerator, _epoch=start_epoch, _step=0
