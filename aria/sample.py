@@ -1,4 +1,5 @@
 """Contains generation/sampling code"""
+
 # This file contains code from https://github.com/facebookresearch/llama which
 # is available under the following license:
 

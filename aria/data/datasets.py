@@ -190,7 +190,7 @@ class MidiDataset:
     def combine_datasets_from_file(cls, *args: str, output_path: str):
         """Function for concatenating jsonl files, checking for duplicates"""
         logger = setup_logger()
-        
+
         for input_path in args:
             assert os.path.isfile(input_path), f"{input_path} doesn't exist"
 
@@ -215,7 +215,6 @@ class MidiDataset:
                 logger.info(
                     f"{len(hashes)} unique midi_dicts and {dupe_cnt} duplicates so far"
                 )
-
 
         logger.info(
             f"Found {len(hashes)} unique midi_dicts and {dupe_cnt} duplicates"
@@ -603,6 +602,7 @@ def get_seqs(
             if not any(proc.is_alive() for proc in workers):
                 break
 
+
 def reservoir(_iterable: Iterable, k: int):
     _reservoir = []
     for entry in _iterable:
@@ -613,9 +613,10 @@ def reservoir(_iterable: Iterable, k: int):
             random.shuffle(_reservoir)
             yield from _reservoir
             _reservoir = []
-    
+
     if _reservoir != []:
         yield from _reservoir
+
 
 class PretrainingDataset(TrainingDataset):
     def __init__(self, dir_path: str, tokenizer: Tokenizer):
@@ -734,7 +735,7 @@ class PretrainingDataset(TrainingDataset):
                     while len(buffer) >= max_seq_len:
                         writer.write(buffer[:max_seq_len])
                         buffer = buffer[max_seq_len:]
-                        
+
                     _idx += 1
                     if _idx % 250 == 0:
                         logger.info(f"Finished processing {_idx}")
@@ -776,7 +777,7 @@ class PretrainingDataset(TrainingDataset):
         )
         for idx in range(num_epochs):
             logger.info(f"Building epoch {idx}/{num_epochs - 1}...")
-            
+
             # Reload the dataset on each iter
             if midi_dataset_path:
                 midi_dataset = jsonlines.open(midi_dataset_path, "r")
