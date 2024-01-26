@@ -668,12 +668,16 @@ def resume_train(
     else:
         raise Exception
 
-    assert (
-        train_dataloader.dataset.max_seq_len == model_config.max_seq_len
-    ), "max_seq_len differs between datasets and model config"
-    assert (
-        val_dataloader.dataset.max_seq_len == model_config.max_seq_len
-    ), "max_seq_len differs between datasets and model config"
+    if (
+        model_config.yarn_config is None
+        or model_config.yarn_config.scale <= 1.0
+    ):
+        assert (
+            train_dataloader.dataset.max_seq_len == model_config.max_seq_len
+        ), "max_seq_len differs between datasets and model config"
+        assert (
+            val_dataloader.dataset.max_seq_len == model_config.max_seq_len
+        ), "max_seq_len differs between datasets and model config"
 
     (
         model,
@@ -822,12 +826,16 @@ def train(
     else:
         raise Exception
 
-    assert (
-        train_dataloader.dataset.max_seq_len == model_config.max_seq_len
-    ), "max_seq_len differs between datasets and model config"
-    assert (
-        val_dataloader.dataset.max_seq_len == model_config.max_seq_len
-    ), "max_seq_len differs between datasets and model config"
+    if (
+        model_config.yarn_config is None
+        or model_config.yarn_config.scale <= 1.0
+    ):
+        assert (
+            train_dataloader.dataset.max_seq_len == model_config.max_seq_len
+        ), "max_seq_len differs between datasets and model config"
+        assert (
+            val_dataloader.dataset.max_seq_len == model_config.max_seq_len
+        ), "max_seq_len differs between datasets and model config"
 
     (
         model,
