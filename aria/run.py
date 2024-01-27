@@ -150,7 +150,7 @@ def sample(args):
     )
 
     ckpt_path = _get_ckpt_path(args.c)  # let user input path if not provided
-    model_state = _load_weight(ckpt_path, map_location=device)
+    model_state = _load_weight(ckpt_path, device=device.type)
     model_name = _get_model_name(
         args.m, model_state
     )  # infer model name if not provided
