@@ -71,4 +71,6 @@ def _load_weight(ckpt_path: str, device="cpu"):
             ) from e
         return load_file(ckpt_path, device=device)
     else:
+        import torch
+
         return torch.load(ckpt_path, map_location=device)
