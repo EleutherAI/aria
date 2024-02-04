@@ -9,7 +9,6 @@ from aria.tokenizer import AbsTokenizer
 
 
 class GPTNeoXAria(TransformerLM):
-
     """A wrapper for GPTNeoXForCausalLM."""
 
     def __init__(self, model_config: ModelConfig, use_cache: bool = False):
@@ -39,19 +38,26 @@ class GPTNeoXAria(TransformerLM):
             self.model.gradient_checkpointing_enable()
 
     def forward(
-            self,
-            src: torch.Tensor,
-            attn_mask: Optional[torch.Tensor] = None,
-            past_kv: Optional[list[KVCache]] = None,
-        ):
-            if past_kv is None:
-                output = self.model(src, attention_mask=attn_mask)
-            else:
-                bs = src.size(0)
-                hf_past_kv = tuple((kv.k_cache[:bs, :kv.next_pos], kv.v_cache[:bs, :kv.next_pos]) for i, kv in enumerate(past_kv))
-                output: CausalLMOutputWithPast = self.model(src, attention_mask=attn_mask, past_key_values=hf_past_kv)
-                if output.past_key_values is not None:
-                    for i, kv in enumerate(past_kv):
-                        kv.update(output.past_key_values[i][0][:, kv.next_pos:],
-                                  output.past_key_values[i][1][:, kv.next_pos:])
-            return output.logits
+        self,
+        src: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        past_kv: Optional[list[KVCache]] = None,
+    ):
+        if past_kv is None:
+            output = self.model(src, attention_mask=attn_mask)
+        else:
+            bs = src.size(0)
+            hf_past_kv = tuple(
+                (kv.k_cache[:bs, : kv.next_pos], kv.v_cache[:bs, : kv.next_pos])
+                for i, kv in enumerate(past_kv)
+            )
+            output: CausalLMOutputWithPast = self.model(
+                src, attention_mask=attn_mask, past_key_values=hf_past_kv
+            )
+            if output.past_key_values is not None:
+                for i, kv in enumerate(past_kv):
+                    kv.update(
+                        output.past_key_values[i][0][:, kv.next_pos :],
+                        output.past_key_values[i][1][:, kv.next_pos :],
+                    )
+        return output.logits

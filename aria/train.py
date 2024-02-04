@@ -391,7 +391,12 @@ def _train(
 
     # This is all slightly messy as train_loop and val_loop make use of the
     # variables in the wider scope. Perhaps refactor this at some point.
-    def train_loop(dataloader: DataLoader, _epoch: int, _resume_step: int = 0, grad_acc: int = 1):
+    def train_loop(
+        dataloader: DataLoader,
+        _epoch: int,
+        _resume_step: int = 0,
+        grad_acc: int = 1,
+    ):
         avg_train_loss = 0
         trailing_loss = 0
         loss_buffer = []
@@ -404,7 +409,10 @@ def _train(
             lr_for_print = "{:.2e}".format(optimizer.param_groups[-1]["lr"])
 
         model.train()
-        pbar = tqdm(total=len(dataloader) // grad_acc + _resume_step, initial=_resume_step)
+        pbar = tqdm(
+            total=len(dataloader) // grad_acc + _resume_step,
+            initial=_resume_step,
+        )
         for __step, batch in enumerate(dataloader):
             step = __step + _resume_step + 1
             src, tgt = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
@@ -420,7 +428,7 @@ def _train(
             avg_train_loss = rolling_average(
                 avg_train_loss, loss.item(), __step
             )
-            
+
             if step % grad_acc == 0:
                 # Logging
                 pbar.update(1)
@@ -543,7 +551,9 @@ def _train(
 
     for epoch in range(start_epoch, epochs + start_epoch):
         train_dataloader.dataset.init_epoch(epoch)
-        avg_train_loss = train_loop(dataloader=train_dataloader, _epoch=epoch, grad_acc=grad_acc)
+        avg_train_loss = train_loop(
+            dataloader=train_dataloader, _epoch=epoch, grad_acc=grad_acc
+        )
         avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=epoch)
         if accelerator.is_main_process:
             epoch_writer.writerow([epoch, avg_train_loss, avg_val_loss])
@@ -935,7 +945,9 @@ def parse_resume_args():
     argp.add_argument(
         "-use_neox", help="use neox model", action="store_true", default=False
     )
-    argp.add_argument("-grad_acc", help="gradient accumulation steps.", type=int, default=1)
+    argp.add_argument(
+        "-grad_acc", help="gradient accumulation steps.", type=int, default=1
+    )
 
     return argp.parse_args(sys.argv[2:])
 
@@ -955,7 +967,9 @@ def parse_pretrain_args():
     argp.add_argument(
         "-use_neox", help="use neox model", action="store_true", default=False
     )
-    argp.add_argument("-grad_acc", help="gradient accumulation steps.", type=int, default=1)
+    argp.add_argument(
+        "-grad_acc", help="gradient accumulation steps.", type=int, default=1
+    )
 
     return argp.parse_args(sys.argv[2:])
 
@@ -976,7 +990,9 @@ def parse_finetune_args():
     argp.add_argument(
         "-use_neox", help="use neox model", action="store_true", default=False
     )
-    argp.add_argument("-grad_acc", help="gradient accumulation steps.", type=int, default=1)
+    argp.add_argument(
+        "-grad_acc", help="gradient accumulation steps.", type=int, default=1
+    )
 
     return argp.parse_args(sys.argv[2:])
 
