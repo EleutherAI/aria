@@ -348,6 +348,7 @@ def _train(
     resume_step: int | None = None,
     resume_epoch: int | None = None,
     project_dir: str | None = None,
+    grad_acc: int = 1,
 ):
     def profile_flops(dataloader: DataLoader):
         def _bench():
@@ -390,7 +391,7 @@ def _train(
 
     # This is all slightly messy as train_loop and val_loop make use of the
     # variables in the wider scope. Perhaps refactor this at some point.
-    def train_loop(dataloader: DataLoader, _epoch: int, _resume_step: int = 0):
+    def train_loop(dataloader: DataLoader, _epoch: int, _resume_step: int = 0, grad_acc: int = 1):
         avg_train_loss = 0
         trailing_loss = 0
         loss_buffer = []
@@ -403,14 +404,8 @@ def _train(
             lr_for_print = "{:.2e}".format(optimizer.param_groups[-1]["lr"])
 
         model.train()
-        for __step, batch in (
-            pbar := tqdm(
-                enumerate(dataloader),
-                total=len(dataloader) + _resume_step,
-                initial=_resume_step,
-                leave=False,
-            )
-        ):
+        pbar = tqdm(total=len(dataloader) // grad_acc + _resume_step, initial=_resume_step)
+        for __step, batch in enumerate(dataloader):
             step = __step + _resume_step + 1
             src, tgt = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
             logits = model(src)  # (b_sz, s_len, v_sz)
@@ -425,30 +420,35 @@ def _train(
             avg_train_loss = rolling_average(
                 avg_train_loss, loss.item(), __step
             )
-
-            # Logging
-            logger.debug(
-                f"EPOCH {_epoch} STEP {step}: "
-                f"lr={lr_for_print}, "
-                f"loss={round(loss.item(), 4)}, "
-                f"trailing_loss={round(trailing_loss, 4)}, "
-                f"average_loss={round(avg_train_loss, 4)}"
-            )
-            if accelerator.is_main_process:
-                loss_writer.writerow([_epoch, step, loss.item()])
-            pbar.set_postfix_str(
-                f"lr={lr_for_print}, "
-                f"loss={round(loss.item(), 4)}, "
-                f"trailing={round(trailing_loss, 4)}"
-            )
+            
+            if step % grad_acc == 0:
+                # Logging
+                pbar.update(1)
+                logger.debug(
+                    f"EPOCH {_epoch} STEP {step}: "
+                    f"lr={lr_for_print}, "
+                    f"loss={round(loss.item(), 4)}, "
+                    f"trailing_loss={round(trailing_loss, 4)}, "
+                    f"average_loss={round(avg_train_loss, 4)}"
+                )
+                if accelerator.is_main_process:
+                    loss_writer.writerow([_epoch, step, loss.item()])
+                pbar.set_postfix_str(
+                    f"lr={lr_for_print}, "
+                    f"loss={round(loss.item(), 4)}, "
+                    f"trailing={round(trailing_loss, 4)}"
+                )
 
             # Backwards step
             accelerator.backward(loss)
-            optimizer.step()
-            optimizer.zero_grad()
-            if scheduler:
-                scheduler.step()
-                lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
+
+            if (step + 1) % grad_acc == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+
+                if scheduler:
+                    scheduler.step()
+                    lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
 
             if steps_per_checkpoint:
                 if step % steps_per_checkpoint == 0:
@@ -531,6 +531,7 @@ def _train(
             dataloader=skipped_dataloader,
             _epoch=resume_epoch,
             _resume_step=resume_step,
+            grad_acc=grad_acc,
         )
         avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=resume_epoch)
         if accelerator.is_main_process:
@@ -542,7 +543,7 @@ def _train(
 
     for epoch in range(start_epoch, epochs + start_epoch):
         train_dataloader.dataset.init_epoch(epoch)
-        avg_train_loss = train_loop(dataloader=train_dataloader, _epoch=epoch)
+        avg_train_loss = train_loop(dataloader=train_dataloader, _epoch=epoch, grad_acc=grad_acc)
         avg_val_loss = val_loop(dataloader=val_dataloader, _epoch=epoch)
         if accelerator.is_main_process:
             epoch_writer.writerow([epoch, avg_train_loss, avg_val_loss])
@@ -572,6 +573,7 @@ def resume_train(
     steps_per_checkpoint: int | None = None,
     project_dir: str = None,
     use_neox: bool = False,
+    grad_acc: int = 1,
 ):
     # Validate inputs
     assert mode in {"pretrain", "finetune"}, "Invalid mode"
@@ -722,6 +724,7 @@ def resume_train(
         resume_step=resume_step,
         resume_epoch=resume_epoch,
         project_dir=project_dir,
+        grad_acc=grad_acc,
     )
 
 
@@ -737,6 +740,7 @@ def train(
     steps_per_checkpoint: int | None = None,
     project_dir: str = None,
     use_neox: bool = False,
+    grad_acc: int = 1,
 ):
     # Validate inputs
     assert mode in {"pretrain", "finetune"}, "Invalid mode"
@@ -874,6 +878,7 @@ def train(
         scheduler=scheduler,
         steps_per_checkpoint=steps_per_checkpoint,
         project_dir=project_dir,
+        grad_acc=1,
     )
 
 
@@ -930,6 +935,7 @@ def parse_resume_args():
     argp.add_argument(
         "-use_neox", help="use neox model", action="store_true", default=False
     )
+    argp.add_argument("-grad_acc", help="gradient accumulation steps.", type=int, default=1)
 
     return argp.parse_args(sys.argv[2:])
 
@@ -949,6 +955,7 @@ def parse_pretrain_args():
     argp.add_argument(
         "-use_neox", help="use neox model", action="store_true", default=False
     )
+    argp.add_argument("-grad_acc", help="gradient accumulation steps.", type=int, default=1)
 
     return argp.parse_args(sys.argv[2:])
 
@@ -969,6 +976,7 @@ def parse_finetune_args():
     argp.add_argument(
         "-use_neox", help="use neox model", action="store_true", default=False
     )
+    argp.add_argument("-grad_acc", help="gradient accumulation steps.", type=int, default=1)
 
     return argp.parse_args(sys.argv[2:])
 
@@ -1001,6 +1009,7 @@ if __name__ == "__main__":
             steps_per_checkpoint=pretrain_args.spc,
             project_dir=pretrain_args.pdir,
             use_neox=pretrain_args.use_neox,
+            grad_acc=pretrain_args.grad_acc,
         )
     elif args.mode == "finetune":
         finetune_args = parse_finetune_args()
@@ -1016,6 +1025,7 @@ if __name__ == "__main__":
             steps_per_checkpoint=finetune_args.spc,
             project_dir=finetune_args.pdir,
             use_neox=finetune_args.use_neox,
+            grad_acc=finetune_args.grad_acc,
         )
     elif args.mode == "resume":
         resume_args = parse_resume_args()
@@ -1033,6 +1043,7 @@ if __name__ == "__main__":
             steps_per_checkpoint=resume_args.spc,
             project_dir=resume_args.pdir,
             use_neox=resume_args.use_neox,
+            grad_acc=resume_args.grad_acc,
         )
     else:
         print("Unrecognized command")
