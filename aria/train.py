@@ -349,6 +349,7 @@ def _train(
     resume_epoch: int | None = None,
     project_dir: str | None = None,
     grad_acc: int = 1,
+    log_every: int = 1,
 ):
     def profile_flops(dataloader: DataLoader):
         def _bench():
@@ -412,6 +413,7 @@ def _train(
         pbar = tqdm(
             total=len(dataloader) // grad_acc + _resume_step,
             initial=_resume_step,
+            disable=not accelerator.is_main_process,
         )
         for __step, batch in enumerate(dataloader):
             step = __step + _resume_step + 1
@@ -420,18 +422,17 @@ def _train(
             logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
             loss = loss_fn(logits, tgt)
 
-            # Calculate statistics
-            loss_buffer.append(loss.item())
-            if len(loss_buffer) > TRAILING_LOSS_STEPS:
-                loss_buffer.pop(0)
-            trailing_loss = sum(loss_buffer) / len(loss_buffer)
-            avg_train_loss = rolling_average(
-                avg_train_loss, loss.item(), __step
-            )
 
-            if step % grad_acc == 0:
+            if step % grad_acc == 0 and step // grad_acc % log_every == 0:
+                # Calculate statistics
+                loss_buffer.append(loss.item())
+                if len(loss_buffer) > TRAILING_LOSS_STEPS:
+                    loss_buffer.pop(0)
+                trailing_loss = sum(loss_buffer) / len(loss_buffer)
+                avg_train_loss = rolling_average(
+                    avg_train_loss, loss.item(), __step
+                )
                 # Logging
-                pbar.update(1)
                 logger.debug(
                     f"EPOCH {_epoch} STEP {step}: "
                     f"lr={lr_for_print}, "
@@ -451,6 +452,7 @@ def _train(
             accelerator.backward(loss)
 
             if (step + 1) % grad_acc == 0:
+                pbar.update(1)
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -486,8 +488,8 @@ def _train(
             src, tgt = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
             with torch.no_grad():
                 logits = model(src)  # (b_sz, s_len, v_sz)
-            logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
-            loss = loss_fn(logits, tgt)
+                logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
+                loss = loss_fn(logits, tgt)
 
             # Logging
             avg_val_loss = rolling_average(avg_val_loss, loss.item(), step)
@@ -525,6 +527,8 @@ def _train(
     else:
         start_epoch = 0
 
+    logger.info(f"Start training. Gradient acc: {grad_acc}")
+    logger.info(f"Data loader size: {len(train_dataloader)}")
     if resume_step is not None:
         assert resume_epoch is not None, "Must provide resume epoch"
         logger.info(
@@ -584,6 +588,7 @@ def resume_train(
     project_dir: str = None,
     use_neox: bool = False,
     grad_acc: int = 1,
+    log_every: int = 10,
 ):
     # Validate inputs
     assert mode in {"pretrain", "finetune"}, "Invalid mode"
@@ -667,7 +672,7 @@ def resume_train(
         optimizer, scheduler = get_pretrain_optim(
             model,
             num_epochs=epochs,
-            steps_per_epoch=len(train_dataloader),
+            steps_per_epoch=len(train_dataloader) // grad_acc + 1,
         )
     elif mode == "finetune":
         train_dataloader, val_dataloader = get_finetune_dataloaders(
@@ -735,6 +740,7 @@ def resume_train(
         resume_epoch=resume_epoch,
         project_dir=project_dir,
         grad_acc=grad_acc,
+        log_every=log_every,
     )
 
 
@@ -751,6 +757,7 @@ def train(
     project_dir: str = None,
     use_neox: bool = False,
     grad_acc: int = 1,
+    log_every: int = 10,
 ):
     # Validate inputs
     assert mode in {"pretrain", "finetune"}, "Invalid mode"
@@ -888,7 +895,8 @@ def train(
         scheduler=scheduler,
         steps_per_checkpoint=steps_per_checkpoint,
         project_dir=project_dir,
-        grad_acc=1,
+        grad_acc=grad_acc,
+        log_every=log_every,
     )
 
 
@@ -948,6 +956,7 @@ def parse_resume_args():
     argp.add_argument(
         "-grad_acc", help="gradient accumulation steps.", type=int, default=1
     )
+    argp.add_argument("-log_every", help="log every certain amount of steps.", type=int, default=1)
 
     return argp.parse_args(sys.argv[2:])
 
@@ -970,6 +979,7 @@ def parse_pretrain_args():
     argp.add_argument(
         "-grad_acc", help="gradient accumulation steps.", type=int, default=1
     )
+    argp.add_argument("-log_every", help="log every certain amount of steps.", type=int, default=1)
 
     return argp.parse_args(sys.argv[2:])
 
@@ -993,6 +1003,7 @@ def parse_finetune_args():
     argp.add_argument(
         "-grad_acc", help="gradient accumulation steps.", type=int, default=1
     )
+    argp.add_argument("-log_every", help="log every certain amount of steps.", type=int, default=1)
 
     return argp.parse_args(sys.argv[2:])
 
@@ -1026,6 +1037,7 @@ if __name__ == "__main__":
             project_dir=pretrain_args.pdir,
             use_neox=pretrain_args.use_neox,
             grad_acc=pretrain_args.grad_acc,
+            log_every=pretrain_args.log_every,
         )
     elif args.mode == "finetune":
         finetune_args = parse_finetune_args()
@@ -1042,6 +1054,7 @@ if __name__ == "__main__":
             project_dir=finetune_args.pdir,
             use_neox=finetune_args.use_neox,
             grad_acc=finetune_args.grad_acc,
+            log_every=finetune_args.log_every,
         )
     elif args.mode == "resume":
         resume_args = parse_resume_args()
@@ -1060,6 +1073,7 @@ if __name__ == "__main__":
             project_dir=resume_args.pdir,
             use_neox=resume_args.use_neox,
             grad_acc=resume_args.grad_acc,
+            log_every=resume_args.log_every,
         )
     else:
         print("Unrecognized command")
