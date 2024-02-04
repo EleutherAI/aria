@@ -17,7 +17,7 @@ from logging.handlers import RotatingFileHandler
 from tqdm import tqdm
 
 from aria.config import load_model_config
-from aria.model import ModelConfig, TransformerLM
+from aria.model import ModelConfig, TransformerLM, GPTNeoXAria
 from aria.tokenizer import Tokenizer, AbsTokenizer, RelTokenizer
 from aria.data.datasets import (
     TrainingDataset,
@@ -571,6 +571,7 @@ def resume_train(
     resume_step: int,
     steps_per_checkpoint: int | None = None,
     project_dir: str = None,
+    use_neox: bool = False,
 ):
     # Validate inputs
     assert mode in {"pretrain", "finetune"}, "Invalid mode"
@@ -636,7 +637,10 @@ def resume_train(
     # Init model
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
-    model = TransformerLM(model_config)
+    if use_neox:
+        model = GPTNeoXAria(model_config)
+    else:
+        model = TransformerLM(model_config)
 
     if mode == "pretrain":
         train_dataloader, val_dataloader = get_pretrain_dataloaders(
@@ -732,6 +736,7 @@ def train(
     finetune_cp_path: str | None = None,  # loads ft optimizer and cp
     steps_per_checkpoint: int | None = None,
     project_dir: str = None,
+    use_neox: bool = False,
 ):
     # Validate inputs
     assert mode in {"pretrain", "finetune"}, "Invalid mode"
@@ -782,7 +787,10 @@ def train(
     # Init model
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
-    model = TransformerLM(model_config)
+    if use_neox:
+        model = GPTNeoXAria(model_config)
+    else:
+        model = TransformerLM(model_config)
     logger.info(f"Loaded model with config: {load_model_config(model_name)}")
     if mode == "finetune":
         try:
@@ -878,12 +886,15 @@ def convert_cp_from_safetensors(checkpoint_path: str, save_path: str):
 
 
 def convert_cp_from_accelerate(
-    model_name: str, checkpoint_dir: str, save_path: str
+    model_name: str, checkpoint_dir: str, save_path: str, use_neox: bool = False
 ):
     def _load_state_dict(_tokenizer: Tokenizer):
         model_config = ModelConfig(**load_model_config(model_name))
         model_config.set_vocab_size(_tokenizer.vocab_size)
-        model = TransformerLM(model_config)
+        if use_neox:
+            model = GPTNeoXAria(model_config)
+        else:
+            model = TransformerLM(model_config)
         model = accelerator.prepare(model)
         accelerator.load_state(checkpoint_dir)
 
@@ -916,6 +927,9 @@ def parse_resume_args():
     argp.add_argument(
         "-spc", help="steps per checkpoint", type=int, required=False
     )
+    argp.add_argument(
+        "-use_neox", help="use neox model", action="store_true", default=False
+    )
 
     return argp.parse_args(sys.argv[2:])
 
@@ -931,6 +945,9 @@ def parse_pretrain_args():
     argp.add_argument("-pdir", help="project dir", type=str, required=False)
     argp.add_argument(
         "-spc", help="steps per checkpoint", type=int, required=False
+    )
+    argp.add_argument(
+        "-use_neox", help="use neox model", action="store_true", default=False
     )
 
     return argp.parse_args(sys.argv[2:])
@@ -948,6 +965,9 @@ def parse_finetune_args():
     argp.add_argument("-pdir", help="project dir", type=str, required=False)
     argp.add_argument(
         "-spc", help="steps per checkpoint", type=int, required=False
+    )
+    argp.add_argument(
+        "-use_neox", help="use neox model", action="store_true", default=False
     )
 
     return argp.parse_args(sys.argv[2:])
@@ -980,6 +1000,7 @@ if __name__ == "__main__":
             epochs=pretrain_args.epochs,
             steps_per_checkpoint=pretrain_args.spc,
             project_dir=pretrain_args.pdir,
+            use_neox=pretrain_args.use_neox,
         )
     elif args.mode == "finetune":
         finetune_args = parse_finetune_args()
@@ -994,6 +1015,7 @@ if __name__ == "__main__":
             finetune_cp_path=finetune_args.cp,
             steps_per_checkpoint=finetune_args.spc,
             project_dir=finetune_args.pdir,
+            use_neox=finetune_args.use_neox,
         )
     elif args.mode == "resume":
         resume_args = parse_resume_args()
@@ -1010,6 +1032,7 @@ if __name__ == "__main__":
             resume_epoch=resume_args.repoch,
             steps_per_checkpoint=resume_args.spc,
             project_dir=resume_args.pdir,
+            use_neox=resume_args.use_neox,
         )
     else:
         print("Unrecognized command")
