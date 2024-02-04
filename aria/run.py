@@ -137,7 +137,7 @@ def sample(args):
     from aria.tokenizer import RelTokenizer, AbsTokenizer
     from aria.sample import greedy_sample
     from aria.data.midi import MidiDict
-    from aria.utils import midi_to_audio
+    from aria.utils import midi_to_audio, _load_weight
 
     if not cuda_is_available():
         print("CUDA device is not available. Using CPU instead.")
@@ -150,7 +150,7 @@ def sample(args):
     )
 
     ckpt_path = _get_ckpt_path(args.c)  # let user input path if not provided
-    model_state = torch.load(ckpt_path, map_location=device)
+    model_state = _load_weight(ckpt_path, device=device.type)
     model_name = _get_model_name(
         args.m, model_state
     )  # infer model name if not provided

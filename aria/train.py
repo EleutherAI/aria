@@ -24,6 +24,7 @@ from aria.data.datasets import (
     PretrainingDataset,
     FinetuningDataset,
 )
+from aria.utils import _load_weight
 
 
 # ----- USAGE -----
@@ -669,12 +670,16 @@ def resume_train(
     else:
         raise Exception
 
-    assert (
-        train_dataloader.dataset.max_seq_len == model_config.max_seq_len
-    ), "max_seq_len differs between datasets and model config"
-    assert (
-        val_dataloader.dataset.max_seq_len == model_config.max_seq_len
-    ), "max_seq_len differs between datasets and model config"
+    if (
+        model_config.yarn_config is None
+        or model_config.yarn_config.scale <= 1.0
+    ):
+        assert (
+            train_dataloader.dataset.max_seq_len == model_config.max_seq_len
+        ), "max_seq_len differs between datasets and model config"
+        assert (
+            val_dataloader.dataset.max_seq_len == model_config.max_seq_len
+        ), "max_seq_len differs between datasets and model config"
 
     (
         model,
@@ -781,7 +786,7 @@ def train(
     logger.info(f"Loaded model with config: {load_model_config(model_name)}")
     if mode == "finetune":
         try:
-            model.load_state_dict(torch.load(finetune_cp_path))
+            model.load_state_dict(_load_weight(finetune_cp_path))
         except Exception as e:
             raise Exception(
                 f"Failed to load checkpoint: {e}\n"
@@ -823,12 +828,16 @@ def train(
     else:
         raise Exception
 
-    assert (
-        train_dataloader.dataset.max_seq_len == model_config.max_seq_len
-    ), "max_seq_len differs between datasets and model config"
-    assert (
-        val_dataloader.dataset.max_seq_len == model_config.max_seq_len
-    ), "max_seq_len differs between datasets and model config"
+    if (
+        model_config.yarn_config is None
+        or model_config.yarn_config.scale <= 1.0
+    ):
+        assert (
+            train_dataloader.dataset.max_seq_len == model_config.max_seq_len
+        ), "max_seq_len differs between datasets and model config"
+        assert (
+            val_dataloader.dataset.max_seq_len == model_config.max_seq_len
+        ), "max_seq_len differs between datasets and model config"
 
     (
         model,
