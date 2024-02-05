@@ -409,64 +409,65 @@ def _train(
         else:
             lr_for_print = "{:.2e}".format(optimizer.param_groups[-1]["lr"])
 
-        model.train()
-        pbar = tqdm(
-            total=len(dataloader) // grad_acc + _resume_step,
-            initial=_resume_step,
-            disable=not accelerator.is_main_process,
-        )
-        for __step, batch in enumerate(dataloader):
-            step = __step + _resume_step + 1
-            src, tgt = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
-            logits = model(src)  # (b_sz, s_len, v_sz)
-            logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
-            loss = loss_fn(logits, tgt)
+        with torch.autocast(device_type='cuda'):
+            model.train()
+            pbar = tqdm(
+                total=len(dataloader) // grad_acc + _resume_step,
+                initial=_resume_step,
+                disable=not accelerator.is_main_process,
+            )
+            for __step, batch in enumerate(dataloader):
+                step = __step + _resume_step + 1
+                src, tgt = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
+                logits = model(src)  # (b_sz, s_len, v_sz)
+                logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
+                loss = loss_fn(logits, tgt)
 
 
-            if step % grad_acc == 0 and step // grad_acc % log_every == 0:
-                # Calculate statistics
-                loss_buffer.append(loss.item())
-                if len(loss_buffer) > TRAILING_LOSS_STEPS:
-                    loss_buffer.pop(0)
-                trailing_loss = sum(loss_buffer) / len(loss_buffer)
-                avg_train_loss = rolling_average(
-                    avg_train_loss, loss.item(), __step
-                )
-                # Logging
-                logger.debug(
-                    f"EPOCH {_epoch} STEP {step}: "
-                    f"lr={lr_for_print}, "
-                    f"loss={round(loss.item(), 4)}, "
-                    f"trailing_loss={round(trailing_loss, 4)}, "
-                    f"average_loss={round(avg_train_loss, 4)}"
-                )
-                if accelerator.is_main_process:
-                    loss_writer.writerow([_epoch, step, loss.item()])
-                pbar.set_postfix_str(
-                    f"lr={lr_for_print}, "
-                    f"loss={round(loss.item(), 4)}, "
-                    f"trailing={round(trailing_loss, 4)}"
-                )
-
-            # Backwards step
-            accelerator.backward(loss)
-
-            if (step + 1) % grad_acc == 0:
-                pbar.update(1)
-                optimizer.step()
-                optimizer.zero_grad()
-
-                if scheduler:
-                    scheduler.step()
-                    lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
-
-            if steps_per_checkpoint:
-                if step % steps_per_checkpoint == 0:
-                    make_checkpoint(
-                        _accelerator=accelerator,
-                        _epoch=_epoch,
-                        _step=step,
+                if step % grad_acc == 0 and step // grad_acc % log_every == 0:
+                    # Calculate statistics
+                    loss_buffer.append(loss.item())
+                    if len(loss_buffer) > TRAILING_LOSS_STEPS:
+                        loss_buffer.pop(0)
+                    trailing_loss = sum(loss_buffer) / len(loss_buffer)
+                    avg_train_loss = rolling_average(
+                        avg_train_loss, loss.item(), __step
                     )
+                    # Logging
+                    logger.debug(
+                        f"EPOCH {_epoch} STEP {step}: "
+                        f"lr={lr_for_print}, "
+                        f"loss={round(loss.item(), 4)}, "
+                        f"trailing_loss={round(trailing_loss, 4)}, "
+                        f"average_loss={round(avg_train_loss, 4)}"
+                    )
+                    if accelerator.is_main_process:
+                        loss_writer.writerow([_epoch, step, loss.item()])
+                    pbar.set_postfix_str(
+                        f"lr={lr_for_print}, "
+                        f"loss={round(loss.item(), 4)}, "
+                        f"trailing={round(trailing_loss, 4)}"
+                    )
+
+                # Backwards step
+                accelerator.backward(loss)
+
+                if (step + 1) % grad_acc == 0:
+                    pbar.update(1)
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+                    if scheduler:
+                        scheduler.step()
+                        lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
+
+                if steps_per_checkpoint:
+                    if step % steps_per_checkpoint == 0:
+                        make_checkpoint(
+                            _accelerator=accelerator,
+                            _epoch=_epoch,
+                            _step=step,
+                        )
 
         logger.info(
             f"EPOCH {_epoch}/{epochs + start_epoch}: Finished training - "
@@ -652,7 +653,7 @@ def resume_train(
         logger.info(f"Creating checkpoints every {steps_per_checkpoint}")
 
     # Init model
-    model_config = ModelConfig(**load_model_config(model_name))
+    model_config = ModelConfig(**load_model_config(model_name), torch_dtype="float16")
     model_config.set_vocab_size(tokenizer.vocab_size)
     if use_neox:
         model = GPTNeoXAria(model_config)
@@ -686,7 +687,7 @@ def resume_train(
         optimizer, scheduler = get_finetune_optim(
             model,
             num_epochs=epochs,
-            steps_per_epoch=len(train_dataloader),
+            steps_per_epoch=len(train_dataloader) // grad_acc + 1,
         )
     else:
         raise Exception
@@ -838,7 +839,7 @@ def train(
         optimizer, scheduler = get_pretrain_optim(
             model,
             num_epochs=epochs,
-            steps_per_epoch=len(train_dataloader),
+            steps_per_epoch=len(train_dataloader) // grad_acc + 1,
         )
     elif mode == "finetune":
         train_dataloader, val_dataloader = get_finetune_dataloaders(
@@ -852,7 +853,7 @@ def train(
         optimizer, scheduler = get_finetune_optim(
             model,
             num_epochs=epochs,
-            steps_per_epoch=len(train_dataloader),
+            steps_per_epoch=len(train_dataloader) // grad_acc + 1,
         )
     else:
         raise Exception

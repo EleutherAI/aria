@@ -31,8 +31,11 @@ class GPTNeoXAria(TransformerLM):
             use_parallel_residual=True,
             rope_scaling=None,
             attention_bias=True,
+            attn_implementation="flash_attention_2",
+            #torch_dtype="float16",  # A bug in HF??
         )
-        self.model = GPTNeoXForCausalLM(config)
+        # Only use float16 as we use flash attention 2
+        self.model = GPTNeoXForCausalLM(config).to(torch.float16)
         self.model.model_config = model_config
         if model_config.grad_checkpoint:
             self.model.gradient_checkpointing_enable()
