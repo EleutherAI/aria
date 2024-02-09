@@ -41,16 +41,13 @@ def setup_logger():
     return logger
 
 
-# TODO:
-# - Change the log setup so that it is clearer
-# - Add threading/multiprocessing to MidiDict build process
 class MidiDataset:
     """Container for datasets of MidiDict objects.
 
     Can be used to save, load, and build, datasets of MidiDict objects.
 
     Args:
-        entries (list[MidiDict]): MidiDict objects to be stored.
+        entries (list[MidiDict] | Iterable): MidiDict objects to be stored.
     """
 
     def __init__(self, entries: list[MidiDict] | Iterable):
@@ -83,7 +80,7 @@ class MidiDataset:
 
     @classmethod
     def load(cls, load_path: str):
-        """Loads dataset from JSON file."""
+        """Loads dataset (into memory) from JSONL file."""
         with jsonlines.open(load_path) as reader:
             _entries = [MidiDict.from_msg_dict(_) for _ in reader]
 
@@ -91,10 +88,10 @@ class MidiDataset:
 
     @classmethod
     def get_generator(cls, load_path: str):
-        """Given a MidiDataset jsonl file, returns a MidiDict generator.
+        """Given a MidiDataset JSONL file, returns a MidiDict generator.
 
         This generator must be reloaded each time you want to iterate over the
-        file. Interally it iterating over the jsonl file located at load_path.
+        file. Internally it iterating over the jsonl file located at load_path.
         """
 
         def generator():
@@ -117,6 +114,7 @@ class MidiDataset:
         repeatable: bool = False,
         overwrite: bool = False,
     ):
+        """Splits MidiDataset JSONL file into train/val split."""
         logger = setup_logger()
         path = Path(load_path)
         train_save_path = path.with_name(f"{path.stem}_train{path.suffix}")
@@ -164,7 +162,7 @@ class MidiDataset:
         manual_metadata: dict = {},
         shuffle: bool = True,
     ):
-        """Builds are returns a MidiDataset, see build_mididict_dataset."""
+        """Builds are returns a MidiDataset - see build_mididict_dataset."""
         valid_metadata = load_config()["data"]["metadata"]["manual"]
         for k, v in manual_metadata.items():
             assert k in valid_metadata.keys(), f"{manual_metadata} is invalid"
@@ -189,11 +187,12 @@ class MidiDataset:
         manual_metadata: dict = {},
         shuffle: bool = True,
     ):
-        """Builds MidiDataset, saving the results directly to a file.
+        """Builds MidiDataset to a JSONL file - see build_mididict_dataset.
 
         This function will not return a MidiDataset object. It is well suited
         for situations where the resulting MidiDataset will not fit in the
-        system's memory.
+        system's memory. Other than this difference, it is identical to
+        MidiDataset.build.
         """
         valid_metadata = load_config()["data"]["metadata"]["manual"]
         for k, v in manual_metadata.items():
@@ -211,7 +210,7 @@ class MidiDataset:
 
     @classmethod
     def combine_datasets_from_file(cls, *args: str, output_path: str):
-        """Function for concatenating jsonl files, checking for duplicates"""
+        """Utility for concatenating JSONL files, checking for duplicates"""
         logger = setup_logger()
 
         for input_path in args:
@@ -310,16 +309,19 @@ def build_mididict_dataset(
     """Builds dataset of MidiDicts.
 
     During the build process, successfully parsed MidiDicts can be filtered and
-    preprocessed. This can be customised by modifying the config.json file.
+    preprocessed. This can be customized by modifying the config.json file.
 
     Args:
         dir (str): Directory to index from.
         recur (bool): If True, recursively search directories for MIDI files.
             Defaults to False.
-        stream_save_path: If True, stream the dictionaries directly to a jsonl
-            file instead of returning them as a list. This option is
+        stream_save_path (str): If True, stream the dictionaries directly to a
+            JSONL file instead of returning them as a list. This option is
             appropriate when processing very large numbers of MIDI files.
-        overwrite: If True, overwrite file at stream_save_path when streaming.
+        overwrite (bool): If True, overwrite file at stream_save_path when
+            streaming.
+        manual_metadata (dict): Metadata tags to uniformly apply.
+        shuffle (dict): Metadata tags to apply uniformly.
 
     Returns:
         list[MidiDict]: List of parsed, filtered, and preprocessed MidiDicts.
@@ -657,6 +659,8 @@ def reservoir(_iterable: Iterable, k: int):
 
 
 class PretrainingDataset(TrainingDataset):
+    """Torch dataset object yielding sequences formatted for pre-training"""
+
     def __init__(self, dir_path: str, tokenizer: Tokenizer):
         super().__init__(tokenizer=tokenizer)
 
@@ -839,6 +843,8 @@ class PretrainingDataset(TrainingDataset):
 
 
 class FinetuningDataset(TrainingDataset):
+    """Torch dataset object yielding sequences formatted for fine-tuning."""
+
     def __init__(self, file_path: str, tokenizer: Tokenizer):
         super().__init__(tokenizer=tokenizer)
 

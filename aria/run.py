@@ -248,7 +248,7 @@ def sample(args):
 
     print(f"Extracted metadata: {midi_dict.metadata}")
     print(
-        f"Instruments: {set([MidiDict.program_to_instrument[msg['data']] for msg in midi_dict.instrument_msgs])}"
+        f"Instruments: {set([MidiDict.get_program_to_instrument()[msg['data']] for msg in midi_dict.instrument_msgs])}"
     )  # Not working with al.mid ?
     prompt_seq = tokenizer.tokenize(midi_dict=midi_dict)
     prompt_seq = prompt_seq[:truncate_len]
