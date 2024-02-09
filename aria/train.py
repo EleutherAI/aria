@@ -869,7 +869,7 @@ def convert_cp_from_safetensors(checkpoint_path: str, save_path: str):
 
 
 def convert_cp_from_accelerate(
-    model_name: str, checkpoint_dir: str, save_path: str
+    model_name: str, tokenizer_name: str, checkpoint_dir: str, save_path: str
 ):
     def _load_state_dict(_tokenizer: Tokenizer):
         model_config = ModelConfig(**load_model_config(model_name))
@@ -882,11 +882,13 @@ def convert_cp_from_accelerate(
 
     accelerator = accelerate.Accelerator()
 
-    # Try both tokenizers
-    try:
+    # Try both
+    if tokenizer_name == "abs":
         state_dict = _load_state_dict(_tokenizer=AbsTokenizer())
-    except:
+    elif tokenizer_name == "rel":
         state_dict = _load_state_dict(_tokenizer=RelTokenizer())
+    else:
+        print("Invalid choice of tokenizer")
 
     torch.save(state_dict, save_path)
 
