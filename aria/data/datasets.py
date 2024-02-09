@@ -162,6 +162,7 @@ class MidiDataset:
         dir: str,
         recur: bool = False,
         manual_metadata: dict = {},
+        shuffle: bool = True,
     ):
         """Builds are returns a MidiDataset, see build_mididict_dataset."""
         valid_metadata = load_config()["data"]["metadata"]["manual"]
@@ -174,6 +175,7 @@ class MidiDataset:
                 dir=dir,
                 recur=recur,
                 manual_metadata=manual_metadata,
+                shuffle=shuffle,
             )
         )
 
@@ -185,6 +187,7 @@ class MidiDataset:
         recur: bool = False,
         overwrite: bool = False,
         manual_metadata: dict = {},
+        shuffle: bool = True,
     ):
         """Builds MidiDataset, saving the results directly to a file.
 
@@ -203,6 +206,7 @@ class MidiDataset:
             stream_save_path=save_path,
             overwrite=overwrite,
             manual_metadata=manual_metadata,
+            shuffle=shuffle,
         )
 
     @classmethod
@@ -301,6 +305,7 @@ def build_mididict_dataset(
     stream_save_path: str = None,
     overwrite: bool = False,
     manual_metadata: dict = {},
+    shuffle: bool = True,
 ):
     """Builds dataset of MidiDicts.
 
@@ -370,7 +375,12 @@ def build_mididict_dataset(
 
     num_paths = len(paths)
     if num_paths == 0:
-        logger.warning("Directory contains no files matching *.mid or *.midi")
+        raise FileNotFoundError(
+            "Directory contains no files matching *.mid or *.midi"
+        )
+    if shuffle is True:
+        logger.info(f"Shuffling {num_paths} paths")
+        random.shuffle(paths)
 
     cnt = 0
     if stream_save_path is None:
@@ -762,7 +772,7 @@ class PretrainingDataset(TrainingDataset):
 
                 buffer = []
                 _idx = 0
-                for entry in reservoir(get_seqs(tokenizer, _midi_dataset), 5):
+                for entry in reservoir(get_seqs(tokenizer, _midi_dataset), 10):
                     if entry is not None:
                         buffer += entry
                     while len(buffer) >= max_seq_len:
@@ -774,6 +784,7 @@ class PretrainingDataset(TrainingDataset):
                         logger.info(f"Finished processing {_idx}")
 
                 buffer += [tokenizer.pad_tok] * (max_seq_len - len(buffer))
+                writer.write(buffer[:max_seq_len])
 
         logger = setup_logger()
         assert max_seq_len > 0, "max_seq_len must be greater than 0"

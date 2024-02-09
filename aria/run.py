@@ -312,6 +312,7 @@ def build_midi_dataset(args):
         recur=args.r,
         overwrite=True,
         manual_metadata=manual_metadata,
+        shuffle=True,
     )
 
     if args.split:
