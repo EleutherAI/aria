@@ -76,6 +76,8 @@ class MidiDict:
             change MIDI messages
         note_msgs (list): Note messages corresponding to matching note-on and
             note-off MIDI messages.
+        ticks_per_beat (int): MIDI ticks per beat.
+        metadata (dict): Metadata tags, e.g. "genre": "classical".
     """
 
     def __init__(
@@ -105,7 +107,6 @@ class MidiDict:
                     "tick": 0,
                 }
             ]
-
         if not self.instrument_msgs:
             self.instrument_msgs = [
                 {
@@ -116,9 +117,10 @@ class MidiDict:
                 }
             ]
 
+        self.program_to_instrument = self.get_program_to_instrument()
+
     @classmethod
-    @property
-    def program_to_instrument(cls):
+    def get_program_to_instrument(cls):
         # This combines the individual dictionaries into one
         return (
             {i: "piano" for i in range(0, 7 + 1)}
@@ -343,9 +345,7 @@ def midi_to_dict(mid: mido.MidiFile):
         mid (mido.MidiFile, optional): MIDI to parse.
 
     Returns:
-        dict: Data extracted from the MIDI file. This dictionary has the
-            entries "meta_msgs", "tempo_msgs", "pedal_msgs", "instrument_msgs",
-            "note_msgs", "ticks_per_beat".
+        dict: Data extracted from the MIDI file.
     """
     metadata_config = load_config()["data"]["metadata"]
     # Convert time in mid to absolute

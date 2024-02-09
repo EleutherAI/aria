@@ -53,12 +53,11 @@ class Tokenizer:
         self.vocab_size = -1
         self.pad_id = -1
 
-    def tokenize_midi_dict(self, midi_dict: MidiDict):
+    def _tokenize_midi_dict(self, midi_dict: MidiDict):
         """Abstract method for tokenizing a MidiDict object into a sequence of
         tokens."""
         raise NotImplementedError
 
-    # REMEMBER TO USE THIS API IN THE TRAIN SCRIPT
     def tokenize(self, midi_dict: MidiDict, **kwargs):
         """Tokenizes a MidiDict object.
 
@@ -66,9 +65,9 @@ class Tokenizer:
         required. For instance, in fine-tuning tokenizer you may want to insert
         additional tokens. The default behaviour is to call tokenize_midi_dict.
         """
-        return self.tokenize_midi_dict(midi_dict)
+        return self._tokenize_midi_dict(midi_dict)
 
-    def detokenize_midi_dict(self, tokenized_seq: list):
+    def _detokenize_midi_dict(self, tokenized_seq: list):
         """Abstract method for de-tokenizing a sequence of tokens into a
         MidiDict Object."""
         raise NotImplementedError
@@ -79,14 +78,14 @@ class Tokenizer:
         This function should be overridden if additional are required during
         detokenization. The default behaviour is to call detokenize_midi_dict.
         """
-        return self.detokenize_midi_dict(tokenized_seq)
+        return self._detokenize_midi_dict(tokenized_seq)
 
     def export_data_aug(cls):
         """Abstract method for exporting a list of all data augmentation
         functions.
 
         This function is used when setting data transformation functions in
-        TrainingDatase, e.g.
+        TrainingDataset, e.g.
 
         PretrainingDataset.set_transform(Tokenizer.export_data_aug())
         """
@@ -360,7 +359,7 @@ class AbsTokenizer(Tokenizer):
 
         return res
 
-    def tokenize_midi_dict(self, midi_dict: MidiDict):
+    def _tokenize_midi_dict(self, midi_dict: MidiDict):
         ticks_per_beat = midi_dict.ticks_per_beat
         midi_dict.remove_instruments(self.config["ignore_instruments"])
 
@@ -477,7 +476,7 @@ class AbsTokenizer(Tokenizer):
             unformatted_seq=tokenized_seq,
         )
 
-    def detokenize_midi_dict(self, tokenized_seq: list):
+    def _detokenize_midi_dict(self, tokenized_seq: list):
         instrument_programs = self.config["instrument_programs"]
         # NOTE: These values chosen so that 1000 ticks = 1000ms, allowing us to
         # skip converting between ticks and ms
@@ -993,7 +992,7 @@ class RelTokenizer(Tokenizer):
 
         return res
 
-    def tokenize_midi_dict(self, midi_dict: MidiDict):
+    def _tokenize_midi_dict(self, midi_dict: MidiDict):
         ticks_per_beat = midi_dict.ticks_per_beat
         midi_dict.remove_instruments(self.config["ignore_instruments"])
 
@@ -1104,7 +1103,7 @@ class RelTokenizer(Tokenizer):
             unformatted_seq=tokenized_seq,
         )
 
-    def detokenize_midi_dict(self, tokenized_seq: list):
+    def _detokenize_midi_dict(self, tokenized_seq: list):
         instrument_programs = self.config["instrument_programs"]
         # NOTE: These values chosen so that 1000 ticks = 1000ms, allowing us to
         # skip converting between ticks and ms

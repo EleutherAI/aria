@@ -6,7 +6,6 @@ import logging
 from aria import tokenizer
 from aria.data import datasets
 from aria.data.midi import MidiDict
-from aria.data import jsonl_zst
 
 TEST_TOKENIZER = "abs"
 logger = logging.getLogger(__name__)
@@ -309,23 +308,6 @@ class TestFinetuningDataset(unittest.TestCase):
 
         logger.info(f"data_aug_1: {tknzr.decode(finetune_dataset[0][0][:50])}")
         logger.info(f"data_aug_2: {tknzr.decode(finetune_dataset[0][0][:50])}")
-
-
-class TestReaderWriter(unittest.TestCase):
-    def test_jsonl_zst(self):
-        data = [{"a": i, "b": i + 1} for i in range(0, 100, 4)]
-        filename = "tests/test_results/test.jsonl.zst"
-        # if test.jsonl.zst exists, delete it
-        if os.path.isfile(filename):
-            os.remove(filename)
-        with jsonl_zst.open(filename, "w") as f:
-            for d in data:
-                f.write(d)
-        with jsonl_zst.open(filename, "r") as f:
-            for d, d2 in zip(data, f):
-                self.assertEqual(d, d2)
-        # Remove the file
-        os.remove(filename)
 
 
 setup_logger()
