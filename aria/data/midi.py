@@ -322,9 +322,9 @@ def _extract_track_data(track: mido.MidiTrack):
                 if len(notes_to_close) > 0 and len(notes_to_keep) > 0:
                     # Note-on on the same tick but we already closed
                     # some previous notes -> it will continue, keep it.
-                    last_note_on[(message.note, message.channel)] = (
-                        notes_to_keep
-                    )
+                    last_note_on[
+                        (message.note, message.channel)
+                    ] = notes_to_keep
                 else:
                     # Remove the last note on for this instrument
                     del last_note_on[(message.note, message.channel)]

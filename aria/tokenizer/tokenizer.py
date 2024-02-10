@@ -63,7 +63,7 @@ class Tokenizer:
 
         This function should be overridden if additional transformations are
         required. For instance, in fine-tuning tokenizer you may want to insert
-        additional tokens. The default behaviour is to call tokenize_midi_dict.
+        additional tokens. The default behavior is to call tokenize_midi_dict.
         """
         return self._tokenize_midi_dict(midi_dict)
 
@@ -76,7 +76,7 @@ class Tokenizer:
         """Detokenizes a MidiDict object.
 
         This function should be overridden if additional are required during
-        detokenization. The default behaviour is to call detokenize_midi_dict.
+        detokenization. The default behavior is to call detokenize_midi_dict.
         """
         return self._detokenize_midi_dict(tokenized_seq)
 

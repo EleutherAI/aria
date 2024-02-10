@@ -105,7 +105,7 @@ def greedy_sample(
     cfg_mode: str | None = None,
     neg_prompts: List[list] | None = None,
     neg_prompt_len: int | None = None,
-    alpha: float | None = 0.4,
+    alpha: float | None = None,
     force_end=False,
     temperature: float = 0.95,
     top_p: float = 0.95,
