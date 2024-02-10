@@ -178,9 +178,6 @@ def sample(args):
     model_config.grad_checkpoint = False
     model = TransformerLM(model_config).to(device)
 
-    if args.trunc + args.l > model_config.max_seq_len:
-        print("WARNING - required context exceeds max_seq_len")
-
     try:
         model.load_state_dict(model_state)
     except:
@@ -251,9 +248,12 @@ def sample(args):
         f"Instruments: {set([MidiDict.get_program_to_instrument()[msg['data']] for msg in midi_dict.instrument_msgs])}"
     )  # Not working with al.mid ?
     prompt_seq = tokenizer.tokenize(midi_dict=midi_dict)
-    prompt_seq = prompt_seq[:truncate_len]
-    print(prompt_seq[: prompt_seq.index(tokenizer.bos_tok)])
+    prompt_seq = prompt_seq[
+        : prompt_seq.index(tokenizer.bos_tok) + truncate_len + 1
+    ]
     prompts = [prompt_seq for _ in range(num_variations)]
+    if len(prompt_seq) + args.l > model_config.max_seq_len:
+        print("WARNING Required context exceeds max_seq_len supported by model")
 
     # Sample
     results = greedy_sample(
