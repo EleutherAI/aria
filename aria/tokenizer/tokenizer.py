@@ -1134,7 +1134,7 @@ class RelTokenizer(Tokenizer):
             ):
                 # Process instrument prefix tokens
                 if tok[2] in instrument_to_channel.keys():
-                    logging.warning(f"Duplicate prefix {tok[2]}")
+                    # logging.warning(f"Duplicate prefix {tok[2]}")
                     continue
                 elif tok[2] == "drum":
                     instrument_msgs.append(
