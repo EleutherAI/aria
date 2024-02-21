@@ -268,7 +268,7 @@ def _extract_track_data(track: mido.MidiTrack):
             )
         # Pedal messages
         elif message.type == "control_change" and message.control == 64:
-            # Consistent with pretty_midi and ableton live default behavior
+            # Consistent with pretty_midi and ableton-live default behavior
             if message.value < 64:
                 val = 0
             else:

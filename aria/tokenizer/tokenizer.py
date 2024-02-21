@@ -445,11 +445,9 @@ class AbsTokenizer(Tokenizer):
                         pedal_interval[0],
                         pedal_interval[1],
                     )
-                    if (
-                        pedal_start <= _start_tick < pedal_end
-                        and _end_tick < pedal_end
-                    ):
+                    if pedal_start < _end_tick < pedal_end:
                         _end_tick = pedal_end
+                        break
 
                 _note_duration = get_duration_ms(
                     start_tick=_start_tick,
