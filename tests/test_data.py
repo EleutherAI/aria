@@ -52,7 +52,7 @@ class TestMidiDataset(unittest.TestCase):
             recur=True,
         )
 
-        self.assertEqual(len(dataset), 6)
+        self.assertEqual(len(dataset), 7)
         self.assertEqual(type(dataset[0]), MidiDict)
 
     def test_save_load(self):
@@ -65,7 +65,7 @@ class TestMidiDataset(unittest.TestCase):
         dataset_reloaded = datasets.MidiDataset.load(
             "tests/test_results/mididict_dataset.jsonl"
         )
-        self.assertEqual(len(dataset_reloaded), 6)
+        self.assertEqual(len(dataset_reloaded), 7)
         self.assertEqual(type(dataset[0]), type(dataset_reloaded[0]))
 
     def test_build_to_file(self):
@@ -79,7 +79,7 @@ class TestMidiDataset(unittest.TestCase):
         dataset_reloaded = datasets.MidiDataset.load(
             load_path="tests/test_results/mididict_dataset_direct.jsonl",
         )
-        self.assertEqual(len(dataset_reloaded), 6)
+        self.assertEqual(len(dataset_reloaded), 7)
         self.assertEqual(type(dataset_reloaded[0]), MidiDict)
 
     def test_split_from_file(self):

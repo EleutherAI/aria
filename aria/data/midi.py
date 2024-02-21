@@ -268,10 +268,12 @@ def _extract_track_data(track: mido.MidiTrack):
             )
         # Pedal messages
         elif message.type == "control_change" and message.control == 64:
-            if message.value == 0:
+            # Consistent with pretty_midi and ableton-live default behavior
+            if message.value < 64:
                 val = 0
             else:
                 val = 1
+
             pedal_msgs.append(
                 {
                     "type": "pedal",

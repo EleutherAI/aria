@@ -218,6 +218,7 @@ class TestAbsTokenizer(unittest.TestCase):
         tokenize_detokenize("expressive.mid")
         tokenize_detokenize("pop.mid")
         tokenize_detokenize("beethoven_moonlight.mid")
+        tokenize_detokenize("maestro.mid")
 
     def test_aug(self):
         def tokenize_aug_detokenize(
