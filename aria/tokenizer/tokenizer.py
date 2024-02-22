@@ -5,6 +5,7 @@ import torch
 import functools
 import itertools
 import random
+import copy
 
 from collections import defaultdict
 from typing import Callable
@@ -358,6 +359,51 @@ class AbsTokenizer(Tokenizer):
         res = prefix + [self.bos_tok] + unformatted_seq + [self.eos_tok]
 
         return res
+
+    def calc_length_ms(self, seq: list, onset: bool = False):
+        """Calculates time (ms) end of sequence to the end of the last note. If
+        onset=True, then it will return the onset time of the last note instead
+        """
+        assert type(seq) == list, "Must provide list of decoded toks"
+        assert type(seq[0]) != int, "Must provide list of decoded toks"
+
+        # Find the index of the last onset or dur token
+        seq = copy.deepcopy(seq)
+        for _idx in range(len(seq) - 1, -1, -1):
+            tok = seq[_idx]
+            if type(tok) is tuple and tok[0] in {"onset", "dur"}:
+                break
+            else:
+                seq.pop()
+
+        time_offset_ms = seq.count(self.time_tok) * self.abs_time_step
+        idx = len(seq) - 1
+        for tok in seq[::-1]:
+            if type(tok) is tuple and tok[0] == "dur":
+                assert seq[idx][0] == "dur", "Error with function"
+                assert seq[idx - 1][0] == "onset", "Error with function"
+
+                if onset is False:
+                    return time_offset_ms + seq[idx - 1][1] + seq[idx][1]
+                elif onset is True:
+                    return time_offset_ms + seq[idx - 1][1]  # Ignore dur
+
+            idx -= 1
+
+        # If it gets to this point, an error has occurred
+        raise Exception
+
+    def truncate_by_time(self, tokenized_seq: list, trunc_time_ms: int):
+        """This function truncates notes with onset_ms > trunc_tim_ms."""
+        time_offset_ms = 0
+        for idx, tok in enumerate(tokenized_seq):
+            if tok == self.time_tok:
+                time_offset_ms += self.abs_time_step
+            elif type(tok) is tuple and tok[0] == "onset":
+                if time_offset_ms + tok[1] > trunc_time_ms:
+                    return tokenized_seq[: idx - 1]
+
+        return tokenized_seq
 
     def _tokenize_midi_dict(self, midi_dict: MidiDict):
         ticks_per_beat = midi_dict.ticks_per_beat
