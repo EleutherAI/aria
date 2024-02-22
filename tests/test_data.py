@@ -45,6 +45,15 @@ def get_short_seq():
     ]
 
 
+class TestMidiDict(unittest.TestCase):
+    def test_resolve_pedal(self):
+        midi_dict = MidiDict.from_midi("tests/test_data/maestro.mid")
+        midi_dict.resolve_pedal()
+        self.assertListEqual(midi_dict.pedal_msgs, [])
+        mid = midi_dict.to_midi()
+        mid.save("tests/test_results/maestro_npedal.mid")
+
+
 class TestMidiDataset(unittest.TestCase):
     def test_build(self):
         dataset = datasets.MidiDataset.build(

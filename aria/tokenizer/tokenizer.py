@@ -14,6 +14,12 @@ from aria.data.midi import MidiDict
 from aria.config import load_config
 from aria.data.midi import get_duration_ms
 
+# TODO:
+# - Add a warning when tokenizing degenerate MIDI files. e.g. if we have two
+#   pianos with overlapping notes, this could potentially cause an issue for
+#   some tokenizers. I'm not sure if this will cause an issue AbsTokenizer
+#   however it might with some others such as the AmtTokenizer.
+
 
 class Tokenizer:
     """Abstract Tokenizer class for tokenizing midi_dict objects.
