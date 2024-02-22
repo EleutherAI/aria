@@ -6,6 +6,7 @@ import re
 import os
 import logging
 import pathlib
+import copy
 import mido
 
 from collections import defaultdict
@@ -187,6 +188,85 @@ class MidiDict:
         return hashlib.md5(
             json.dumps(msg_dict_to_hash, sort_keys=True).encode()
         ).hexdigest()
+
+    def _build_pedal_intervals(self):
+        """Returns pedal-on intervals for each channel."""
+        self.pedal_msgs.sort(key=lambda msg: msg["tick"])
+        channel_to_pedal_intervals = defaultdict(list)
+        pedal_status = {}
+
+        for pedal_msg in self.pedal_msgs:
+            tick = pedal_msg["tick"]
+            channel = pedal_msg["channel"]
+            data = pedal_msg["data"]
+
+            if data == 1 and pedal_status.get(channel, None) is None:
+                pedal_status[channel] = tick
+            elif data == 0 and pedal_status.get(channel, None) is not None:
+                # Close pedal interval
+                _start_tick = pedal_status[channel]
+                _end_tick = tick
+                channel_to_pedal_intervals[channel].append(
+                    [_start_tick, _end_tick]
+                )
+                del pedal_status[channel]
+
+        # Close all unclosed pedals at end of track
+        final_tick = self.note_msgs[-1]["data"]["end"]
+        for channel, start_tick in pedal_status.items():
+            channel_to_pedal_intervals[channel].append([start_tick, final_tick])
+
+        return channel_to_pedal_intervals
+
+    def _resolve_overlaps(self):
+        """Resolves overlaps between notes on the same channel, this will only
+        change anything if pedal intervals have been resolved."""
+
+        # Organize notes by channel and pitch
+        note_msgs_c = defaultdict(lambda: defaultdict(list))
+        for msg in self.note_msgs:
+            _channel = msg["channel"]
+            _pitch = msg["data"]["pitch"]
+            note_msgs_c[_channel][_pitch].append(msg)
+
+        # We can modify notes by reference as they are dictionaries
+        for channel, msgs_by_pitch in note_msgs_c.items():
+            for pitch, msgs in msgs_by_pitch.items():
+                msgs.sort(
+                    key=lambda msg: (msg["data"]["start"], msg["data"]["end"])
+                )
+                prev_off_tick = -1
+                for idx, msg in enumerate(msgs):
+                    on_tick = msg["data"]["start"]
+                    off_tick = msg["data"]["end"]
+                    if prev_off_tick > on_tick:
+                        # Adjust end of previous (idx - 1) msg to remove overlap
+                        msgs[idx - 1]["data"]["end"] = on_tick
+                    prev_off_tick = off_tick
+
+        return self
+
+    def resolve_pedal(self):
+        """Remove pedal_msgs by extending note offsets and resolving overlaps"""
+        # Organize note messages by channel
+        note_msgs_c = defaultdict(list)
+        for msg in self.note_msgs:
+            _channel = msg["channel"]
+            note_msgs_c[_channel].append(msg)
+
+        # We can modify notes by reference as they are dictionaries
+        channel_to_pedal_intervals = self._build_pedal_intervals()
+        for channel, msgs in note_msgs_c.items():
+            for msg in msgs:
+                note_end_tick = msg["data"]["end"]
+                for pedal_interval in channel_to_pedal_intervals[channel]:
+                    pedal_start, pedal_end = pedal_interval
+                    if pedal_start < note_end_tick < pedal_end:
+                        msg["data"]["end"] = pedal_end
+                        break
+
+        self.pedal_msgs = []
+        return self._resolve_overlaps()
 
     # TODO:
     # - Add remove drums (aka remove channel 9) pre-processing
