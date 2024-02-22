@@ -101,12 +101,13 @@ def greedy_sample(
     prompts: List[list],
     max_new_tokens: int,
     device: torch.device | None = None,
-    cfg_gamma: float | None = 1.4,
+    cfg_gamma: float | None = 1.1,
     cfg_mode: str | None = None,
     neg_prompts: List[list] | None = None,
     neg_prompt_len: int | None = None,
     alpha: float | None = None,
     force_end=False,
+    dim_tok_pos: list[int] | None = None,
     temperature: float = 0.95,
     top_p: float = 0.95,
 ):
@@ -143,9 +144,15 @@ def greedy_sample(
     device = device or torch.device("cuda")
     model.eval()
 
+    if dim_tok_pos:
+        assert len(dim_tok_pos) == len(prompts), "Lengths don't match"
+
     pad_id = tokenizer.pad_id
     pad_tok = tokenizer.pad_tok
     eos_id = tokenizer.tok_to_id[tokenizer.eos_tok]
+
+    if cfg_gamma == 1.0:
+        cfg_gamma = None
 
     padded_combined_prompts = _process_prompts(
         prompts,
@@ -250,6 +257,22 @@ def greedy_sample(
                 if dim_tok_inserted[_idx] is False and tokenizer.id_to_tok[
                     next_token[_idx].item()
                 ][0] not in ("dur", "onset"):
+                    next_token[_idx] = tokenizer.tok_to_id[tokenizer.dim_tok]
+        elif dim_tok_pos is not None:
+            for _idx in range(tokens.size(0)):
+                if (
+                    cur_pos < dim_tok_pos[_idx]
+                    or dim_tok_inserted[_idx] is True
+                ):
+                    pass
+                elif tokenizer.id_to_tok[next_token[_idx].item()][0] not in (
+                    "dur",
+                    "onset",
+                ):
+                    # This only triggers if:
+                    # - dim_tok hasn't already been inserted
+                    # - the current position >= dim_tok_pos
+                    # - The dim tok will not interfere with a note
                     next_token[_idx] = tokenizer.tok_to_id[tokenizer.dim_tok]
 
         # Update dim_tok_inserted

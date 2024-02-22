@@ -359,6 +359,45 @@ class AbsTokenizer(Tokenizer):
 
         return res
 
+    def calc_length_ms(self, tokenized_seq: list, onset: bool = False):
+        """Calculates time (ms) end of sequence to the end of the last note. If
+        onset=True, then it will return the onset time of the last note instead
+        """
+
+        assert type(tokenized_seq) == list, "Must provide list of decoded toks"
+        assert (
+            type(tokenized_seq[0]) != int
+        ), "Must provide list of decoded toks"
+
+        time_offset_ms = tokenized_seq.count(self.time_tok) * self.abs_time_step
+        idx = len(tokenized_seq) - 1
+        for tok in tokenized_seq[::-1]:
+            if type(tok) is tuple and tok[0] == "dur":
+                assert tok[idx][0] == "dur", "Error with function"
+                assert tok[idx - 1][0] == "onset"
+
+                if onset is False:
+                    return time_offset_ms + tok[idx - 1][1] + tok[idx][1]
+                elif onset is True:
+                    return time_offset_ms + tok[idx - 1][1]  # Ignore dur
+
+            idx -= 1
+
+        # If it gets to this point, an error as occured
+        raise Exception
+
+    def truncate_by_time(self, tokenized_seq: list, trunc_time_ms: int):
+        """This function will wait until it finds a note"""
+        time_offset_ms = 0
+        for idx, tok in enumerate(range(tokenized_seq)):
+            if tok == self.time_tok:
+                time_offset_ms += self.abs_time_step
+            elif type(tok) is tuple and tok[0] == "onset":
+                if time_offset_ms + tok[1] > trunc_time_ms:
+                    break
+
+        return tokenized_seq[: idx + 1]
+
     def _tokenize_midi_dict(self, midi_dict: MidiDict):
         ticks_per_beat = midi_dict.ticks_per_beat
         midi_dict.remove_instruments(self.config["ignore_instruments"])
