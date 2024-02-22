@@ -101,7 +101,7 @@ def greedy_sample(
     prompts: List[list],
     max_new_tokens: int,
     device: torch.device | None = None,
-    cfg_gamma: float | None = 1.1,
+    cfg_gamma: float | None = 1.05,
     cfg_mode: str | None = None,
     neg_prompts: List[list] | None = None,
     neg_prompt_len: int | None = None,
