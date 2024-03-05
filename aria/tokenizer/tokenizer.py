@@ -819,6 +819,7 @@ class AbsTokenizer(Tokenizer):
             instruments_wd: list,
             _tempo_aug_range: float,
             _mixup: bool,
+            tempo_aug: float | None = None,
         ):
             """This must be used with export_aug_fn_concat in order to work
             properly for concatenated sequences."""
@@ -826,9 +827,10 @@ class AbsTokenizer(Tokenizer):
             def _quantize_time(_n: int):
                 return round(_n / time_step) * time_step
 
-            tempo_aug = random.uniform(
-                1 - _tempo_aug_range, 1 + _tempo_aug_range
-            )
+            if not tempo_aug:
+                tempo_aug = random.uniform(
+                    1 - _tempo_aug_range, 1 + _tempo_aug_range
+                )
 
             src_time_tok_cnt = 0
             dim_tok_seen = None
