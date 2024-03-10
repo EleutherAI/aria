@@ -247,7 +247,7 @@ class MidiDict:
         return self
 
     def resolve_pedal(self):
-        """Remove pedal_msgs by extending note offsets and resolving overlaps"""
+        """Resolve pedal - extend note offsets and resolve note overlaps"""
         # Organize note messages by channel
         note_msgs_c = defaultdict(list)
         for msg in self.note_msgs:
@@ -265,7 +265,6 @@ class MidiDict:
                         msg["data"]["end"] = pedal_end
                         break
 
-        self.pedal_msgs = []
         return self._resolve_overlaps()
 
     # TODO:
