@@ -99,6 +99,8 @@ class MidiDict:
         self.ticks_per_beat = ticks_per_beat
         self.metadata = metadata
 
+        self.pedal_resolved = False  # Default value
+
         # Special case that temo_msg is empty, in this case we spoof the default
         if not self.tempo_msgs:
             self.tempo_msgs = [
@@ -248,6 +250,12 @@ class MidiDict:
 
     def resolve_pedal(self):
         """Resolve pedal - extend note offsets and resolve note overlaps"""
+        # If has been already resolved, we don't recalculate
+        if self.pedal_resolved == True:
+            return self
+
+        assert self.pedal_resolved == False, "Internal error"
+
         # Organize note messages by channel
         note_msgs_c = defaultdict(list)
         for msg in self.note_msgs:
@@ -264,6 +272,8 @@ class MidiDict:
                     if pedal_start < note_end_tick < pedal_end:
                         msg["data"]["end"] = pedal_end
                         break
+
+        self.pedal_resolved = True
 
         return self._resolve_overlaps()
 
