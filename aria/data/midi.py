@@ -252,9 +252,7 @@ class MidiDict:
         """Resolve pedal - extend note offsets and resolve note overlaps"""
         # If has been already resolved, we don't recalculate
         if self.pedal_resolved == True:
-            return self
-
-        assert self.pedal_resolved == False, "Internal error"
+            print("Pedal has already been resolved")
 
         # Organize note messages by channel
         note_msgs_c = defaultdict(list)
