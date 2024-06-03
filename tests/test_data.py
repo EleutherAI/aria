@@ -242,81 +242,49 @@ class TestPretrainingDataset(unittest.TestCase):
 
 
 class TestFinetuningDataset(unittest.TestCase):
-    # Test building is working (on the file level)
     def test_build(self):
-        MAX_SEQ_LEN = 512
-        STRIDE_LEN = 256
-        if TEST_TOKENIZER == "abs":
-            tknzr = tokenizer.AbsTokenizer(return_tensors=False)
-        elif TEST_TOKENIZER == "rel":
-            tknzr = tokenizer.RelTokenizer(return_tensors=False)
-        else:
-            raise KeyError
-        mididict_dataset = datasets.MidiDataset.build(
-            dir="tests/test_data",
+        MAX_SEQ_LEN = 1024
+        tknzr = tokenizer.SeparatedAbsTokenizer(return_tensors=False)
+        clean_mididict_dataset = datasets.MidiDataset.build(
+            dir="tests/test_data/clean",
             recur=True,
+            shuffle=False,
         )
-        mididict_dataset.save("tests/test_results/mididict_dataset.jsonl")
-
-        if os.path.exists("tests/test_results/dataset_buffer_1.jsonl"):
-            os.remove("tests/test_results/dataset_buffer_1.jsonl")
-        finetune_dataset_from_file = datasets.FinetuningDataset.build(
-            tokenizer=tknzr,
-            save_path="tests/test_results/dataset_buffer_1.jsonl",
-            midi_dataset_path="tests/test_results/mididict_dataset.jsonl",
-            max_seq_len=MAX_SEQ_LEN,
-            stride_len=STRIDE_LEN,
-        )
-
-        if os.path.exists("tests/test_results/dataset_buffer_2.jsonl"):
-            os.remove("tests/test_results/dataset_buffer_2.jsonl")
-        finetune_dataset_from_mdset = datasets.FinetuningDataset.build(
-            tokenizer=tknzr,
-            save_path="tests/test_results/dataset_buffer_2.jsonl",
-            midi_dataset=mididict_dataset,
-            max_seq_len=MAX_SEQ_LEN,
-            stride_len=STRIDE_LEN,
-        )
-
-        raw_entries = [src for src, tgt in finetune_dataset_from_file]
-        self.assertEqual(len({len(_) for _ in raw_entries}), 1)
-        raw_entries = [src for src, tgt in finetune_dataset_from_mdset]
-        self.assertEqual(len({len(_) for _ in raw_entries}), 1)
-
-        src, tgt = finetune_dataset_from_file[0]
-        logger.info(f"src: {tknzr.decode(src)[:50]}")
-        logger.info(f"tgt: {tknzr.decode(tgt)[:50]}")
-
-    def test_aug(self):
-        MAX_SEQ_LEN = 512
-        STRIDE_LEN = 256
-        if TEST_TOKENIZER == "abs":
-            tknzr = tokenizer.AbsTokenizer(return_tensors=False)
-        elif TEST_TOKENIZER == "rel":
-            tknzr = tokenizer.RelTokenizer(return_tensors=False)
-        else:
-            raise KeyError
-        mididict_dataset = datasets.MidiDataset.build(
-            dir="tests/test_data",
+        noisy_mididict_dataset = datasets.MidiDataset.build(
+            dir="tests/test_data/noisy",
             recur=True,
+            shuffle=False,
         )
-        if os.path.isfile("tests/test_results/finetune_dataset_buff.jsonl"):
-            os.remove("tests/test_results/finetune_dataset_buff.jsonl")
-        finetune_dataset = datasets.FinetuningDataset.build(
-            tokenizer=tknzr,
-            save_path="tests/test_results/finetune_dataset_buff.jsonl",
-            max_seq_len=MAX_SEQ_LEN,
-            stride_len=STRIDE_LEN,
-            midi_dataset=mididict_dataset,
-        )
-        finetune_dataset.set_transform(tknzr.export_data_aug())
-        for idx, seq in enumerate(tknzr.decode(finetune_dataset[0][0])):
-            for _idx, tok in enumerate(seq):
-                if tok == tknzr.unk_tok:
-                    logger.warning(f"unk_tok seen at seq={idx}, idx={_idx}")
+        if os.path.exists("tests/test_results/clean.jsonl"):
+            os.remove("tests/test_results/clean.jsonl")
+        if os.path.exists("tests/test_results/noisy.jsonl"):
+            os.remove("tests/test_results/noisy.jsonl")
+        clean_mididict_dataset.save("tests/test_results/clean.jsonl")
+        noisy_mididict_dataset.save("tests/test_results/noisy.jsonl")
 
-        logger.info(f"data_aug_1: {tknzr.decode(finetune_dataset[0][0][:50])}")
-        logger.info(f"data_aug_2: {tknzr.decode(finetune_dataset[0][0][:50])}")
+        if os.path.exists("tests/test_results/comb.jsonl"):
+            shutil.rmtree("tests/test_results/comb.jsonl")
+
+        finetuning_dataset = datasets.FinetuningDataset.build(
+            tokenizer=tknzr,
+            save_dir="tests/test_results/comb.jsonl",
+            max_seq_len=MAX_SEQ_LEN,
+            num_epochs=2,
+            clean_dataset_path="tests/test_results/clean.jsonl",
+            noisy_dataset_paths=["tests/test_results/noisy.jsonl"],
+        )
+
+        finetuning_dataset.init_epoch(0)
+        tokenized_seq = tknzr.decode(finetuning_dataset[0][0])
+        detokenized_midi_dict = tknzr.detokenize(tokenized_seq)
+        res = detokenized_midi_dict.to_midi()
+        res.save(f"tests/test_results/comb1.mid")
+
+        finetuning_dataset.init_epoch(1)
+        tokenized_seq = tknzr.decode(finetuning_dataset[0][0])
+        detokenized_midi_dict = tknzr.detokenize(tokenized_seq)
+        res = detokenized_midi_dict.to_midi()
+        res.save(f"tests/test_results/comb2.mid")
 
 
 setup_logger()

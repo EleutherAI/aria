@@ -7,6 +7,7 @@ from typing import Callable
 
 from aria import tokenizer
 from aria.data.midi import MidiDict
+from aria.data.datasets import FinetuningDataset
 from aria.utils import midi_to_audio
 
 
@@ -339,6 +340,26 @@ class TestAbsTokenizer(unittest.TestCase):
         _test_no_unk_token("expressive.mid")
         _test_no_unk_token("pop.mid")
         _test_no_unk_token("beethoven_moonlight.mid")
+
+
+class TestSeparatedTokenizer(unittest.TestCase):
+    def test_tokenize_detokenize_mididict(self):
+        tknzr = tokenizer.SeparatedAbsTokenizer()
+
+        clean_midi_dict = MidiDict.from_midi(
+            mid_path="tests/test_data/clean_2.mid"
+        )
+        noisy_midi_dict = MidiDict.from_midi(
+            mid_path="tests/test_data/noisy_2.mid"
+        )
+        comb_midi_dict = FinetuningDataset._get_combined_mididict(
+            clean_midi_dict, noisy_midi_dict, 20000
+        )
+
+        tokenized_seq = tknzr.tokenize(comb_midi_dict)
+        detokenized_midi_dict = tknzr.detokenize(tokenized_seq)
+        res = detokenized_midi_dict.to_midi()
+        res.save(f"tests/test_results/combined.mid")
 
 
 class TestRelTokenizer(unittest.TestCase):

@@ -135,7 +135,7 @@ class TestTraining(unittest.TestCase):
             num_workers=4,
             batch_size=1,
             epochs=2,
-            finetune_cp_path=CP_PATH,
+            checkpoint_path=CP_PATH,
             project_dir=FT_PATH,
             steps_per_checkpoint=50,
         )

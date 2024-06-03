@@ -681,7 +681,6 @@ class AbsTokenizer(Tokenizer):
                             "channel": _channel,
                         }
                     )
-
             else:
                 logging.warning(
                     f"Unexpected token sequence: {tok_1}, {tok_2}, {tok_3}"
@@ -715,6 +714,7 @@ class AbsTokenizer(Tokenizer):
             src: list,
             unk_tok: str,
             _aug_range: float,
+            pitch_aug: int | None = None,
         ):
             def pitch_aug_tok(tok, _pitch_aug):
                 if isinstance(tok, str):  # Stand in for special tokens
@@ -740,7 +740,9 @@ class AbsTokenizer(Tokenizer):
                     else:
                         return unk_tok
 
-            pitch_aug = random.randint(-_aug_range, _aug_range)
+            if not pitch_aug:
+                pitch_aug = random.randint(-_aug_range, _aug_range)
+
             return [pitch_aug_tok(x, pitch_aug) for x in src]
 
         # See functools.partial docs
@@ -769,6 +771,7 @@ class AbsTokenizer(Tokenizer):
             velocity_step: int,
             max_velocity: int,
             _aug_steps_range: int,
+            velocity_aug: int | None = None,
         ):
             def velocity_aug_tok(tok, _velocity_aug):
                 if isinstance(tok, str):  # Stand in for special tokens
@@ -797,9 +800,11 @@ class AbsTokenizer(Tokenizer):
 
                     return (_instrument, _pitch, _velocity + _velocity_aug)
 
-            velocity_aug = velocity_step * random.randint(
-                -_aug_steps_range, _aug_steps_range
-            )
+            if not velocity_aug:
+                velocity_aug = velocity_step * random.randint(
+                    -_aug_steps_range, _aug_steps_range
+                )
+
             return [velocity_aug_tok(x, velocity_aug) for x in src]
 
         # See functools.partial docs
@@ -810,6 +815,7 @@ class AbsTokenizer(Tokenizer):
             _aug_steps_range=aug_steps_range,
         )
 
+    # TODO: Adjust this so it can handle other tokens like <SEP>
     def export_tempo_aug(self, tempo_aug_range, mixup: bool):
         # Chord mix up will randomly reorder concurrent notes. A concurrent
         # notes are those which occur at the onset.
@@ -947,8 +953,104 @@ class AbsTokenizer(Tokenizer):
         )
 
 
+class SeparatedAbsTokenizer(AbsTokenizer):
+    def __init__(self, return_tensors: bool = False):
+        super().__init__(return_tensors)
+
+        self.name = "separated_abs"
+        self.lm_config = load_config()["tokenizer"]["lm"]
+        self.sep_tok = "<SEP>"
+        self.add_tokens_to_vocab([self.sep_tok])
+        self.special_tokens.append(self.sep_tok)
+
+    def tokenize(self, midi_dict: MidiDict, **kwargs):
+        assert (
+            midi_dict.metadata.get("cutoff_ms") is not None
+        ), "Invalid MidiDict"
+        cutoff_ms = midi_dict.metadata["cutoff_ms"]
+
+        seq = super().tokenize(midi_dict, **kwargs)
+        final_seq = copy.deepcopy(seq)
+
+        cnt = 0
+        curr_time = 0
+        for idx, tok in enumerate(seq):
+            if tok == self.time_tok:
+                cnt += 1
+            elif isinstance(tok, tuple) and tok[0] == "onset":
+                _curr_time = (self.config["abs_time_step_ms"] * cnt) + tok[1]
+                assert _curr_time >= curr_time
+                curr_time = _curr_time
+            elif (
+                isinstance(tok, tuple)
+                and tok[0] == "dur"
+                and curr_time > cutoff_ms
+            ):
+                final_seq.insert(idx + 1, self.sep_tok)
+                return final_seq
+
+        return seq
+
+    def detokenize(self, midi_dict: MidiDict, **kwargs):
+        return super().detokenize(midi_dict, **kwargs)
+
+    def export_data_aug(self):
+        return [
+            self.export_pitch_aug(5),
+            self.export_velocity_aug(1),
+        ]
+
+
+# class LMTokenizer(AbsTokenizer):
+#     def __init__(self, return_tensors: bool = False):
+#         super().__init__(return_tensors)
+
+#         self.lm_config = load_config()["tokenizer"]["lm"]
+#         self.tag_tokens = [f"{tag}: on" for tag in self.lm_config["tags"]] + [
+#             f"{tag}: off" for tag in self.lm_config["tags"]
+#         ]
+#         self.add_tokens_to_vocab(self.tag_tokens)
+#         self.special_tokens += self.tag_tokens
+
+#     def tokenize(self, midi_dict: MidiDict, **kwargs):
+#         seq = super().tokenize(midi_dict, **kwargs)
+
+#         for tag in midi_dict["metadata"]["listening_model"]:
+#             tag_name, start_ms, end_ms = tag
+#             start_pos = int(start_ms / self.config["abs_time_step"])
+#             end_pos = int(end_ms / self.config["abs_time_step"])
+
+#             if start_pos == end_pos:
+#                 end_pos += 1
+
+#             cnt = 0
+#             for idx, tok in enumerate(seq):
+#                 if tok == self.time_tok:
+#                     cnt += 1
+#                     if cnt == start_pos:
+#                         seq.insert(idx + 1, f"{tag_name}: on")
+#                         break
+#                     elif cnt == end_pos:
+#                         seq.insert(idx + 1, f"{tag_name}: off")
+#                         break
+
+#         return seq
+
+#     def detokenize(self, midi_dict: MidiDict, **kwargs):
+#         return super().tokenize(midi_dict, **kwargs)
+
+#     def export_data_aug(self):
+#         return [
+#             self.export_pitch_aug(5),
+#             self.export_velocity_aug(1),
+#         ]
+
+
 class RelTokenizer(Tokenizer):
-    """MidiDict tokenizer implemented with relative onset timings"""
+    """MidiDict tokenizer implemented with relative onset timings.
+
+    This tokenizer is depreciated and has been replaced by AbsTokenizer.
+    """
 
     def __init__(self, return_tensors: bool = False):
         super().__init__(return_tensors)

@@ -12,13 +12,14 @@ import functools
 import shutil
 
 from pathlib import Path
+from copy import deepcopy
 from typing import Callable, Iterable
 from collections import defaultdict
 from multiprocessing import Pool, Process, Queue, get_start_method
 
 from aria.config import load_config
 from aria.tokenizer import Tokenizer
-from aria.data.midi import MidiDict, get_test_fn
+from aria.data.midi import MidiDict, get_test_fn, get_duration_ms
 
 
 def setup_logger():
@@ -383,6 +384,10 @@ def build_mididict_dataset(
     if shuffle is True:
         logger.info(f"Shuffling {num_paths} paths")
         random.shuffle(paths)
+    else:
+        logger.info(f"Ordering {num_paths} paths")
+        base_path = Path(dir)
+        paths.sort(key=lambda _path: _path.relative_to(base_path).as_posix())
 
     cnt = 0
     if stream_save_path is None:
@@ -432,32 +437,87 @@ class TrainingDataset(torch.utils.data.Dataset):
         self.file_mmap = None
         self.index = None
 
-    def init_epoch(self, epoch_num: int | None = None):
-        raise NotImplementedError
-
     def build(**kwargs):
         raise NotImplementedError
 
+    def init_epoch(self, idx: int | None = None):
+        if idx is None:
+            idx = self.curr_epoch + 1
+
+        if idx >= self.num_epochs:
+            _idx = idx % self.num_epochs
+            self.logger.warning(
+                f"epoch file doesn't exist for {idx}, resetting to epoch={_idx}"
+            )
+            idx = _idx
+
+        self.close()
+        self.file_buff = open(self.epoch_files[idx], mode="r")
+        self.file_mmap = mmap.mmap(
+            self.file_buff.fileno(), 0, access=mmap.ACCESS_READ
+        )
+        self.index = self._build_index()
+        self.curr_epoch = idx
+        try:
+            rank = torch.distributed.get_rank()
+        except Exception:
+            rank = 0
+
+        self.logger.info(f"{rank}: Initiated epoch {idx} of PretrainingDataset")
+
+    def _get_epoch_files(self, dir_path: str):
+        """Validates and returns a sorted list of epoch dataset files."""
+        file_names = [
+            file_name
+            for file_name in os.listdir(dir_path)
+            if os.path.isfile(os.path.join(dir_path, file_name))
+        ]
+        file_paths = [
+            os.path.join(dir_path, file_name) for file_name in file_names
+        ]
+
+        present_epochs = []
+        for file_name in file_names:
+            if not re.match(r"^epoch\d+\.jsonl$", file_name):
+                self.logger.warning(
+                    f"Found file with unexpected name: {file_name}"
+                )
+            else:
+                present_epochs.append(
+                    int(re.match(r"^epoch(\d+)\.jsonl$", file_name).group(1))
+                )
+        self.num_epochs = len(present_epochs)
+        assert self.num_epochs >= 1, f"no epoch files found in {dir_path}"
+        assert set(present_epochs) == set(
+            range(self.num_epochs)
+        ), "epoch files missing"
+
+        # Check files have valid configs
+        for file_path in file_paths:
+            self.close()
+            self.file_buff = open(file_path, mode="r")
+            self.file_mmap = mmap.mmap(
+                self.file_buff.fileno(), 0, access=mmap.ACCESS_READ
+            )
+            self.check_config()
+
+        return [
+            os.path.join(dir_path, f"epoch{idx}.jsonl")
+            for idx in range(self.num_epochs)
+        ]
+
     @classmethod
     def get_config_from_path(cls, path: str):
-        """Returns config dict from dataset file/directory.
+        """Returns config dict from dataset directory.
 
-        If a directory provided, it is assumed t"""
-
-        def _get_config_from_fp(_path):
-            # Finetuning Dataset
-            return FinetuningDataset.get_config_from_path(path=_path)
-
-        def _get_config_from_dir(_path):
-            # Pretraining Dataset
-            return PretrainingDataset.get_config_from_path(path=_path)
-
-        if os.path.isfile(path):
-            return _get_config_from_fp(path)
-        elif os.path.isdir(path):
-            return _get_config_from_dir(path)
-        else:
-            raise FileNotFoundError("Invalid path provided")
+        Note that this will return the config corresponding to epoch0.jsonl.
+        """
+        assert os.path.isdir(path), "directory not found"
+        assert os.path.isfile(
+            epoch0_path := os.path.join(path, "epoch0.jsonl")
+        ), "epoch file not found"
+        with open(epoch0_path) as f:
+            return json.loads(f.readline())
 
     def close(self):
         if self.file_buff:
@@ -658,6 +718,23 @@ def reservoir(_iterable: Iterable, k: int):
         yield from _reservoir
 
 
+def random_selection_itt(iterables: list[Iterable]):
+    iterators = [iter(x) for x in iterables]
+    active = list(iterators)  # Start with all iterators as active
+
+    try:
+        while active:
+            selected = random.choice(active)
+            yield next(selected)
+
+            for it in iterators:
+                if it is not selected:
+                    next(it, None)
+    except StopIteration:
+        pass
+
+
+# TODO: Intergrate finetuning into the pipeline
 class PretrainingDataset(TrainingDataset):
     """Torch dataset object yielding sequences formatted for pre-training"""
 
@@ -665,91 +742,12 @@ class PretrainingDataset(TrainingDataset):
         super().__init__(tokenizer=tokenizer)
 
         self.dir_path = dir_path
-        self.epoch_files = self._get_epoch_files()
+        self.epoch_files = self._get_epoch_files(dir_path)
         self.curr_epoch = 0
         self.init_epoch(0)
 
     def __len__(self):
         return len(self.index)
-
-    @classmethod
-    def get_config_from_path(cls, path: str):
-        """Returns config dict from dataset directory.
-
-        Note that this will return the config corresponding to epoch0.jsonl.
-        """
-        assert os.path.isdir(path), "directory not found"
-        assert os.path.isfile(
-            epoch0_path := os.path.join(path, "epoch0.jsonl")
-        ), "epoch file not found"
-        with open(epoch0_path) as f:
-            return json.loads(f.readline())
-
-    def init_epoch(self, idx: int | None = None):
-        if idx is None:
-            idx = self.curr_epoch + 1
-
-        if idx >= self.num_epochs:
-            _idx = idx % self.num_epochs
-            self.logger.warning(
-                f"epoch file doesn't exist for {idx}, resetting to epoch={_idx}"
-            )
-            idx = _idx
-
-        self.close()
-        self.file_buff = open(self.epoch_files[idx], mode="r")
-        self.file_mmap = mmap.mmap(
-            self.file_buff.fileno(), 0, access=mmap.ACCESS_READ
-        )
-        self.index = self._build_index()
-        self.curr_epoch = idx
-        try:
-            rank = torch.distributed.get_rank()
-        except Exception:
-            rank = 0
-
-        self.logger.info(f"{rank}: Initiated epoch {idx} of PretrainingDataset")
-
-    def _get_epoch_files(self):
-        """Validates and returns a sorted list of epoch dataset files."""
-        file_names = [
-            file_name
-            for file_name in os.listdir(self.dir_path)
-            if os.path.isfile(os.path.join(self.dir_path, file_name))
-        ]
-        file_paths = [
-            os.path.join(self.dir_path, file_name) for file_name in file_names
-        ]
-
-        present_epochs = []
-        for file_name in file_names:
-            if not re.match(r"^epoch\d+\.jsonl$", file_name):
-                self.logger.warning(
-                    f"Found file with unexpected name: {file_name}"
-                )
-            else:
-                present_epochs.append(
-                    int(re.match(r"^epoch(\d+)\.jsonl$", file_name).group(1))
-                )
-        self.num_epochs = len(present_epochs)
-        assert self.num_epochs >= 1, f"no epoch files found in {self.dir_path}"
-        assert set(present_epochs) == set(
-            range(self.num_epochs)
-        ), "epoch files missing"
-
-        # Check files have valid configs
-        for file_path in file_paths:
-            self.close()
-            self.file_buff = open(file_path, mode="r")
-            self.file_mmap = mmap.mmap(
-                self.file_buff.fileno(), 0, access=mmap.ACCESS_READ
-            )
-            self.check_config()
-
-        return [
-            os.path.join(self.dir_path, f"epoch{idx}.jsonl")
-            for idx in range(self.num_epochs)
-        ]
 
     @classmethod
     def build(
@@ -845,140 +843,183 @@ class PretrainingDataset(TrainingDataset):
 class FinetuningDataset(TrainingDataset):
     """Torch dataset object yielding sequences formatted for fine-tuning."""
 
-    def __init__(self, file_path: str, tokenizer: Tokenizer):
+    def __init__(self, dir_path: str, tokenizer: Tokenizer):
         super().__init__(tokenizer=tokenizer)
 
-        self.file_path = file_path
-        self.file_buff = open(file_path, mode="r")
-        self.file_mmap = mmap.mmap(
-            self.file_buff.fileno(), 0, access=mmap.ACCESS_READ
-        )
-        self.check_config()
-        self.index = self._build_index()
+        self.dir_path = dir_path
+        self.epoch_files = self._get_epoch_files(dir_path)
+        self.curr_epoch = 0
+        self.init_epoch(0)
 
     def __len__(self):
         return len(self.index)
 
     @classmethod
-    def get_config_from_path(cls, path: str):
-        """Returns config dict from dataset file"""
-        assert os.path.isfile(path), "dataset file not found"
-        with open(path) as f:
-            return json.loads(f.readline())
+    def _get_combined_mididict(
+        cls,
+        clean_midi_dict: MidiDict,
+        noisy_midi_dict: MidiDict,
+        cutoff_ms: int,
+    ):
 
-    # Do nothing in this case
-    def init_epoch(self, idx: int | None = None):
-        self.logger.info(f"Successful initiated epoch {idx}")
+        comb_note_msgs = []
+        for _note_msg in noisy_midi_dict.note_msgs:
+            if (
+                get_duration_ms(
+                    start_tick=0,
+                    end_tick=_note_msg["data"]["start"],
+                    tempo_msgs=clean_midi_dict.tempo_msgs,
+                    ticks_per_beat=clean_midi_dict.ticks_per_beat,
+                )
+                < cutoff_ms
+            ):
+                comb_note_msgs.append(_note_msg)
+            else:
+                break
+
+        for _note_msg in clean_midi_dict.note_msgs:
+            if (
+                get_duration_ms(
+                    start_tick=0,
+                    end_tick=_note_msg["data"]["start"],
+                    tempo_msgs=clean_midi_dict.tempo_msgs,
+                    ticks_per_beat=clean_midi_dict.ticks_per_beat,
+                )
+                >= cutoff_ms
+            ):
+                comb_note_msgs.append(_note_msg)
+
+        sorted(comb_note_msgs, key=lambda msg: msg["tick"])
+        comb_metadata = deepcopy(clean_midi_dict.metadata)
+        comb_metadata["cutoff_ms"] = cutoff_ms
+
+        return MidiDict(
+            meta_msgs=clean_midi_dict.meta_msgs,
+            tempo_msgs=clean_midi_dict.tempo_msgs,
+            pedal_msgs=clean_midi_dict.pedal_msgs,
+            instrument_msgs=clean_midi_dict.instrument_msgs,
+            note_msgs=comb_note_msgs,
+            ticks_per_beat=clean_midi_dict.ticks_per_beat,
+            metadata=comb_metadata,
+        )
 
     @classmethod
     def build(
         cls,
         tokenizer: Tokenizer,
-        save_path: str,
+        save_dir: str,
         max_seq_len: int,
-        stride_len: int,
-        midi_dataset: MidiDataset = None,
-        midi_dataset_path: str = None,
+        num_epochs: int,
+        clean_dataset_path: str,
+        noisy_dataset_paths: str,
     ):
-        """Builds and returns FinetuningDataset."""
+        def _get_mixed_dataset(
+            _clean_dataset: Iterable,
+            _noisy_datasets: list[Iterable],
+        ):
+            finetuning_dataset_config = load_config()["data"][
+                "finetuning_dataset"
+            ]
+            MIN_MS = finetuning_dataset_config["min_cutoff_ms"]
+            MAX_MS = finetuning_dataset_config["max_cutoff_ms"]
 
-        # This function should be made more robust in the future
-        def _truncate_and_stride(_tokenized_seq: list):
-            prefix = []
-
-            while _tokenized_seq:
-                tok = _tokenized_seq[0]
-                if tok != tokenizer.bos_tok and tok[0] == "prefix":
-                    prefix.append(_tokenized_seq.pop(0))
-                else:
-                    break
-
-            seq_len = len(_tokenized_seq)
-            prefix_len = len(prefix)
-
-            res = []
-            idx = 0
-            # No padding needed here
-            while idx + max_seq_len - prefix_len < seq_len:
-                res.append(
-                    prefix
-                    + _tokenized_seq[idx : idx + max_seq_len - prefix_len]
+            comb_midi_dicts = []
+            _noisy_dataset_itt = random_selection_itt(_noisy_datasets)
+            for clean, noisy in zip(_clean_dataset, _noisy_dataset_itt):
+                assert os.path.basename(
+                    clean.metadata["abs_path"]
+                ) == os.path.basename(
+                    noisy.metadata["abs_path"]
+                ), f"file order mismatch: {clean.metadata['abs_path']}; {noisy.metadata['abs_path']} "
+                comb_midi_dicts.append(
+                    cls._get_combined_mididict(
+                        clean,
+                        noisy,
+                        cutoff_ms=random.randint(MIN_MS, MAX_MS),
+                    )
                 )
-                idx += stride_len
 
-                # Checks that next start note will not be cutoff midway
-                while idx < seq_len:
-                    if _tokenized_seq[idx] in tokenizer.special_tokens:
-                        break
-                    elif _tokenized_seq[idx][0] in tokenizer.instruments_wd:
-                        break
-                    else:
-                        idx += 1
+            return MidiDataset(comb_midi_dicts)
 
-            # Add the last sequence
-            _seq = prefix + _tokenized_seq[idx : idx + max_seq_len - prefix_len]
-            _seq += [tokenizer.pad_tok] * (max_seq_len - len(_seq))
-            res.append(_seq)
-
-            return res
-
-        def _build(_midi_dataset):
-            with jsonlines.open(save_path, mode="w") as writer:
+        def _build_epoch(_save_path, _midi_dataset):
+            with jsonlines.open(_save_path, mode="w") as writer:
                 # Write tokenizer info into json on first line
                 writer.write(
                     {
                         "tokenizer_config": tokenizer.config,
                         "tokenizer_name": tokenizer.name,
                         "max_seq_len": max_seq_len,
-                        "stride_len": max_seq_len,
                     }
                 )
-                logger.info(
-                    f"Building FinetuningDataset with config: "
-                    f"tokenizer_name={tokenizer.name}, "
-                    f"max_seq_len={max_seq_len}, "
-                    f"stride_len={stride_len}"
-                )
 
+                buffer = []
                 _idx = 0
-                for entry in get_seqs(tokenizer, _midi_dataset):
-                    if entry:
-                        for _entry in _truncate_and_stride(entry):
-                            writer.write(_entry)
+                for entry in reservoir(get_seqs(tokenizer, _midi_dataset), 10):
+                    if entry is not None:
+                        buffer += entry
+                    while len(buffer) >= max_seq_len:
+                        writer.write(buffer[:max_seq_len])
+                        buffer = buffer[max_seq_len:]
 
                     _idx += 1
                     if _idx % 250 == 0:
                         logger.info(f"Finished processing {_idx}")
 
+                buffer += [tokenizer.pad_tok] * (max_seq_len - len(buffer))
+                writer.write(buffer[:max_seq_len])
+
         logger = setup_logger()
         assert max_seq_len > 0, "max_seq_len must be greater than 0"
+        assert num_epochs > 0, "num_epochs must be greater than 0"
+        assert os.path.isfile(clean_dataset_path), "file not found"
+        for __path in noisy_dataset_paths:
+            assert os.path.isfile(__path), "file not found"
         if get_start_method() == "spawn":
             logger.warning(
                 'The current multiprocessing start method is "spawn", this '
                 "will slow down dataset building"
             )
 
-        if not midi_dataset and not midi_dataset_path:
-            Exception("Must provide either midi_dataset or midi_dataset_path")
-        if midi_dataset and midi_dataset_path:
-            Exception("Can't provide both midi_dataset and midi_dataset_path")
-
-        if os.path.isfile(save_path):
+        if os.path.isdir(save_dir) and os.listdir(save_dir):
             print(
-                f"There is a file existing at {save_path}, type [Y/y] to "
-                "continue:"
+                f"The directory at {save_dir} in non-empty, type [Y/y] to "
+                "remove and continue:"
             )
             if input() not in {"Y", "y"}:
                 print("Aborting")
                 return
             else:
-                os.remove(save_path)
+                shutil.rmtree(save_dir)
 
-        if midi_dataset_path:
-            midi_dataset = MidiDataset.get_generator(midi_dataset_path)
+        if not os.path.exists(save_dir):
+            os.mkdir(save_dir)
 
-        _build(_midi_dataset=midi_dataset)
+        logger.info(
+            f"Building FinetuningDataset with config: "
+            f"max_seq_len={max_seq_len}, "
+            f"tokenizer_name={tokenizer.name}"
+        )
 
-        logger.info(f"Finished building, saved Finetuning to {save_path}")
+        clean_dataset = MidiDataset.load(clean_dataset_path)
+        noisy_datasets = [
+            MidiDataset.load(_path) for _path in noisy_dataset_paths
+        ]
 
-        return cls(file_path=save_path, tokenizer=tokenizer)
+        # Not using generators when building FinetuningDatasets, potential
+        # memory issues
+        for idx in range(num_epochs):
+            logger.info(f"Building epoch {idx}/{num_epochs - 1}...")
+
+            # Reload the combined dataset for each epoch
+            combined_dataset = _get_mixed_dataset(clean_dataset, noisy_datasets)
+
+            _build_epoch(
+                _save_path=os.path.join(save_dir, f"epoch{idx}.jsonl"),
+                _midi_dataset=combined_dataset,
+            )
+
+        logger.info(
+            f"Finished building, saved PretrainingDataset to {save_dir}"
+        )
+
+        return cls(dir_path=save_dir, tokenizer=tokenizer)

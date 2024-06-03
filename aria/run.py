@@ -325,12 +325,12 @@ def build_midi_dataset(args):
 
 def _parse_pretrain_dataset_args():
     argp = argparse.ArgumentParser(prog="aria pretrain-dataset")
-    argp.add_argument("load_path", help="path midi_dict dataset")
-    argp.add_argument("save_dir", help="path to save dataset")
+    argp.add_argument("-load_path", help="path midi_dict dataset")
+    argp.add_argument("-save_dir", help="path to save dataset")
     argp.add_argument(
-        "tokenizer_name", help="tokenizer name", choices=["abs", "rel"]
+        "-tokenizer_name", help="tokenizer name", choices=["abs", "rel"]
     )
-    argp.add_argument("-l", help="max sequence length", type=int, default=2048)
+    argp.add_argument("-l", help="max sequence length", type=int, default=4096)
     argp.add_argument("-e", help="num epochs", type=int, default=1)
 
     return argp.parse_args(sys.argv[2:])
@@ -356,32 +356,34 @@ def build_pretraining_dataset(args):
 
 def _parse_finetune_dataset_args():
     argp = argparse.ArgumentParser(prog="aria finetune-dataset")
-    argp.add_argument("load_path", help="path midi_dict dataset")
-    argp.add_argument("save_path", help="path to save dataset")
     argp.add_argument(
-        "tokenizer_name", help="tokenizer name", choices=["abs", "rel"]
+        "-clean_load_path",
+        help="path to the clean midi_dict dataset",
     )
-    argp.add_argument("-l", help="max sequence length", type=int, default=2048)
-    argp.add_argument("-s", help="stride length", type=int, default=512)
+    argp.add_argument(
+        "-noisy_load_paths",
+        nargs="+",
+        help="one or more paths to noisy midi_dict datasets",
+    )
+    argp.add_argument("-save_dir", help="path to save dataset")
+    argp.add_argument("-l", help="max sequence length", type=int, default=4096)
+    argp.add_argument("-e", help="num epochs", type=int, default=1)
 
     return argp.parse_args(sys.argv[2:])
 
 
 def build_finetune_dataset(args):
-    from aria.tokenizer import AbsTokenizer, RelTokenizer
+    from aria.tokenizer import SeparatedAbsTokenizer
     from aria.data.datasets import FinetuningDataset
 
-    if args.tokenizer_name == "abs":
-        tokenizer = AbsTokenizer()
-    elif args.tokenizer_name == "rel":
-        tokenizer = RelTokenizer()
-
+    tokenizer = SeparatedAbsTokenizer()
     dataset = FinetuningDataset.build(
         tokenizer=tokenizer,
-        save_path=args.save_path,
+        save_dir=args.save_dir,
         max_seq_len=args.l,
-        stride_len=args.s,
-        midi_dataset_path=args.load_path,
+        num_epochs=args.e,
+        clean_dataset_path=args.clean_load_path,
+        noisy_dataset_paths=args.noisy_load_paths,
     )
 
 

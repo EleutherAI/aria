@@ -755,13 +755,38 @@ def meta_maestro_json(
     return res
 
 
+def meta_listening_model(mid: mido.MidiFile, msg_data: dict, tag_names: list):
+    if os.path.isfile("listening_model_tags.json") is False:
+        return {}
+
+    file_name = pathlib.Path(mid.filename).name
+    with open("listening_model_tags.json", "r") as f:
+        tags = json.load(f).get(file_name, None)
+    if tags == None:
+        return {}
+
+    valid_tags = []
+    for tag in tags:
+        tag_name = tag[0]
+        if tag_name in tag_names:
+            valid_tags.append(tag)
+
+    return {"listening_model": valid_tags}
+
+
+def meta_abs_path(mid: mido.MidiFile, msg_data: dict):
+    return {"abs_path": str(pathlib.Path(mid.filename).absolute())}
+
+
 def get_metadata_fn(metadata_proc_name: str):
     # Add additional test_names to this inventory
     name_to_fn = {
         "composer_filename": meta_composer_filename,
         "composer_metamsg": meta_composer_metamsg,
         "form_filename": meta_form_filename,
-        "maestro_csv": meta_maestro_json,
+        "maestro_json": meta_maestro_json,
+        "listening_model": meta_listening_model,
+        "abs_path": meta_abs_path,
     }
 
     fn = name_to_fn.get(metadata_proc_name, None)
