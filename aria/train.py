@@ -197,7 +197,7 @@ def get_optim(
     num_epochs: int,
     steps_per_epoch: int,
 ):
-    LR = 3e-4
+    LR = 3e-5
     END_RATIO = 0.1
     WARMUP_STEPS = 1000
 
@@ -315,13 +315,14 @@ def _train(
             f"{'{:,}'.format(sum(p.numel() for p in model.parameters() if p.requires_grad))} "
             "parameters"
         )
-        logger.info("Profiling FLOP")
-        _bench()
 
-        with flop_counter:
-            _bench()
-        total_flop = sum(flop_counter.get_flop_counts()["Global"].values())
-        logger.info(f"Forwards & backwards FLOP: {total_flop / 1e12} TF")
+        # logger.info("Profiling FLOP")
+        # _bench()
+
+        # with flop_counter:
+        #     _bench()
+        # total_flop = sum(flop_counter.get_flop_counts()["Global"].values())
+        # logger.info(f"Forwards & backwards FLOP: {total_flop / 1e12} TF")
 
     def make_checkpoint(_accelerator, _epoch: int, _step: int):
         checkpoint_dir = os.path.join(
@@ -359,10 +360,13 @@ def _train(
             )
         ):
             step = __step + _resume_step + 1
-            src, tgt = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
+            src, tgt, mask = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
             logits = model(src)  # (b_sz, s_len, v_sz)
             logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
             loss = loss_fn(logits, tgt)
+
+            loss = loss * mask
+            loss = loss[loss != 0.0].mean()  # != 0.0 here is important
 
             # Calculate statistics
             loss_buffer.append(loss.item())
@@ -422,11 +426,14 @@ def _train(
                 leave=False,
             )
         ):
-            src, tgt = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
+            src, tgt, mask = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
             with torch.no_grad():
                 logits = model(src)  # (b_sz, s_len, v_sz)
             logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
             loss = loss_fn(logits, tgt)
+
+            loss = loss * mask
+            loss = loss[loss != 0.0].mean()
 
             # Logging
             avg_val_loss = rolling_average(avg_val_loss, loss.item(), step)
@@ -448,7 +455,7 @@ def _train(
     TRAILING_LOSS_STEPS = 200
     PAD_ID = train_dataloader.dataset.tokenizer.pad_id
     logger = get_logger(__name__)  # Accelerate logger
-    loss_fn = nn.CrossEntropyLoss(ignore_index=PAD_ID)
+    loss_fn = nn.CrossEntropyLoss(ignore_index=PAD_ID, reduction="none")
     profile_flops(dataloader=train_dataloader)
 
     if accelerator.is_main_process:
@@ -587,17 +594,6 @@ def resume_train(
         steps_per_epoch=len(train_dataloader),
     )
 
-    if (
-        model_config.yarn_config is None
-        or model_config.yarn_config.scale <= 1.0
-    ):
-        assert (
-            train_dataloader.dataset.max_seq_len == model_config.max_seq_len
-        ), "max_seq_len differs between datasets and model config"
-        assert (
-            val_dataloader.dataset.max_seq_len == model_config.max_seq_len
-        ), "max_seq_len differs between datasets and model config"
-
     (
         model,
         train_dataloader,
@@ -715,17 +711,6 @@ def train(
         num_epochs=epochs,
         steps_per_epoch=len(train_dataloader),
     )
-
-    if (
-        model_config.yarn_config is None
-        or model_config.yarn_config.scale <= 1.0
-    ):
-        assert (
-            train_dataloader.dataset.max_seq_len == model_config.max_seq_len
-        ), "max_seq_len differs between datasets and model config"
-        assert (
-            val_dataloader.dataset.max_seq_len == model_config.max_seq_len
-        ), "max_seq_len differs between datasets and model config"
 
     (
         model,

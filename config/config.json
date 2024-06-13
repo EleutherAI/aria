@@ -2,33 +2,33 @@
     "data": {
         "tests": {
             "max_programs":{
-                "run": true,
+                "run": false,
                 "args": {
                     "max": 12
                 }
             },
             "max_instruments":{
-                "run": true,
+                "run": false,
                 "args": {
                     "max": 5
                 }
             },
             "total_note_frequency":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_per_second": 1.5,
                     "max_per_second": 25
                 }
             },
             "note_frequency_per_instrument":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_per_second": 0.5,
                     "max_per_second": 16
                 }
             },
             "min_length":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_seconds": 20
                 }
@@ -78,7 +78,7 @@
                     }
                 },
                 "maestro_json": {
-                    "run": false,
+                    "run": true,
                     "args": {
                         "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"],
                         "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"]
@@ -101,9 +101,39 @@
                 "composer": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"]
             }
         },
-        "finetuning_dataset": {
-            "min_cutoff_ms": 5000,
-            "max_cutoff_ms": 60000
+        "finetuning": {
+            "min_noisy_interval_ms": 5000,
+            "max_noisy_interval_ms": 60000,
+            "min_clean_interval_ms": 60000,
+            "max_clean_interval_ms": 200000,
+            "noising": {
+                "activation_prob": 0.95,
+                "remove_notes": {
+                    "activation_prob": 0.75,
+                    "min_ratio": 0.1,
+                    "max_ratio": 0.4
+                },
+                "adjust_velocity": {
+                    "activation_prob": 0.3,
+                    "min_adjust": 1,
+                    "max_adjust": 30,
+                    "max_ratio": 0.1,
+                    "min_ratio": 0.30
+                },
+                "adjust_onsets": {
+                    "activation_prob": 0.5,
+                    "min_adjust_s": 0.03,
+                    "max_adjust_s": 0.07,
+                    "max_ratio": 0.15,
+                    "min_ratio": 0.5
+                },
+                "quantize_onsets": {
+                    "activation_prob": 0.15,
+                    "min_quant_s": 0.05,
+                    "max_quant_s": 0.15,
+                    "max_vel_delta": 45
+                }
+            }
         }
     },
 

@@ -95,7 +95,7 @@ class MidiDict:
         self.tempo_msgs = tempo_msgs
         self.pedal_msgs = pedal_msgs
         self.instrument_msgs = instrument_msgs
-        self.note_msgs = note_msgs
+        self.note_msgs = sorted(note_msgs, key=lambda msg: msg["tick"])
         self.ticks_per_beat = ticks_per_beat
         self.metadata = metadata
 
@@ -726,11 +726,13 @@ def meta_maestro_json(
     mid: mido.MidiFile, msg_data: dict, composer_names: list, form_names: list
 ):
     if os.path.isfile("maestro.json") is False:
+        print("maestro.json not found")
         return {}
 
     file_name = pathlib.Path(mid.filename).name
     with open("maestro.json", "r") as f:
-        metadata = json.load(f).get(file_name, None)
+        _file_name_without_ext = os.path.splitext(file_name)[0]
+        metadata = json.load(f).get(_file_name_without_ext + ".midi", None)
     if metadata == None:
         return {}
 
