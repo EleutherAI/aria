@@ -6,7 +6,9 @@ import time
 from typing import Callable
 
 from aria import tokenizer
+from aria.config import load_config
 from aria.data.midi import MidiDict
+from aria.data.datasets import _get_combined_mididict, _noise_midi_dict
 from aria.utils import midi_to_audio
 
 
@@ -339,6 +341,66 @@ class TestAbsTokenizer(unittest.TestCase):
         _test_no_unk_token("expressive.mid")
         _test_no_unk_token("pop.mid")
         _test_no_unk_token("beethoven_moonlight.mid")
+
+
+# TODO: This example is not working, I'm pretty sure the issue is in _get_combined_mididict somewhere
+# Fix this!!
+class TestSeparatedTokenizer(unittest.TestCase):
+    def test_tokenize_detokenize_mididict(self):
+        def _find_inst_onsets(_seq: list):
+            curr_time_ms = 0
+            time_toks = 0
+            for tok in _seq:
+                if tok == "<T>":
+                    time_toks += 1
+                elif isinstance(tok, tuple) and tok[0] == "onset":
+                    curr_time_ms = 5000 * time_toks + tok[1]
+                elif tok == "<INST>":
+                    print("Seen at", curr_time_ms)
+
+        tknzr = tokenizer.SeparatedAbsTokenizer()
+
+        clean_midi_dict = MidiDict.from_midi(
+            mid_path="/mnt/ssd1/data/mp3/raw/maestro-mp3/2004/MIDI-Unprocessed_SMF_02_R1_2004_01-05_ORIG_MID--AUDIO_02_R1_2004_05_Track05_wav.midi"
+        )
+        noisy_midi_dict = MidiDict.from_midi(
+            mid_path="/mnt/ssd1/data/mp3/raw/maestro-mp3/2004/MIDI-Unprocessed_SMF_02_R1_2004_01-05_ORIG_MID--AUDIO_02_R1_2004_05_Track05_wav.midi"
+            # mid_path="/mnt/ssd1/amt/transcribed_data/noisy_maestro/small-long-e7/2004/MIDI-Unprocessed_SMF_02_R1_2004_01-05_ORIG_MID--AUDIO_02_R1_2004_05_Track05_wav.mid"
+        )
+
+        noisy_midi_dict = _noise_midi_dict(
+            noisy_midi_dict, load_config()["data"]["finetuning"]["noising"]
+        )
+
+        clean_mid = clean_midi_dict.to_midi()
+        clean_mid.save(f"tests/test_results/combined_clean.mid")
+        noisy_mid = noisy_midi_dict.to_midi()
+        noisy_mid.save(f"tests/test_results/combined_noisy.mid")
+
+        comb_midi_dict = _get_combined_mididict(
+            clean_midi_dict,
+            noisy_midi_dict,
+            min_noisy_ms=10000,
+            max_noisy_ms=25000,
+            min_clean_ms=30000,
+            max_clean_ms=60000,
+        )
+
+        comb_midi = comb_midi_dict.to_midi()
+        comb_midi.save(f"tests/test_results/combined_raw.mid")
+        tokenized_seq = tknzr.tokenize(comb_midi_dict)
+        detokenized_midi_dict = tknzr.detokenize(tokenized_seq)
+        res = detokenized_midi_dict.to_midi()
+        res.save(f"tests/test_results/combined.mid")
+
+        for idx, sub_seq in enumerate(tknzr.split(tokenized_seq, 4096)):
+            if idx == 3:
+                _find_inst_onsets(sub_seq)
+                print(idx)
+                print(sub_seq)
+            detokenized_midi_dict = tknzr.detokenize(sub_seq)
+            res = detokenized_midi_dict.to_midi()
+            res.save(f"tests/test_results/combined{idx}.mid")
 
 
 class TestRelTokenizer(unittest.TestCase):
