@@ -16,14 +16,14 @@ torch._inductor.config.fx_graph_cache = True
 
 
 @torch.no_grad()
-def _prefill(model, idxs: torch.Tensor, input_pos: torch.Tensor):
+def prefill(model, idxs: torch.Tensor, input_pos: torch.Tensor):
     logits = model.forward(idxs=idxs, input_pos=input_pos)[:, -1]
 
     return logits
 
 
 @torch.no_grad()
-def _decode_logits(model, idxs: torch.Tensor, input_pos: torch.Tensor):
+def decode_one(model, idxs: torch.Tensor, input_pos: torch.Tensor):
     logits = model.forward(idxs=idxs, input_pos=input_pos)[:, -1]
 
     return logits
@@ -99,9 +99,9 @@ def greedy_sample(
     eos_tok_seen = [False for _ in range(_num_prompts)]
 
     if compile is True:
-        global _decode_logits
-        _decode_logits = torch.compile(
-            _decode_logits,
+        global decode_one
+        decode_one = torch.compile(
+            decode_one,
             mode="reduce-overhead",
             # mode="max-autotune",
             fullgraph=True,
@@ -128,13 +128,13 @@ def greedy_sample(
     ):
         with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
             if idx == _prompt_len:
-                logits = _prefill(
+                logits = prefill(
                     model,
                     idxs=seq[:, :idx],
                     input_pos=torch.arange(0, idx, device=seq.device),
                 )
             else:
-                logits = _decode_logits(
+                logits = decode_one(
                     model,
                     idxs=seq[:, idx - 1 : idx],
                     input_pos=torch.tensor(

@@ -4,19 +4,10 @@ import argparse
 import os
 import re
 import sys
-import pathlib
-import warnings
 
 
-# TODO: Implement a way of inferring the tokenizer name automatically
 def _parse_sample_args():
     argp = argparse.ArgumentParser(prog="aria sample")
-    argp.add_argument(
-        "-tok",
-        help="name of tokenizer",
-        choices=["abs", "rel"],
-        required=True,
-    )
     argp.add_argument("-m", help="name of model config file")
     argp.add_argument("-c", help="path to model checkpoint")
     argp.add_argument("-p", help="path to midi file")
@@ -56,16 +47,14 @@ def _parse_sample_args():
     )
     argp.add_argument(
         "-trunc",
-        help="length to truncated prompt",
+        help="length (in seconds) of the prompt",
         type=int,
-        default=200,
+        default=20,
     )
     argp.add_argument("-e", action="store_true", help="enable force end")
     argp.add_argument("-l", type=int, help="generation length", default=1024)
-    argp.add_argument("-q", action="store_true", help="quantize the model")
-    argp.add_argument(
-        "-sup", action="store_true", help="suppress fluidsynth", default=False
-    )
+    argp.add_argument("-noise", action="store_true", help="add noise to prompt")
+    argp.add_argument("-compile", action="store_true", help="compile cudagraph")
 
     return argp.parse_args(sys.argv[2:])
 
@@ -79,7 +68,6 @@ def _get_model_name(name: str | None, state: dict):
         16: "small",
         32: "medium",
         64: "large",
-        96: "xlarge",
     }
     try:
         pattern = re.compile(r"encode_layers\.(\d+)\.")
@@ -96,64 +84,27 @@ def _get_model_name(name: str | None, state: dict):
         raise ValueError("Model name is not provided and cannot be inferred.")
 
 
-def _show_popup(prompt: str, files: list) -> str:
-    for i in range(len(files)):
-        print(f"  [{i}] {files[i]}")
-
-    for tries in range(3):  # 3 tries in case of fat fingers
-        try:
-            res = int(input(prompt + f" [0-{len(files) - 1}]: "))
-            assert 0 <= res < len(files)
-            return files[res]
-        except:
-            print("Invalid input. Try again...")
-
-    raise ValueError("Invalid input.")
-
-
-def _get_ckpt_path(ckpt_path: str | None) -> str:
-    if ckpt_path is None:
-        ckpts = list(pathlib.Path(".").glob("*.bin"))
-        ckpt_path = _show_popup("Choose a checkpoint", ckpts)
-    return ckpt_path
-
-
-def _get_midi_path(midi_path: str | None) -> str:
-    if midi_path is None:
-        midis = list(pathlib.Path(".").glob("*.mid")) + list(
-            pathlib.Path(".").glob("*.midi")
-        )
-        midi_path = _show_popup("Choose a midi-file", midis)
-    return midi_path
-
-
+# TODO: Add support for sampling from the pretrained model
 def sample(args):
     """Entrypoint for sampling"""
 
-    import torch
     from torch.cuda import is_available as cuda_is_available
-    from aria.model import TransformerLM, ModelConfig
+    from aria.inference import TransformerLM
+    from aria.model import ModelConfig
     from aria.config import load_model_config, load_config
-    from aria.tokenizer import RelTokenizer, AbsTokenizer
+    from aria.tokenizer import AbsTokenizer, SeparatedAbsTokenizer
     from aria.sample import greedy_sample
     from aria.data.midi import MidiDict
+    from aria.data.datasets import _noise_midi_dict
     from aria.utils import midi_to_audio, _load_weight
 
     if not cuda_is_available():
-        print("CUDA device is not available. Using CPU instead.")
-    else:
-        greedy_sample = torch.autocast(device_type="cuda", dtype=torch.float16)(
-            greedy_sample
-        )
-    device = (
-        torch.device("cuda") if cuda_is_available() else torch.device("cpu")
-    )
+        raise Exception("CUDA device is not available.")
 
-    ckpt_path = _get_ckpt_path(args.c)  # let user input path if not provided
-    model_state = _load_weight(ckpt_path, device=device.type)
-    model_name = _get_model_name(
-        args.m, model_state
-    )  # infer model name if not provided
+    model_state = _load_weight(args.c, "cuda")
+    model_state = {
+        k: v for k, v in model_state.items() if "rotary_emb" not in k
+    }
 
     manual_metadata = {k: v for k, v in args.metadata} if args.metadata else {}
     valid_metadata = load_config()["data"]["metadata"]["manual"]
@@ -167,116 +118,67 @@ def sample(args):
     num_variations = args.var
     truncate_len = args.trunc
     force_end = args.e
+    model_name = args.m
 
-    if args.tok == "abs":
-        tokenizer = AbsTokenizer(return_tensors=True)
-    elif args.tok == "rel":
-        tokenizer = RelTokenizer(return_tensors=True)
-
+    tokenizer = SeparatedAbsTokenizer(return_tensors=True)
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model_config.grad_checkpoint = False
-    model = TransformerLM(model_config).to(device)
-
-    try:
-        model.load_state_dict(model_state)
-    except:
-        print(
-            "Failed to load state_dict, this could be because the wrong "
-            "tokenizer was selected"
-        )
-    if args.q:
-        if device.type != "cpu":
-            warnings.warn(
-                "Quantization is not supported on CUDA devices. Using CPU instead."
-            )
-            device = torch.device("cpu")
-
-        from torch.ao.quantization import get_default_qconfig_mapping
-        from torch.quantization.quantize_fx import prepare_fx, convert_fx
-
-        qconfig_mapping = get_default_qconfig_mapping()
-
-        def _quantize(module, key, input_shape):
-            inp = torch.randn(input_shape, dtype=torch.float, device=device)
-            m = prepare_fx(
-                getattr(module, key), qconfig_mapping, example_inputs=inp
-            )
-            m = convert_fx(m)
-            setattr(module, key, m)
-
-        for i in range(len(model.model.encode_layers)):
-            _quantize(
-                model.model.encode_layers[i],
-                "mixed_qkv",
-                input_shape=(1, 2048, model_config.n_heads),
-            )
-            _quantize(
-                model.model.encode_layers[i],
-                "att_proj_linear",
-                input_shape=(1, 2048, model_config.n_heads),
-            )
-            _quantize(
-                model.model.encode_layers[i],
-                "ff_linear_1",
-                input_shape=(1, 2048, model_config.n_heads),
-            )
-            _quantize(
-                model.model.encode_layers[i],
-                "ff_linear_2",
-                input_shape=(
-                    1,
-                    2048,
-                    model_config.n_heads * model_config.ff_mult,
-                ),
-            )
-
-    midi_path = _get_midi_path(
-        args.p
-    )  # let user input midi path if not provided
+    model = TransformerLM(model_config).cuda()
+    model.load_state_dict(model_state)
 
     assert args.l > 0, "Generation length must be positive."
     max_new_tokens = args.l
 
     # Load and format prompts and metadata
-    midi_dict = MidiDict.from_midi(mid_path=midi_path)
+    midi_dict = MidiDict.from_midi(mid_path=args.p)
+    midi_dict.metadata["noisy_intervals"] = [[0, truncate_len * 1e3]]
+
+    if args.noise == True:
+        midi_dict = _noise_midi_dict(
+            midi_dict, load_config()["data"]["finetuning"]["noising"]
+        )
+
     for k, v in manual_metadata.items():
         midi_dict.metadata[k] = v
 
     print(f"Extracted metadata: {midi_dict.metadata}")
     print(
         f"Instruments: {set([MidiDict.get_program_to_instrument()[msg['data']] for msg in midi_dict.instrument_msgs])}"
-    )  # Not working with al.mid ?
+    )
+
     prompt_seq = tokenizer.tokenize(midi_dict=midi_dict)
-    prompt_seq = prompt_seq[
-        : prompt_seq.index(tokenizer.bos_tok) + truncate_len + 1
-    ]
+    if tokenizer.inst_end_tok in prompt_seq:
+        prompt_seq = prompt_seq[: prompt_seq.index(tokenizer.inst_end_tok) + 1]
+    else:
+        raise Exception("</INST> token not seen")
+
     prompts = [prompt_seq for _ in range(num_variations)]
     if len(prompt_seq) + args.l > model_config.max_seq_len:
-        print("WARNING Required context exceeds max_seq_len supported by model")
+        print(
+            "WARNING: Required context exceeds max_seq_len supported by model"
+        )
 
-    # Sample
     results = greedy_sample(
-        model,
-        tokenizer,
-        prompts,
-        device=device,
-        force_end=force_end,
+        model=model,
+        tokenizer=tokenizer,
+        prompts=prompts,
         max_new_tokens=max_new_tokens,
+        force_end=force_end,
         cfg_gamma=args.cfg,
         temperature=args.temp,
         top_p=args.top_p,
+        compile=args.compile,
     )
 
-    if os.path.isdir("samples") is False:
-        os.mkdir("samples")
+    samples_dir = os.path.join(os.path.dirname(__file__), "..", "samples")
+    if os.path.isdir(samples_dir) is False:
+        os.mkdir(samples_dir)
 
     for idx, tokenized_seq in enumerate(results):
         res_midi_dict = tokenizer.detokenize(tokenized_seq)
         res_midi = res_midi_dict.to_midi()
         res_midi.save(f"samples/res_{idx + 1}.mid")
-        if args.sup is False:
-            midi_to_audio(f"samples/:res_{idx + 1}.mid")
 
     print("Results saved to samples/")
 
@@ -286,6 +188,9 @@ def _parse_midi_dataset_args():
     argp.add_argument("dir", help="directory containing midi files")
     argp.add_argument("save_path", help="path to save dataset")
     argp.add_argument("-r", action="store_true", help="recursively search dirs")
+    argp.add_argument(
+        "-s", action="store_true", help="shuffle dataset", default=False
+    )
     argp.add_argument(
         "-metadata",
         nargs=2,
@@ -312,7 +217,7 @@ def build_midi_dataset(args):
         recur=args.r,
         overwrite=True,
         manual_metadata=manual_metadata,
-        shuffle=True,
+        shuffle=args.s,
     )
 
     if args.split:
@@ -320,6 +225,7 @@ def build_midi_dataset(args):
         MidiDataset.split_from_file(
             load_path=args.save_path,
             train_val_ratio=args.split,
+            repeatable=True,
         )
 
 
