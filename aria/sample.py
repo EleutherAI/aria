@@ -184,3 +184,46 @@ def sample_top_p(probs, p):
     next_token = torch.multinomial(probs_sort, num_samples=1)
     next_token = torch.gather(probs_idx, -1, next_token)
     return next_token
+
+
+# TODO: Clean up a bit and get rid of footguns
+def get_inst_prompt(
+    tokenizer,
+    midi_dict,
+    truncate_len: int,
+    noise: bool,
+):
+    from aria.data.datasets import _noise_midi_dict
+    from aria.data.midi import MidiDict
+    from aria.config import load_config
+
+    midi_dict.metadata["noisy_intervals"] = [[0, truncate_len * 1e3]]
+
+    if noise == True:
+        midi_dict = _noise_midi_dict(
+            midi_dict, load_config()["data"]["finetuning"]["noising"]
+        )
+
+    prompt_seq = tokenizer.tokenize(midi_dict=midi_dict)
+
+    if tokenizer.inst_end_tok in prompt_seq:
+        prompt_seq = prompt_seq[: prompt_seq.index(tokenizer.inst_end_tok) + 1]
+    else:
+        print("No notes found in prompt region")
+        prompt_seq = prompt_seq[: prompt_seq.index(tokenizer.bos_tok) + 1]
+
+    return prompt_seq
+
+
+def get_pt_prompt(
+    tokenizer,
+    midi_dict,
+    truncate_len: int,
+):
+    prompt_seq = tokenizer.tokenize(midi_dict=midi_dict)
+    prompt_seq = tokenizer.truncate_by_time(
+        tokenized_seq=prompt_seq,
+        trunc_time_ms=truncate_len * 1e3,
+    )
+
+    return prompt_seq
