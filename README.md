@@ -33,17 +33,22 @@ You can find preliminary checkpoints at the following locations
 
 Finetuned piano-only checkpoints (improved robustness):
 
-```large - https://storage.googleapis.com/aria-checkpoints/large-abs-inst.safetensors```
+```
+large - https://storage.googleapis.com/aria-checkpoints/large-abs-inst.safetensors
+```
 
 Pretrained checkpoints:
 
-```large - https://storage.googleapis.com/aria-checkpoints/large-abs-pt.bin
+```
+large - https://storage.googleapis.com/aria-checkpoints/large-abs-pt.bin
 medium - https://storage.googleapis.com/aria-checkpoints/medium-abs-pt.bin
-small - https://storage.googleapis.com/aria-checkpoints/small-abs-pt.bin```
+small - https://storage.googleapis.com/aria-checkpoints/small-abs-pt.bin
+```
 
 You can then sample using the cli:
 
-```aria sample \
+```
+aria sample \
     -m large \
     -c <path-to-checkpoint> \
     -p <path-to-midifile> \
@@ -51,7 +56,8 @@ You can then sample using the cli:
     -trunc <seconds-in-to-truncate-prompt> \
     -l <number-of-tokens-to-generate> \
     -temp 0.95 \
-    -e```
+    -e
+```
 
 You can use `aria sample -h` to see a full list of options. If you wish to sample from a pretrained checkpoint, please use the `-pt` flag.
 
