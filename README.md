@@ -1,10 +1,10 @@
 # gpt-aria
 
-[Roadmap](https://github.com/EleutherAI/aria/blob/main/ROADMAP.md) / [HowTo](https://github.com/EleutherAI/aria/blob/main/HOWTO.md) / [Discord](https://discord.com/invite/zBGx3azzUn)
+[Discord](https://discord.com/invite/zBGx3azzUn)
 
 A repository containing resources for pre-training, fine-tuning, and evaluating musical (MIDI) transformer models.
 
-***Note that this project is under active development. To get involved see the Neuro-Symbolic Music Models channel on the [EleutherAI Discord](https://discord.com/invite/zBGx3azzUn).***
+***Note that this project is under active development***
 
 ## Description
 
@@ -15,7 +15,7 @@ If you are new to symbolic music models, a good place to start are the following
 - [Music Transformer](https://magenta.tensorflow.org/music-transformer)
 - [MuseNet](https://openai.com/research/musenet)
 
-Some early (experimental) samples: [Mozart](https://twitter.com/loubbrad/status/1685638807100530693?s=20), [Bach](https://twitter.com/loubbrad/status/1685650221353635840?s=20), [Debussy](https://twitter.com/loubbrad/status/1686332713756708864?s=20). Long story short: Transformer + MIDI + GPUs = 🎵 x ∞
+ Long story short: Transformer + MIDI + GPUs = 🎵 x ∞
 
 ## Installation
 
@@ -26,3 +26,39 @@ git clone https://github.com/eleutherai/aria
 cd aria
 pip install -e .
 ```
+
+## Inference
+
+You can find preliminary checkpoints at the following locations 
+
+Finetuned piano-only checkpoints (improved robustness):
+
+```
+large - https://storage.googleapis.com/aria-checkpoints/large-abs-inst.safetensors
+```
+
+Pretrained checkpoints:
+
+```
+large - https://storage.googleapis.com/aria-checkpoints/large-abs-pt.bin
+medium - https://storage.googleapis.com/aria-checkpoints/medium-abs-pt.bin
+small - https://storage.googleapis.com/aria-checkpoints/small-abs-pt.bin
+```
+
+You can then sample using the cli:
+
+```
+aria sample \
+    -m large \
+    -c <path-to-checkpoint> \
+    -p <path-to-midifile> \
+    -var <num-variations-to-generate> \
+    -trunc <seconds-in-to-truncate-prompt> \
+    -l <number-of-tokens-to-generate> \
+    -temp 0.95 \
+    -e
+```
+
+You can use `aria sample -h` to see a full list of options. If you wish to sample from a pretrained checkpoint, please use the `-pt` flag.
+
+

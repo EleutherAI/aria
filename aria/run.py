@@ -12,11 +12,7 @@ def _parse_sample_args():
     argp.add_argument("-c", help="path to model checkpoint")
     argp.add_argument("-p", help="path to midi file")
     argp.add_argument(
-        "-cfg",
-        help="change cfg value",
-        type=float,
-        required=False,
-        default=1.05,
+        "-pt", help="sample using the pretrained model", action="store_true"
     )
     argp.add_argument(
         "-temp",
@@ -93,7 +89,7 @@ def sample(args):
     from aria.model import ModelConfig
     from aria.config import load_model_config, load_config
     from aria.tokenizer import AbsTokenizer, SeparatedAbsTokenizer
-    from aria.sample import greedy_sample
+    from aria.sample import greedy_sample, get_pt_prompt, get_inst_prompt
     from aria.data.midi import MidiDict
     from aria.data.datasets import _noise_midi_dict
     from aria.utils import midi_to_audio, _load_weight
@@ -120,24 +116,41 @@ def sample(args):
     force_end = args.e
     model_name = args.m
 
-    tokenizer = SeparatedAbsTokenizer(return_tensors=True)
+    if args.pt == True:
+        tokenizer = AbsTokenizer(return_tensors=True)
+    else:
+        tokenizer = SeparatedAbsTokenizer(return_tensors=True)
+
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model_config.grad_checkpoint = False
     model = TransformerLM(model_config).cuda()
-    model.load_state_dict(model_state)
+
+    try:
+        model.load_state_dict(model_state)
+    except Exception as e:
+        print(
+            "Failed to load model_state. This is likely due to an incompatibility "
+            "between the checkpoint file (-c) and model name/config (-m)."
+        )
+        if args.pt:
+            print(
+                "When using the -pt flag make sure you provide a checkpoint for "
+                "the pretrained model."
+            )
+        else:
+            print(
+                "When not using the -pt flag make sure you provide a checkpoint "
+                " for the instuct-finetuned (inst) model."
+            )
+
+        raise e
 
     assert args.l > 0, "Generation length must be positive."
     max_new_tokens = args.l
 
     # Load and format prompts and metadata
     midi_dict = MidiDict.from_midi(mid_path=args.p)
-    midi_dict.metadata["noisy_intervals"] = [[0, truncate_len * 1e3]]
-
-    if args.noise == True:
-        midi_dict = _noise_midi_dict(
-            midi_dict, load_config()["data"]["finetuning"]["noising"]
-        )
 
     for k, v in manual_metadata.items():
         midi_dict.metadata[k] = v
@@ -147,11 +160,22 @@ def sample(args):
         f"Instruments: {set([MidiDict.get_program_to_instrument()[msg['data']] for msg in midi_dict.instrument_msgs])}"
     )
 
-    prompt_seq = tokenizer.tokenize(midi_dict=midi_dict)
-    if tokenizer.inst_end_tok in prompt_seq:
-        prompt_seq = prompt_seq[: prompt_seq.index(tokenizer.inst_end_tok) + 1]
+    if args.pt:
+        if args.noise:
+            print("Noising not supported with pretrained model")
+
+        prompt_seq = get_pt_prompt(
+            tokenizer=tokenizer,
+            midi_dict=midi_dict,
+            truncate_len=truncate_len,
+        )
     else:
-        raise Exception("</INST> token not seen")
+        prompt_seq = get_inst_prompt(
+            tokenizer=tokenizer,
+            midi_dict=midi_dict,
+            truncate_len=truncate_len,
+            noise=args.noise,
+        )
 
     prompts = [prompt_seq for _ in range(num_variations)]
     if len(prompt_seq) + args.l > model_config.max_seq_len:
@@ -159,13 +183,15 @@ def sample(args):
             "WARNING: Required context exceeds max_seq_len supported by model"
         )
 
+    print(prompt_seq)
+
     results = greedy_sample(
         model=model,
         tokenizer=tokenizer,
         prompts=prompts,
         max_new_tokens=max_new_tokens,
         force_end=force_end,
-        cfg_gamma=args.cfg,
+        # cfg_gamma=args.cfg,
         temperature=args.temp,
         top_p=args.top_p,
         compile=args.compile,
