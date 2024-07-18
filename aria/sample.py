@@ -142,6 +142,11 @@ def greedy_sample(
                     ),
                 )
 
+        if tokenizer.name == "separated_abs":
+            logits[:, tokenizer.tok_to_id[tokenizer.inst_start_tok]] = float(
+                "-inf"
+            )
+
         if temperature > 0.0:
             probs = torch.softmax(logits / temperature, dim=-1)
             next_token_ids = sample_top_p(probs, top_p).flatten()
