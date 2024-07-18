@@ -668,7 +668,7 @@ def get_seqs(
         )
         midi_dict_iter = [_ for _ in midi_dict_iter]
 
-    with Pool(num_proc // 2 if num_proc > 1 else 1) as pool:
+    with Pool(16) as pool:
         results = pool.imap(
             functools.partial(_get_seqs, _tokenizer=tokenizer), midi_dict_iter
         )
@@ -1184,7 +1184,7 @@ class FinetuningDataset(TrainingDataset):
 
                     _idx += 1
                     if _idx % 250 == 0:
-                        logger.info(f"finished processing {_idx}")
+                        logger.info(f"Finished processing {_idx}")
 
         logger = setup_logger()
         assert max_seq_len > 0, "max_seq_len must be greater than 0"

@@ -191,6 +191,14 @@ class MidiDict:
             json.dumps(msg_dict_to_hash, sort_keys=True).encode()
         ).hexdigest()
 
+    def tick_to_ms(self, tick: int):
+        return get_duration_ms(
+            start_tick=0,
+            end_tick=tick,
+            tempo_msgs=self.tempo_msgs,
+            ticks_per_beat=self.ticks_per_beat,
+        )
+
     def _build_pedal_intervals(self):
         """Returns pedal-on intervals for each channel."""
         self.pedal_msgs.sort(key=lambda msg: msg["tick"])
@@ -726,7 +734,7 @@ def meta_maestro_json(
     mid: mido.MidiFile, msg_data: dict, composer_names: list, form_names: list
 ):
     if os.path.isfile("maestro.json") is False:
-        print("maestro.json not found")
+        print("MAESTRO metadata function enabled but ./maestro.json not found.")
         return {}
 
     file_name = pathlib.Path(mid.filename).name
