@@ -283,10 +283,127 @@ class MidiDict:
 
         return self._resolve_overlaps()
 
-    # TODO:
-    # - Add remove drums (aka remove channel 9) pre-processing
-    # - Add similar method for removing specific programs
-    # - Decide whether this is necessary to have here in pre-precessing
+    def remove_redundant_pedals(self):
+        # Removes all pedal messages (on, off pairs) that don't extend any
+        # notes. An exception is made for pedal off messages that end exactly
+        # on a note offset.
+
+        def process_channel_(channel: int):
+            pedal_msg_idxs_to_remove = []
+            prev_pedal_on_tick = None
+            prev_pedal_on_idx = None
+
+            note_idx = 0
+            note_msgs = [
+                msg for msg in self.note_msgs if msg["channel"] == channel
+            ]
+
+            if not note_msgs:
+                # No notes to process. In this case we remove all pedal_msgs
+                # apart from potentially the last one in the case that it is
+                # a pedal_on msg, and then return.
+                for idx, p_msg in enumerate(self.pedal_msgs):
+                    curr_pedal_msg_data, curr_pedal_msg_tick, _channel = (
+                        p_msg["data"],
+                        p_msg["tick"],
+                        p_msg["channel"],
+                    )
+
+                    if _channel == channel:
+                        pedal_msg_idxs_to_remove.append(idx)
+
+                self.pedal_msgs = [
+                    msg
+                    for _idx, msg in enumerate(self.pedal_msgs)
+                    if _idx not in pedal_msg_idxs_to_remove
+                ]
+                return
+
+            note_msg = note_msgs[0]
+            for idx, p_msg in enumerate(self.pedal_msgs):
+                curr_pedal_msg_data, curr_pedal_msg_tick, _channel = (
+                    p_msg["data"],
+                    p_msg["tick"],
+                    p_msg["channel"],
+                )
+
+                # Only process pedal_msgs for specified MIDI channel
+                if _channel != channel:
+                    continue
+
+                # Remove never-closed pedal messages
+                if idx == len(self.pedal_msgs) - 1 and curr_pedal_msg_data == 1:
+                    # Current msg is last one and ON  -> remove curr pedal_msg
+                    pedal_msg_idxs_to_remove.append(idx)
+
+                # Logic for removing repeated pedal messages and updating
+                # prev_pedal_on_tick and prev_pedal_on_idx
+                if prev_pedal_on_tick is not None and curr_pedal_msg_data == 1:
+                    # Pedal is ON and current msg is ON -> remove curr pedal_msg
+                    pedal_msg_idxs_to_remove.append(idx)
+                    continue
+                elif prev_pedal_on_tick is None and curr_pedal_msg_data == 0:
+                    # Pedal is OFF and current msg is OFF -> remove curr pedal_msg
+                    pedal_msg_idxs_to_remove.append(idx)
+                    continue
+                elif prev_pedal_on_tick is None and curr_pedal_msg_data == 1:
+                    # Pedal is OFF and current msg is ON -> update
+                    # prev_pedal_on_tick and prev_pedal_on_idx
+                    prev_pedal_on_tick = curr_pedal_msg_tick
+                    prev_pedal_on_idx = idx
+                    continue
+                elif (
+                    prev_pedal_on_tick is not None and curr_pedal_msg_data == 0
+                ):
+                    # Pedal is ON and current msg in OFF -> continue to next
+                    pass
+
+                # This logic loops through the note_msgs that could possibly
+                # be effected by the pedal which starts at prev_pedal_on_tick
+                # and ends at curr_pedal_msg_tick. If there is note effected by
+                # the pedal, then it finishes early.
+                pedal_is_useful = False
+                note_start, note_end = (
+                    note_msg["data"]["start"],
+                    note_msg["data"]["end"],
+                )
+                while note_start <= curr_pedal_msg_tick and note_idx < len(
+                    note_msgs
+                ):
+                    note_msg = note_msgs[note_idx]
+                    note_start, note_end = (
+                        note_msg["data"]["start"],
+                        note_msg["data"]["end"],
+                    )
+
+                    note_idx += 1
+
+                    if prev_pedal_on_tick <= note_end <= curr_pedal_msg_tick:
+                        # Pedal is useful, don't remove.
+                        pedal_is_useful = True
+                        break
+
+                if pedal_is_useful is False:
+                    # Pedal hasn't effected any notes -> remove
+                    pedal_msg_idxs_to_remove.append(prev_pedal_on_idx)
+                    pedal_msg_idxs_to_remove.append(idx)
+
+                # Finished processing pedal, set pedal state to OFF
+                prev_pedal_on_tick = None
+
+            # Remove messages and return number of msgs removed
+            self.pedal_msgs = [
+                msg
+                for _idx, msg in enumerate(self.pedal_msgs)
+                if _idx not in pedal_msg_idxs_to_remove
+            ]
+
+            return len(pedal_msg_idxs_to_remove)
+
+        num_pedal_msgs_removed = 0
+        for channel in set([msg.get("channel") for msg in self.pedal_msgs]):
+            num_pedal_msgs_removed += process_channel_(channel)
+
     def remove_instruments(self, config: dict):
         """Removes all messages with instruments specified in config, excluding
         drums."""
