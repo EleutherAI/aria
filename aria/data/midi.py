@@ -301,7 +301,7 @@ class MidiDict:
             if not note_msgs:
                 # No notes to process. In this case we remove all pedal_msgs
                 # apart from potentially the last one in the case that it is
-                # a pedal_on msg, and then return
+                # a pedal_on msg, and then return.
                 for idx, p_msg in enumerate(self.pedal_msgs):
                     curr_pedal_msg_data, curr_pedal_msg_tick, _channel = (
                         p_msg["data"],
@@ -361,7 +361,7 @@ class MidiDict:
                 # This logic loops through the note_msgs that could possibly
                 # be effected by the pedal which starts at prev_pedal_on_tick
                 # and ends at curr_pedal_msg_tick. If there is note effected by
-                # the pedal, then it finishes early,
+                # the pedal, then it finishes early.
                 pedal_is_useful = False
                 note_start, note_end = (
                     note_msg["data"]["start"],
