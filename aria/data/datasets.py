@@ -14,6 +14,7 @@ import shutil
 
 from mido.midifiles.units import second2tick
 from pathlib import Path
+from typing import List
 from copy import deepcopy
 from typing import Callable, Iterable
 from collections import defaultdict
@@ -333,7 +334,7 @@ def build_mididict_dataset(
 
     def _get_mididicts_mp(_paths):
         with Pool() as pool:
-            results = pool.imap(_get_mididict, _paths)
+            results = pool.imap_unordered(_get_mididict, _paths)
             seen_hashes = defaultdict(list)
             dupe_cnt = 0
             failed_cnt = 0
@@ -435,8 +436,11 @@ class TrainingDataset(torch.utils.data.Dataset):
         self.config = None
         self.max_seq_len = None
 
-        self.file_buff = None
-        self.file_mmap = None
+        self.epoch_files_by_dir = []
+        self.dir_paths = []
+        self.curr_epoch = None
+        self.file_buffs = None
+        self.file_mmaps = None
         self.index = None
 
     def build(**kwargs):
@@ -447,29 +451,40 @@ class TrainingDataset(torch.utils.data.Dataset):
         raise NotImplementedError
 
     def init_epoch(self, idx: int | None = None):
+        # If idx not provided, increment curr_epoch
         if idx is None:
-            idx = self.curr_epoch + 1
-
-        if idx >= self.num_epochs:
-            _idx = idx % self.num_epochs
-            self.logger.warning(
-                f"epoch file doesn't exist for {idx}, resetting to epoch={_idx}"
-            )
-            idx = _idx
+            assert self.curr_epoch is not None, "curr_epoch not initialized"
+            self.curr_epoch += 1
+        else:
+            self.curr_epoch = idx
 
         self.close()
-        self.file_buff = open(self.epoch_files[idx], mode="r")
-        self.file_mmap = mmap.mmap(
-            self.file_buff.fileno(), 0, access=mmap.ACCESS_READ
-        )
-        self.index = self._build_index()
-        self.curr_epoch = idx
-        try:
-            rank = torch.distributed.get_rank()
-        except Exception:
-            rank = 0
+        self.index = []
+        self.file_buffs = []
+        self.file_mmaps = []
+        for dir_idx, epoch_files in enumerate(self.epoch_files_by_dir):
+            num_epoch_files = len(epoch_files)
+            epoch_file_idx = self.curr_epoch % num_epoch_files
+            if self.curr_epoch >= num_epoch_files:
+                self.logger.warning(
+                    f"File doesn't exist for epoch={self.curr_epoch} for dir={os.path.dirname(epoch_files[0])}, cycling to to epoch={epoch_file_idx}"
+                )
 
-        self.logger.info(f"{rank}: Initiated epoch {idx} of dataset")
+            epoch_file_path = epoch_files[epoch_file_idx]
+            _buff = open(epoch_file_path, mode="r")
+            self.file_buffs.append(_buff)
+            _mmap_obj = mmap.mmap(_buff.fileno(), 0, access=mmap.ACCESS_READ)
+            self.file_mmaps.append(_mmap_obj)
+            _index = self._build_index(_mmap_obj)
+
+            self.logger.info(
+                f"Built index ({len(_index)}) for file {epoch_file_path}"
+            )
+            self.index.extend([(dir_idx, pos) for pos in _index])
+
+        self.logger.info(
+            f"Initiated epoch {self.curr_epoch} with index length={len(self.index)}"
+        )
 
     def _get_epoch_files(self, dir_path: str):
         """Validates and returns a sorted list of epoch dataset files."""
@@ -492,25 +507,26 @@ class TrainingDataset(torch.utils.data.Dataset):
                 present_epochs.append(
                     int(re.match(r"^epoch(\d+)\.jsonl$", file_name).group(1))
                 )
-        self.num_epochs = len(present_epochs)
-        assert self.num_epochs >= 1, f"no epoch files found in {dir_path}"
+        assert len(present_epochs) >= 1, f"no epoch files found in {dir_path}"
         assert set(present_epochs) == set(
-            range(self.num_epochs)
+            range(len(present_epochs))
         ), "epoch files missing"
 
         # Check files have valid configs
         for file_path in file_paths:
-            self.close()
-            self.file_buff = open(file_path, mode="r")
-            self.file_mmap = mmap.mmap(
-                self.file_buff.fileno(), 0, access=mmap.ACCESS_READ
-            )
-            self.check_config()
+            self.check_config(epoch_load_path=file_path)
 
         return [
             os.path.join(dir_path, f"epoch{idx}.jsonl")
-            for idx in range(self.num_epochs)
+            for idx in range(len(present_epochs))
         ]
+
+    def get_epoch_files_by_dir(self, dir_paths: str):
+        for dir_path in dir_paths:
+            assert os.path.isdir(dir_path), f"Directory not found: {dir_path}"
+            self.epoch_files_by_dir.append(
+                self._get_epoch_files(dir_path=dir_path)
+            )
 
     @classmethod
     def get_config_from_path(cls, path: str):
@@ -526,10 +542,13 @@ class TrainingDataset(torch.utils.data.Dataset):
             return json.loads(f.readline())
 
     def close(self):
-        if self.file_buff:
-            self.file_buff.close()
-        if self.file_mmap:
-            self.file_mmap.close()
+        if self.file_buffs is not None:
+            for file_buff in self.file_buffs:
+                file_buff.close()
+
+        if self.file_mmaps is not None:
+            for file_mmap in self.file_mmaps:
+                file_mmap.close()
 
     def __del__(self):
         self.close()
@@ -544,9 +563,11 @@ class TrainingDataset(torch.utils.data.Dataset):
                 return tuple(tok)
             return tok
 
-        self.file_mmap.seek(self.index[idx])
+        file_idx, pos = self.index[idx]
+        mmap_obj = self.file_mmaps[file_idx]
+        mmap_obj.seek(pos)
 
-        _debug = self.file_mmap.readline()
+        _debug = mmap_obj.readline()
         seq = json.loads(_debug)  # Load raw seq
         seq = [_format(tok) for tok in seq]  # Format into hashable
         if self._transform:
@@ -558,7 +579,7 @@ class TrainingDataset(torch.utils.data.Dataset):
 
         return self.tokenizer.encode(src), self.tokenizer.encode(tgt), mask
 
-    def check_config(self):
+    def check_config(self, epoch_load_path: str):
         def _check_config():
             assert self.config["tokenizer_name"] == self.tokenizer.name
             for k, v in self.config["tokenizer_config"].items():
@@ -570,8 +591,9 @@ class TrainingDataset(torch.utils.data.Dataset):
 
         # Check self.tokenizers is the same as the one used to generate file
         # This logic could use a refactor (maybe use deepdict?)
-        self.file_mmap.seek(0)
-        buffer = self.file_mmap.readline()
+        with open(epoch_load_path, "r") as f:
+            buffer = f.readline()
+
         try:
             self.config = json.loads(buffer)
             self.max_seq_len = self.config["max_seq_len"]
@@ -587,15 +609,15 @@ class TrainingDataset(torch.utils.data.Dataset):
             )
             raise e
 
-    def _build_index(self):
+    def _build_index(self, mmap_obj: mmap.mmap):
         # Skip first line containing config
-        self.file_mmap.seek(0)
-        self.file_mmap.readline()
+        mmap_obj.seek(0)
+        mmap_obj.readline()
 
         index = []
         while True:
-            pos = self.file_mmap.tell()
-            line_buffer = self.file_mmap.readline()
+            pos = mmap_obj.tell()
+            line_buffer = mmap_obj.readline()
             if line_buffer == b"":
                 break
             else:
@@ -668,8 +690,8 @@ def get_seqs(
         )
         midi_dict_iter = [_ for _ in midi_dict_iter]
 
-    with Pool(16) as pool:
-        results = pool.imap(
+    with Pool() as pool:
+        results = pool.imap_unordered(
             functools.partial(_get_seqs, _tokenizer=tokenizer), midi_dict_iter
         )
 
@@ -710,12 +732,14 @@ def random_selection_itt(iterables: list[Iterable]):
 class PretrainingDataset(TrainingDataset):
     """Torch dataset object yielding sequences formatted for pre-training"""
 
-    def __init__(self, dir_path: str, tokenizer: Tokenizer):
+    def __init__(self, dir_paths: List[str] | str, tokenizer: Tokenizer):
         super().__init__(tokenizer=tokenizer)
 
-        self.dir_path = dir_path
-        self.epoch_files = self._get_epoch_files(dir_path)
-        self.curr_epoch = 0
+        if isinstance(dir_paths, str):
+            dir_paths = [dir_paths]
+
+        self.dir_paths = dir_paths
+        self.get_epoch_files_by_dir(dir_paths)
         self.init_epoch(0)
 
     def __len__(self):
@@ -815,7 +839,7 @@ class PretrainingDataset(TrainingDataset):
             f"Finished building, saved PretrainingDataset to {save_dir}"
         )
 
-        return cls(dir_path=save_dir, tokenizer=tokenizer)
+        return cls(dir_paths=save_dir, tokenizer=tokenizer)
 
 
 # TODO: Improve this logic so it supports MIDI files with multiple tempo_msgs
@@ -1127,13 +1151,18 @@ def _get_mixed_dataset(
 class FinetuningDataset(TrainingDataset):
     """Torch dataset object yielding sequences formatted for fine-tuning."""
 
-    def __init__(self, dir_path: str, tokenizer: SeparatedAbsTokenizer):
+    def __init__(
+        self, dir_paths: List[str] | str, tokenizer: SeparatedAbsTokenizer
+    ):
         super().__init__(tokenizer=tokenizer)
 
         assert tokenizer.name == "separated_abs", "invalid tokenizer"
-        self.dir_path = dir_path
-        self.epoch_files = self._get_epoch_files(dir_path)
-        self.curr_epoch = 0
+
+        if isinstance(dir_paths, str):
+            dir_paths = [dir_paths]
+
+        self.dir_paths = dir_paths
+        self.get_epoch_files_by_dir(dir_paths)
         self.init_epoch(0)
 
     def __len__(self):
@@ -1235,4 +1264,4 @@ class FinetuningDataset(TrainingDataset):
 
         logger.info(f"Finished building, saved FinetuningDataset to {save_dir}")
 
-        return cls(dir_path=save_dir, tokenizer=tokenizer)
+        return cls(dir_paths=save_dir, tokenizer=tokenizer)

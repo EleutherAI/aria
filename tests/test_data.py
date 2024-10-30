@@ -173,9 +173,53 @@ class TestPretrainingDataset(unittest.TestCase):
             tokenizer=tknzr,
             save_dir="tests/test_results/pretrain_dataset_buff_2",
             max_seq_len=MAX_SEQ_LEN,
-            num_epochs=3,
+            num_epochs=2,
             midi_dataset=mididict_dataset,
         )
+
+    def test_multiple_paths(self):
+        MAX_SEQ_LEN = 4096
+        tknzr = tokenizer.AbsTokenizer(return_tensors=False)
+        mididict_dataset = datasets.MidiDataset.build(
+            dir="tests/test_data",
+            recur=False,
+        )
+        mididict_dataset.save("tests/test_results/mididict_dataset_1.jsonl")
+
+        if os.path.exists("tests/test_results/pretrain_dataset_buff_1"):
+            shutil.rmtree("tests/test_results/pretrain_dataset_buff_1")
+        if os.path.exists("tests/test_results/pretrain_dataset_buff_2"):
+            shutil.rmtree("tests/test_results/pretrain_dataset_buff_2")
+
+        datasets.PretrainingDataset.build(
+            tokenizer=tknzr,
+            save_dir="tests/test_results/pretrain_dataset_buff_1",
+            max_seq_len=MAX_SEQ_LEN,
+            num_epochs=3,
+            midi_dataset_path="tests/test_results/mididict_dataset.jsonl",
+        )
+        datasets.PretrainingDataset.build(
+            tokenizer=tknzr,
+            save_dir="tests/test_results/pretrain_dataset_buff_2",
+            max_seq_len=MAX_SEQ_LEN,
+            num_epochs=5,
+            midi_dataset_path="tests/test_results/mididict_dataset.jsonl",
+        )
+
+        dataset = datasets.PretrainingDataset(
+            dir_paths=[
+                "tests/test_results/pretrain_dataset_buff_1",
+                "tests/test_results/pretrain_dataset_buff_2",
+            ],
+            tokenizer=tknzr,
+        )
+
+        for epoch in range(11):
+            for idx, _ in enumerate(dataset):
+                pass
+
+            print("-------------")
+            dataset.init_epoch()
 
     def test_aug(self):
         MAX_SEQ_LEN = 512

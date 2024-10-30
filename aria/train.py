@@ -15,6 +15,7 @@ from accelerate.logging import get_logger
 from safetensors.torch import load_file
 from logging.handlers import RotatingFileHandler
 from tqdm import tqdm
+from typing import List
 
 from aria.config import load_model_config
 from aria.model import ModelConfig, TransformerLM
@@ -94,11 +95,11 @@ def setup_logger(project_dir: str):
 
 
 def get_tokenizer_name(
-    train_data_path: str,
+    train_data_paths: str,
     val_data_path: str,
 ):
     """This will throw an error if there is a tokenizer mismatch"""
-    train_config = TrainingDataset.get_config_from_path(train_data_path)
+    train_config = TrainingDataset.get_config_from_path(train_data_paths[0])
     val_config = TrainingDataset.get_config_from_path(val_data_path)
 
     assert (
@@ -165,7 +166,7 @@ def _get_optim(
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
-        weight_decay=0.01,
+        weight_decay=0.1,
         betas=(0.9, 0.95),
         eps=1e-5,
     )
@@ -197,9 +198,9 @@ def get_optim(
     num_epochs: int,
     steps_per_epoch: int,
 ):
-    LR = 3e-5
+    LR = 3e-4
     END_RATIO = 0.1
-    WARMUP_STEPS = 1000
+    WARMUP_STEPS = 200
 
     return _get_optim(
         lr=LR,
@@ -212,7 +213,7 @@ def get_optim(
 
 
 def get_dataloaders(
-    train_data_dir: str,
+    train_data_dirs: List[str],
     val_data_dir: str,
     tokenizer: Tokenizer,
     batch_size: int,
@@ -224,36 +225,30 @@ def get_dataloaders(
     logger = logging.getLogger(__name__)
     if finetune == False:
         train_dataset = PretrainingDataset(
-            dir_path=train_data_dir,
+            dir_paths=train_data_dirs,
             tokenizer=tokenizer,
         )
         val_dataset = PretrainingDataset(
-            dir_path=val_data_dir,
+            dir_paths=val_data_dir,
             tokenizer=tokenizer,
         )
     elif finetune == True:
         train_dataset = FinetuningDataset(
-            dir_path=train_data_dir,
+            dir_paths=train_data_dirs,
             tokenizer=tokenizer,
         )
         val_dataset = FinetuningDataset(
-            dir_path=val_data_dir,
+            dir_paths=val_data_dir,
             tokenizer=tokenizer,
         )
     else:
         raise ValueError
 
     if init_epoch:
-        if init_epoch > train_dataset.num_epochs:
-            logger.warning(
-                f"Provided init_epoch is larger than the number of epoch files "
-                f"located in {train_data_dir}. The default behaviour in this case "
-                f"is to load the epochs in a cyclic fashion."
-            )
         train_dataset.init_epoch(idx=init_epoch)
 
     assert (
-        val_dataset.num_epochs == 1
+        len(val_dataset.epoch_files_by_dir[0]) == 1
     ), "val-data directory should only contain one epoch"
 
     if apply_aug:
@@ -580,7 +575,7 @@ def resume_train(
     model = TransformerLM(model_config)
 
     train_dataloader, val_dataloader = get_dataloaders(
-        train_data_dir=train_data_path,
+        train_data_dirs=train_data_path,
         val_data_dir=val_data_path,
         tokenizer=tokenizer,
         init_epoch=resume_epoch,
@@ -636,7 +631,7 @@ def resume_train(
 
 def train(
     model_name: str,
-    train_data_path: str,
+    train_data_paths: List[str],
     val_data_path: str,
     num_workers: int,
     batch_size: int,
@@ -650,10 +645,13 @@ def train(
     assert epochs > 0, "Invalid number of epochs"
     assert batch_size > 0, "Invalid batch size"
     assert torch.cuda.is_available() is True, "CUDA not available"
-    assert os.path.isdir(train_data_path), f"No dir found at {train_data_path}"
+    for train_data_path in train_data_paths:
+        assert os.path.isdir(
+            train_data_path
+        ), f"No dir found at {train_data_path}"
     assert os.path.isdir(val_data_path), f"No dir found at {val_data_path}"
 
-    tokenizer_name = get_tokenizer_name(train_data_path, val_data_path)
+    tokenizer_name = get_tokenizer_name(train_data_paths, val_data_path)
     if tokenizer_name == "abs":
         tokenizer = AbsTokenizer(return_tensors=True)
     elif tokenizer_name == "separated_abs":
@@ -685,6 +683,7 @@ def train(
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerLM(model_config)
+    # model.compile()
     logger.info(f"Loaded model with config: {load_model_config(model_name)}")
     if checkpoint_path:
         try:
@@ -698,7 +697,7 @@ def train(
         logger.info(f"Loaded finetune checkpoint located at: {checkpoint_path}")
 
     train_dataloader, val_dataloader = get_dataloaders(
-        train_data_dir=train_data_path,
+        train_data_dirs=train_data_paths,
         val_data_dir=val_data_path,
         tokenizer=tokenizer,
         batch_size=batch_size,
@@ -776,11 +775,11 @@ def convert_cp_from_accelerate(
 def parse_resume_args():
     argp = argparse.ArgumentParser(prog="python aria/train.py resume")
     argp.add_argument("model", help="name of model config file")
-    argp.add_argument("train_data", help="path to train data")
-    argp.add_argument("val_data", help="path to val data")
-    argp.add_argument("-cdir", help="checkpoint dir", type=str, required=True)
-    argp.add_argument("-rstep", help="resume step", type=int, required=True)
-    argp.add_argument("-repoch", help="resume epoch", type=int, required=True)
+    argp.add_argument("-train_data", nargs="+", help="path to train dir")
+    argp.add_argument("-val_data", help="path to val dir")
+    argp.add_argument("-cp_dir", help="checkpoint dir", type=str, required=True)
+    argp.add_argument("-r_step", help="resume step", type=int, required=True)
+    argp.add_argument("-r_epoch", help="resume epoch", type=int, required=True)
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
     argp.add_argument("-bs", help="batch size", type=int, default=32)
     argp.add_argument("-workers", help="number workers", type=int, default=1)
@@ -795,10 +794,10 @@ def parse_resume_args():
 def parse_train_args():
     argp = argparse.ArgumentParser(prog="python aria/train.py train")
     argp.add_argument("model", help="name of model config file")
-    argp.add_argument("train_data", help="path to train dir")
-    argp.add_argument("val_data", help="path to val dir")
+    argp.add_argument("-train_data", nargs="+", help="path to train dir")
+    argp.add_argument("-val_data", help="path to val dir")
     argp.add_argument(
-        "-cp", help="path to checkpoint", required=False, default=None
+        "-cp_path", help="path to checkpoint", required=False, default=None
     )
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
     argp.add_argument("-bs", help="batch size", type=int, default=32)
@@ -811,6 +810,7 @@ def parse_train_args():
     return argp.parse_args(sys.argv[2:])
 
 
+# Needs to be adjusted to take multiple datasets
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         usage="python aria/train.py <command> [<args>]"
@@ -828,12 +828,12 @@ if __name__ == "__main__":
         train_args = parse_train_args()
         train(
             model_name=train_args.model,
-            train_data_path=train_args.train_data,
+            train_data_paths=train_args.train_data,
             val_data_path=train_args.val_data,
             num_workers=train_args.workers,
             batch_size=train_args.bs,
             epochs=train_args.epochs,
-            checkpoint_path=train_args.cp,
+            checkpoint_path=train_args.cp_path,
             steps_per_checkpoint=train_args.spc,
             project_dir=train_args.pdir,
         )
@@ -846,9 +846,9 @@ if __name__ == "__main__":
             num_workers=resume_args.workers,
             batch_size=resume_args.bs,
             epochs=resume_args.epochs,
-            checkpoint_dir=resume_args.cdir,
-            resume_step=resume_args.rstep,
-            resume_epoch=resume_args.repoch,
+            checkpoint_dir=resume_args.cp_dir,
+            resume_step=resume_args.r_step,
+            resume_epoch=resume_args.r_epoch,
             steps_per_checkpoint=resume_args.spc,
             project_dir=resume_args.pdir,
         )
