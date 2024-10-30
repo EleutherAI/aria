@@ -44,8 +44,8 @@ from aria.utils import _load_weight
 #
 # accelerate launch [arguments] aria/train.py train \
 #   small \
-#   data/train \
-#   data/val \
+#   -train_data data/train \
+#   -val_data data/val \
 #   -epochs 10 \
 #   -bs 32 \
 #   -workers 8
@@ -54,11 +54,11 @@ from aria.utils import _load_weight
 #
 # accelerate launch [arguments] aria/train.py resume \
 #   small \
-#   data/train \
-#   data/val \
-#   -cdir models/epoch5_step0 \
-#   -rstep 0 \
-#   -repoch 5 \
+#   -train_data data/train \
+#   -val_data data/val \
+#   -cp_dir models/epoch5_step0 \
+#   -r_step 0 \
+#   -r_epoch 5 \
 #   -epochs 5 \
 #   -bs 32 \
 #   -workers 8
@@ -270,14 +270,6 @@ def get_dataloaders(
     return train_dataloader, val_dataloader
 
 
-def rolling_average(prev_avg: float, x_n: float, n: int):
-    # Returns rolling average without needing to recalculate
-    if n == 0:
-        return x_n
-    else:
-        return ((prev_avg * (n - 1)) / n) + (x_n / n)
-
-
 def _train(
     epochs: int,
     accelerator: accelerate.Accelerator,
@@ -304,7 +296,6 @@ def _train(
                 optimizer.zero_grad()
                 break
 
-        flop_counter = FlopCounterMode(display=False)
         logger.info(
             f"Model has "
             f"{'{:,}'.format(sum(p.numel() for p in model.parameters() if p.requires_grad))} "
@@ -312,6 +303,7 @@ def _train(
         )
 
         # logger.info("Profiling FLOP")
+        # flop_counter = FlopCounterMode(display=False)
         # _bench()
 
         # with flop_counter:
@@ -354,55 +346,57 @@ def _train(
                 leave=False,
             )
         ):
-            step = __step + _resume_step + 1
-            src, tgt, mask = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
-            logits = model(src)  # (b_sz, s_len, v_sz)
-            logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
-            loss = loss_fn(logits, tgt)
+            with accelerator.accumulate(model):
+                step = __step + _resume_step + 1
+                src, tgt, mask = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
+                logits = model(src)  # (b_sz, s_len, v_sz)
+                logits = logits.transpose(
+                    1, 2
+                )  # Transpose for CrossEntropyLoss
+                loss = loss_fn(logits, tgt)
 
-            loss = loss * mask
-            loss = loss[loss != 0.0].mean()  # != 0.0 here is important
+                loss = loss * mask
+                loss = loss[loss != 0.0].mean()  # != 0.0 here is important
 
-            # Calculate statistics
-            loss_buffer.append(loss.item())
-            if len(loss_buffer) > TRAILING_LOSS_STEPS:
-                loss_buffer.pop(0)
-            trailing_loss = sum(loss_buffer) / len(loss_buffer)
-            avg_train_loss = rolling_average(
-                avg_train_loss, loss.item(), __step
-            )
+                # Calculate statistics
+                loss_buffer.append(accelerator.gather(loss).mean(dim=0).item())
+                trailing_loss = sum(loss_buffer[-TRAILING_LOSS_STEPS:]) / len(
+                    loss_buffer[-TRAILING_LOSS_STEPS:]
+                )
+                avg_train_loss = sum(loss_buffer) / len(loss_buffer)
 
-            # Logging
-            logger.debug(
-                f"EPOCH {_epoch} STEP {step}: "
-                f"lr={lr_for_print}, "
-                f"loss={round(loss.item(), 4)}, "
-                f"trailing_loss={round(trailing_loss, 4)}, "
-                f"average_loss={round(avg_train_loss, 4)}"
-            )
-            if accelerator.is_main_process:
-                loss_writer.writerow([_epoch, step, loss.item()])
-            pbar.set_postfix_str(
-                f"lr={lr_for_print}, "
-                f"loss={round(loss.item(), 4)}, "
-                f"trailing={round(trailing_loss, 4)}"
-            )
+                # Logging
+                logger.debug(
+                    f"EPOCH {_epoch} STEP {step}: "
+                    f"lr={lr_for_print}, "
+                    f"loss={round(loss.item(), 4)}, "
+                    f"trailing_loss={round(trailing_loss, 4)}, "
+                    f"average_loss={round(avg_train_loss, 4)}"
+                )
 
-            # Backwards step
-            accelerator.backward(loss)
-            optimizer.step()
-            optimizer.zero_grad()
-            if scheduler:
-                scheduler.step()
-                lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
+                if accelerator.is_main_process:
+                    loss_writer.writerow([_epoch, step, loss.item()])
 
-            if steps_per_checkpoint:
-                if step % steps_per_checkpoint == 0:
-                    make_checkpoint(
-                        _accelerator=accelerator,
-                        _epoch=_epoch,
-                        _step=step,
-                    )
+                pbar.set_postfix_str(
+                    f"lr={lr_for_print}, "
+                    f"loss={round(loss.item(), 4)}, "
+                    f"trailing={round(trailing_loss, 4)}"
+                )
+
+                accelerator.backward(loss)
+                optimizer.step()
+                optimizer.zero_grad()
+                if scheduler:
+                    scheduler.step()
+                    lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
+
+                if steps_per_checkpoint:
+                    if step % steps_per_checkpoint == 0:
+                        make_checkpoint(
+                            _accelerator=accelerator,
+                            _epoch=_epoch,
+                            _step=step,
+                        )
 
         logger.info(
             f"EPOCH {_epoch}/{epochs + start_epoch}: Finished training - "
@@ -411,8 +405,9 @@ def _train(
 
         return avg_train_loss
 
+    @torch.no_grad()
     def val_loop(dataloader, _epoch: int):
-        avg_val_loss = 0
+        loss_buffer = []
         model.eval()
         for step, batch in (
             pbar := tqdm(
@@ -422,8 +417,7 @@ def _train(
             )
         ):
             src, tgt, mask = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
-            with torch.no_grad():
-                logits = model(src)  # (b_sz, s_len, v_sz)
+            logits = model(src)  # (b_sz, s_len, v_sz)
             logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
             loss = loss_fn(logits, tgt)
 
@@ -431,7 +425,8 @@ def _train(
             loss = loss[loss != 0.0].mean()
 
             # Logging
-            avg_val_loss = rolling_average(avg_val_loss, loss.item(), step)
+            loss_buffer.append(accelerator.gather(loss).mean(dim=0).item())
+            avg_val_loss = sum(loss_buffer) / len(loss_buffer)
             pbar.set_postfix_str(f"average_loss={round(avg_val_loss, 4)}")
 
         # EPOCH
@@ -504,15 +499,13 @@ def _train(
         epoch_csv.close()
 
 
-# NOTE: Any differences observed when resuming training are most likely the
-# result of randomness inherent to the data-augmentation. I'm currently unsure
-# how to register and restore this random state during checkpointing.
 def resume_train(
     model_name: str,
     train_data_path: str,
     val_data_path: str,
     num_workers: int,
     batch_size: int,
+    grad_acc_steps: int,
     epochs: int,
     checkpoint_dir: str,
     resume_epoch: int,
@@ -539,9 +532,9 @@ def resume_train(
     else:
         raise Exception("Invalid tokenizer name")
 
-    # TODO: Add support for verifying the resume_step and epoch, keep these
-    # save these variables as part of the state during checkpointing
-    accelerator = accelerate.Accelerator(project_dir=project_dir)
+    accelerator = accelerate.Accelerator(
+        project_dir=project_dir, gradient_accumulation_steps=grad_acc_steps
+    )
     if accelerator.is_main_process:
         project_dir = setup_project_dir(project_dir)
         logger = setup_logger(project_dir)
@@ -561,6 +554,7 @@ def resume_train(
         f"model_name={model_name}, "
         f"epochs={epochs}, "
         f"batch_size={batch_size}, "
+        f"grad_acc_steps={grad_acc_steps}, "
         f"num_workers={num_workers}, "
         f"checkpoint_dir={checkpoint_dir}, "
         f"resume_step={resume_step}, "
@@ -635,6 +629,7 @@ def train(
     val_data_path: str,
     num_workers: int,
     batch_size: int,
+    grad_acc_steps: int,
     epochs: int,
     checkpoint_path: str | None = None,
     steps_per_checkpoint: int | None = None,
@@ -661,7 +656,9 @@ def train(
     else:
         raise Exception("Invalid tokenizer name")
 
-    accelerator = accelerate.Accelerator(project_dir=project_dir)
+    accelerator = accelerate.Accelerator(
+        project_dir=project_dir, gradient_accumulation_steps=grad_acc_steps
+    )
     if accelerator.is_main_process:
         project_dir = setup_project_dir(project_dir)
         logger = setup_logger(project_dir)
@@ -676,6 +673,7 @@ def train(
         else ""
         f"epochs={epochs}, "
         f"batch_size={batch_size}, "
+        f"grad_acc_steps={grad_acc_steps}, "
         f"num_workers={num_workers}"
     )
 
@@ -683,7 +681,7 @@ def train(
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerLM(model_config)
-    # model.compile()
+    model.compile()
     logger.info(f"Loaded model with config: {load_model_config(model_name)}")
     if checkpoint_path:
         try:
@@ -782,6 +780,12 @@ def parse_resume_args():
     argp.add_argument("-r_epoch", help="resume epoch", type=int, required=True)
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
     argp.add_argument("-bs", help="batch size", type=int, default=32)
+    argp.add_argument(
+        "-grad_acc_steps",
+        help="gradient accumulation steps",
+        type=int,
+        default=1,
+    )
     argp.add_argument("-workers", help="number workers", type=int, default=1)
     argp.add_argument("-pdir", help="project dir", type=str, required=False)
     argp.add_argument(
@@ -801,6 +805,12 @@ def parse_train_args():
     )
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
     argp.add_argument("-bs", help="batch size", type=int, default=32)
+    argp.add_argument(
+        "-grad_acc_steps",
+        help="gradient accumulation steps",
+        type=int,
+        default=1,
+    )
     argp.add_argument("-workers", help="number workers", type=int, default=1)
     argp.add_argument("-pdir", help="project dir", type=str, required=False)
     argp.add_argument(
@@ -810,7 +820,6 @@ def parse_train_args():
     return argp.parse_args(sys.argv[2:])
 
 
-# Needs to be adjusted to take multiple datasets
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         usage="python aria/train.py <command> [<args>]"
@@ -832,6 +841,7 @@ if __name__ == "__main__":
             val_data_path=train_args.val_data,
             num_workers=train_args.workers,
             batch_size=train_args.bs,
+            grad_acc_steps=train_args.grad_acc_steps,
             epochs=train_args.epochs,
             checkpoint_path=train_args.cp_path,
             steps_per_checkpoint=train_args.spc,
@@ -845,6 +855,7 @@ if __name__ == "__main__":
             val_data_path=resume_args.val_data,
             num_workers=resume_args.workers,
             batch_size=resume_args.bs,
+            grad_acc_steps=resume_args.grad_acc_steps,
             epochs=resume_args.epochs,
             checkpoint_dir=resume_args.cp_dir,
             resume_step=resume_args.r_step,
