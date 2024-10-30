@@ -43,20 +43,25 @@ class FusedEncoderBlock(nn.Module):
         self.att_proj_linear = nn.Linear(
             in_features=model_config.d_model,
             out_features=model_config.d_model,
+            bias=False,
         )
-        self.resid_dropout = nn.Dropout(model_config.drop_p)
 
         # FF Layer
-        self.ff_dropout = nn.Dropout(model_config.drop_p)
-        self.ff_linear_1 = nn.Linear(
+        self.ff_gate_proj = nn.Linear(
             in_features=model_config.d_model,
             out_features=model_config.d_model * model_config.ff_mult,
+            bias=False,
         )
-        self.ff_linear_2 = nn.Linear(
+        self.ff_up_proj = nn.Linear(
+            in_features=model_config.d_model,
+            out_features=model_config.d_model * model_config.ff_mult,
+            bias=False,
+        )
+        self.ff_down_proj = nn.Linear(
             in_features=model_config.d_model * model_config.ff_mult,
             out_features=model_config.d_model,
+            bias=False,
         )
-        self.ff_activation = nn.GELU()
 
         # Pre layer norms
         self.norm1 = nn.LayerNorm(model_config.d_model)
@@ -100,12 +105,13 @@ class FusedEncoderBlock(nn.Module):
         out = att.transpose(1, 2).contiguous()
         out = out.view(batch_size, seq_len, self.n_heads * self.d_head)
 
-        return self.resid_dropout(self.att_proj_linear(out))
+        return self.att_proj_linear(out)
 
     def _ff_block(self, x: torch.Tensor):
-        x = self.ff_linear_2(self.ff_activation(self.ff_linear_1(x)))
 
-        return self.ff_dropout(x)
+        return self.ff_down_proj(
+            F.silu(self.ff_gate_proj(x)) * self.ff_up_proj(x)
+        )
 
 
 class Transformer(nn.Module):
@@ -154,7 +160,7 @@ class Transformer(nn.Module):
             self.freqs_cis = precompute_freqs_cis(
                 seq_len=self.model_config.max_seq_len,
                 n_elem=self.model_config.d_model // self.model_config.n_heads,
-                base=10000,
+                base=500000,
                 dtype=hidden_states.dtype,
             ).to(src.device)
         freqs_cis = self.freqs_cis[: src.shape[1]]
@@ -225,7 +231,7 @@ class TransformerLM(nn.Module):
 def precompute_freqs_cis(
     seq_len: int,
     n_elem: int,
-    base: int = 10000,
+    base: int = 500000,
     dtype: torch.dtype = torch.bfloat16,
 ):
     freqs = 1.0 / (
