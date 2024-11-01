@@ -641,6 +641,8 @@ class TrainingDataset(torch.utils.data.Dataset):
                 Provided functions are expected to be list[str | tuple] ->
                 list[str | tuple].
         """
+        print(f"Setting data augmentation transform")
+
         if isinstance(transform, Callable):
             self._transform = transform
         elif isinstance(transform, list):
