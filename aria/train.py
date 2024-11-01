@@ -313,21 +313,25 @@ def _train(
         # total_flop = sum(flop_counter.get_flop_counts()["Global"].values())
         # logger.info(f"Forwards & backwards FLOP: {total_flop / 1e12} TF")
 
-    def make_checkpoint(_accelerator, _epoch: int, _step: int):
-        checkpoint_dir = os.path.join(
-            project_dir,
-            "checkpoints",
-            f"epoch{_epoch}_step{_step}",
-        )
+    def make_checkpoint(
+        _accelerator: accelerate.Accelerator, _epoch: int, _step: int
+    ):
+        if accelerator.is_main_process:
+            checkpoint_dir = os.path.join(
+                project_dir,
+                "checkpoints",
+                f"epoch{_epoch}_step{_step}",
+            )
 
-        logger.info(
-            f"EPOCH {_epoch}/{epochs + start_epoch}: Saving checkpoint - {checkpoint_dir}"
-        )
-        _accelerator.save_state(checkpoint_dir)
+            logger.info(
+                f"EPOCH {_epoch}/{epochs + start_epoch}: Saving checkpoint - {checkpoint_dir}"
+            )
+            _accelerator.save_state(checkpoint_dir)
 
     # This is all slightly messy as train_loop and val_loop make use of the
     # variables in the wider scope. Perhaps refactor this at some point.
     def train_loop(dataloader: DataLoader, _epoch: int, _resume_step: int = 0):
+        loss = torch.tensor([0.0])
         avg_train_loss = 0
         trailing_loss = 0
         loss_buffer = []
@@ -348,6 +352,13 @@ def _train(
                 leave=False,
             )
         ):
+            if accelerator.is_main_process:
+                pbar.set_postfix_str(
+                    f"lr={lr_for_print}, "
+                    f"loss={round(loss.item(), 4)}, "
+                    f"trailing={round(trailing_loss, 4)}"
+                )
+
             with accelerator.accumulate(model):
                 step = __step + _resume_step + 1
                 src, tgt, mask = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
@@ -378,12 +389,6 @@ def _train(
 
                 if accelerator.is_main_process:
                     loss_writer.writerow([_epoch, step, loss.item()])
-
-                pbar.set_postfix_str(
-                    f"lr={lr_for_print}, "
-                    f"loss={round(loss.item(), 4)}, "
-                    f"trailing={round(trailing_loss, 4)}"
-                )
 
                 accelerator.backward(loss)
                 optimizer.step()
