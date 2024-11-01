@@ -352,12 +352,11 @@ def _train(
                 leave=False,
             )
         ):
-            if accelerator.is_main_process:
-                pbar.set_postfix_str(
-                    f"lr={lr_for_print}, "
-                    f"loss={round(loss.item(), 4)}, "
-                    f"trailing={round(trailing_loss, 4)}"
-                )
+            pbar.set_postfix_str(
+                f"lr={lr_for_print}, "
+                f"loss={round(loss.item(), 4)}, "
+                f"trailing={round(trailing_loss, 4)}"
+            )
 
             with accelerator.accumulate(model):
                 step = __step + _resume_step + 1
