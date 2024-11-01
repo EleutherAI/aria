@@ -32,6 +32,8 @@ from aria.data.datasets import (
 )
 from aria.utils import _load_weight
 
+torch._dynamo.config.optimize_ddp = False
+
 
 # ----- USAGE -----
 #
@@ -703,6 +705,15 @@ def train(
         apply_aug=True,
         finetune=True if checkpoint_path is not None else False,
     )
+
+    assert (
+        train_dataloader.dataset.config["max_seq_len"]
+        == model_config.max_seq_len
+    )
+    assert (
+        val_dataloader.dataset.config["max_seq_len"] == model_config.max_seq_len
+    )
+
     optimizer, scheduler = get_optim(
         model,
         num_epochs=epochs,

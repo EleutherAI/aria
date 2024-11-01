@@ -595,7 +595,13 @@ class TrainingDataset(torch.utils.data.Dataset):
             buffer = f.readline()
 
         try:
+            prev_max_seq_len = (
+                self.config["max_seq_len"] if self.config is not None else None
+            )
             self.config = json.loads(buffer)
+            assert (prev_max_seq_len is None) or (
+                self.config["max_seq_len"] == prev_max_seq_len
+            )
             self.max_seq_len = self.config["max_seq_len"]
             _check_config()
         except AssertionError as e:
