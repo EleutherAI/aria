@@ -69,7 +69,7 @@ class TransformerLM(nn.Module):
         self.model.freqs_cis = precompute_freqs_cis(
             seq_len=max_seq_len,
             n_elem=self.model_config.d_model // self.model_config.n_heads,
-            base=10000,
+            base=500000,
             dtype=dtype,
         ).cuda()
         self.model.causal_mask = torch.tril(
@@ -131,18 +131,25 @@ class TransformerBlock(nn.Module):
         self.att_proj_linear = nn.Linear(
             in_features=model_config.d_model,
             out_features=model_config.d_model,
+            bias=False,
         )
 
         # FF
-        self.ff_linear_1 = nn.Linear(
+        self.ff_gate_proj = nn.Linear(
             in_features=model_config.d_model,
             out_features=model_config.d_model * model_config.ff_mult,
+            bias=False,
         )
-        self.ff_linear_2 = nn.Linear(
+        self.ff_up_proj = nn.Linear(
+            in_features=model_config.d_model,
+            out_features=model_config.d_model * model_config.ff_mult,
+            bias=False,
+        )
+        self.ff_down_proj = nn.Linear(
             in_features=model_config.d_model * model_config.ff_mult,
             out_features=model_config.d_model,
+            bias=False,
         )
-        self.ff_activation = nn.GELU()
 
         # Pre layer norms
         self.norm1 = nn.LayerNorm(model_config.d_model)
@@ -212,13 +219,15 @@ class TransformerBlock(nn.Module):
         return self.att_proj_linear(wv)
 
     def _ff_block(self, x: torch.Tensor):
-        return self.ff_linear_2(self.ff_activation(self.ff_linear_1(x)))
+        return self.ff_down_proj(
+            F.silu(self.ff_gate_proj(x)) * self.ff_up_proj(x)
+        )
 
 
 def precompute_freqs_cis(
     seq_len: int,
     n_elem: int,
-    base: int = 10000,
+    base: int = 500000,
     dtype: torch.dtype = torch.bfloat16,
 ):
     freqs = 1.0 / (
