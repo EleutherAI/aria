@@ -507,7 +507,7 @@ def _train(
 
 def resume_train(
     model_name: str,
-    train_data_path: str,
+    train_data_paths: str,
     val_data_path: str,
     num_workers: int,
     batch_size: int,
@@ -525,10 +525,13 @@ def resume_train(
     assert batch_size > 0, "Invalid batch size"
     assert torch.cuda.is_available() is True, "CUDA not available"
     assert os.path.isdir(checkpoint_dir), f"No dir at {checkpoint_dir}"
-    assert os.path.isdir(train_data_path), f"No dir found at {train_data_path}"
+    for train_data_path in train_data_paths:
+        assert os.path.isdir(
+            train_data_path
+        ), f"No dir found at {train_data_path}"
     assert os.path.isdir(val_data_path), f"No dir found at {val_data_path}"
 
-    tokenizer_name = get_tokenizer_name(train_data_path, val_data_path)
+    tokenizer_name = get_tokenizer_name(train_data_paths, val_data_path)
     if tokenizer_name == "abs":
         tokenizer = AbsTokenizer(return_tensors=True)
     elif tokenizer_name == "separated_abs":
@@ -566,6 +569,7 @@ def resume_train(
         f"resume_step={resume_step}, "
         f"resume_epoch={resume_epoch}"
     )
+
     if steps_per_checkpoint:
         logger.info(f"Creating checkpoints every {steps_per_checkpoint}")
 
@@ -573,9 +577,10 @@ def resume_train(
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerLM(model_config)
+    model.compile()
 
     train_dataloader, val_dataloader = get_dataloaders(
-        train_data_dirs=train_data_path,
+        train_data_dirs=train_data_paths,
         val_data_dir=val_data_path,
         tokenizer=tokenizer,
         init_epoch=resume_epoch,
@@ -682,6 +687,9 @@ def train(
         f"grad_acc_steps={grad_acc_steps}, "
         f"num_workers={num_workers}"
     )
+
+    if steps_per_checkpoint:
+        logger.info(f"Creating checkpoints every {steps_per_checkpoint}")
 
     # Init model
     model_config = ModelConfig(**load_model_config(model_name))
@@ -866,7 +874,7 @@ if __name__ == "__main__":
         resume_args = parse_resume_args()
         resume_train(
             model_name=resume_args.model,
-            train_data_path=resume_args.train_data,
+            train_data_paths=resume_args.train_data,
             val_data_path=resume_args.val_data,
             num_workers=resume_args.workers,
             batch_size=resume_args.bs,
