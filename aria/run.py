@@ -90,16 +90,15 @@ def sample(args):
     from aria.config import load_model_config, load_config
     from aria.tokenizer import AbsTokenizer, SeparatedAbsTokenizer
     from aria.sample import greedy_sample, get_pt_prompt, get_inst_prompt
-    from aria.data.midi import MidiDict
-    from aria.data.datasets import _noise_midi_dict
-    from aria.utils import midi_to_audio, _load_weight
+    from ariautils.midi import MidiDict
+    from aria.utils import _load_weight
 
     if not cuda_is_available():
         raise Exception("CUDA device is not available.")
 
     model_state = _load_weight(args.c, "cuda")
     model_state = {
-        k: v for k, v in model_state.items() if "rotary_emb" not in k
+        k.replace("_orig_mod.", ""): v for k, v in model_state.items()
     }
 
     manual_metadata = {k: v for k, v in args.metadata} if args.metadata else {}

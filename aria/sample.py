@@ -9,21 +9,21 @@ from tqdm import tqdm
 
 from aria.inference import TransformerLM
 from aria.tokenizer import Tokenizer
-from aria.data.midi import MidiDict
+from ariautils.midi import MidiDict
 
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def prefill(model, idxs: torch.Tensor, input_pos: torch.Tensor):
     logits = model.forward(idxs=idxs, input_pos=input_pos)[:, -1]
 
     return logits
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def decode_one(model, idxs: torch.Tensor, input_pos: torch.Tensor):
     logits = model.forward(idxs=idxs, input_pos=input_pos)[:, -1]
 
@@ -63,11 +63,12 @@ def update_seq_ids_(
 
 
 # TODO: Add CFG back into this when working
+# TODO: Check that unexpected instrument warnings still working
 @torch.autocast(
     "cuda",
     dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
 )
-@torch.no_grad()
+@torch.inference_mode()
 def greedy_sample(
     model: TransformerLM,
     tokenizer: Tokenizer,
@@ -200,7 +201,6 @@ def get_inst_prompt(
     noise: bool,
 ):
     from aria.data.datasets import _noise_midi_dict
-    from aria.data.midi import MidiDict
     from aria.config import load_config
 
     midi_dict.metadata["noisy_intervals"] = [[0, truncate_len * 1e3]]

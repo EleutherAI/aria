@@ -7,7 +7,7 @@ from aria import tokenizer
 from aria.config import load_config
 from aria.data import datasets
 from aria.data.datasets import _noise_midi_dict
-from aria.data.midi import MidiDict
+from ariautils.midi import MidiDict
 
 logger = logging.getLogger(__name__)
 if not os.path.isdir("tests/test_results"):

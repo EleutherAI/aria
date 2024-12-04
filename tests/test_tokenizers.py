@@ -7,7 +7,7 @@ from typing import Callable
 
 from aria import tokenizer
 from aria.config import load_config
-from aria.data.midi import MidiDict
+from ariautils.midi import MidiDict
 from aria.data.datasets import _get_combined_mididict, _noise_midi_dict
 from aria.utils import midi_to_audio
 

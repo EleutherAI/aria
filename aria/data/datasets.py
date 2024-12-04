@@ -22,7 +22,7 @@ from multiprocessing import Pool, get_start_method
 
 from aria.config import load_config
 from aria.tokenizer import Tokenizer, SeparatedAbsTokenizer
-from aria.data.midi import MidiDict, get_test_fn, get_duration_ms
+from ariautils.midi import MidiDict, get_test_fn, get_duration_ms
 
 
 def setup_logger():

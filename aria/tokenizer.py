@@ -10,7 +10,7 @@ import copy
 from collections import defaultdict
 from typing import Callable
 
-from aria.data.midi import MidiDict, get_duration_ms
+from ariautils.midi import MidiDict, get_duration_ms
 from aria.config import load_config
 
 # TODO:
