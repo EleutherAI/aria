@@ -2,33 +2,33 @@
     "data": {
         "tests": {
             "max_programs":{
-                "run": true,
+                "run": false,
                 "args": {
                     "max": 12
                 }
             },
             "max_instruments":{
-                "run": true,
+                "run": false,
                 "args": {
                     "max": 7
                 }
             },
             "total_note_frequency":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_per_second": 1.5,
                     "max_per_second": 30
                 }
             },
             "note_frequency_per_instrument":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_per_second": 1.0,
                     "max_per_second": 25
                 }
             },
             "min_length":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_seconds": 30
                 }
@@ -78,7 +78,7 @@
                     }
                 },
                 "maestro_json": {
-                    "run": false,
+                    "run": true,
                     "args": {
                         "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"],
                         "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"]
@@ -91,7 +91,7 @@
                     }
                 },
                 "abs_path": {
-                    "run": false,
+                    "run": true,
                     "args": {}
                 }
             },
@@ -226,7 +226,7 @@
             },
             "drum_velocity": 60,
             "velocity_quantization": {
-                "step": 15
+                "step": 10
             },
             "abs_time_step_ms": 5000,
             "max_dur_ms": 5000,
