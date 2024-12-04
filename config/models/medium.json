@@ -1,9 +1,9 @@
 {
-    "d_model": 768,
-    "n_heads": 12,
-    "n_layers": 48,
+    "d_model": 1536,
+    "n_heads": 24,
+    "n_layers": 16,
     "ff_mult": 4,
     "drop_p": 0.0,
-    "max_seq_len": 4096,
+    "max_seq_len": 8192,
     "grad_checkpoint": true
 }
