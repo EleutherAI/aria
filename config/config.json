@@ -10,27 +10,27 @@
             "max_instruments":{
                 "run": false,
                 "args": {
-                    "max": 5
+                    "max": 7
                 }
             },
             "total_note_frequency":{
                 "run": false,
                 "args": {
                     "min_per_second": 1.5,
-                    "max_per_second": 25
+                    "max_per_second": 30
                 }
             },
             "note_frequency_per_instrument":{
                 "run": false,
                 "args": {
-                    "min_per_second": 0.5,
-                    "max_per_second": 16
+                    "min_per_second": 1.0,
+                    "max_per_second": 25
                 }
             },
             "min_length":{
                 "run": false,
                 "args": {
-                    "min_seconds": 20
+                    "min_seconds": 30
                 }
             }
         },
@@ -60,25 +60,25 @@
         "metadata": {
             "functions": {
                 "composer_filename": {
-                    "run": true,
+                    "run": false,
                     "args": {
                         "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"]
                     }
                 },
                 "composer_metamsg": {
-                    "run": true,
+                    "run": false,
                     "args": {
                         "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"]
                     }
                 },
                 "form_filename": {
-                    "run": true,
+                    "run": false,
                     "args": {
-                        "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"]
+                        "form_names": ["sonata", "prelude", "nocturne", "etude", "waltz", "mazurka", "impromptu", "fugue"]
                     }
                 },
                 "maestro_json": {
-                    "run": false,
+                    "run": true,
                     "args": {
                         "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"],
                         "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"]
@@ -226,7 +226,7 @@
             },
             "drum_velocity": 60,
             "velocity_quantization": {
-                "step": 15
+                "step": 10
             },
             "abs_time_step_ms": 5000,
             "max_dur_ms": 5000,

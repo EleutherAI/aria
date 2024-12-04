@@ -15,6 +15,7 @@ from accelerate.logging import get_logger
 from safetensors.torch import load_file
 from logging.handlers import RotatingFileHandler
 from tqdm import tqdm
+from typing import List
 
 from aria.config import load_model_config
 from aria.model import ModelConfig, TransformerLM
@@ -31,6 +32,8 @@ from aria.data.datasets import (
 )
 from aria.utils import _load_weight
 
+torch._dynamo.config.optimize_ddp = False
+
 
 # ----- USAGE -----
 #
@@ -43,8 +46,8 @@ from aria.utils import _load_weight
 #
 # accelerate launch [arguments] aria/train.py train \
 #   small \
-#   data/train \
-#   data/val \
+#   -train_data data/train \
+#   -val_data data/val \
 #   -epochs 10 \
 #   -bs 32 \
 #   -workers 8
@@ -53,11 +56,11 @@ from aria.utils import _load_weight
 #
 # accelerate launch [arguments] aria/train.py resume \
 #   small \
-#   data/train \
-#   data/val \
-#   -cdir models/epoch5_step0 \
-#   -rstep 0 \
-#   -repoch 5 \
+#   -train_data data/train \
+#   -val_data data/val \
+#   -cp_dir models/epoch5_step0 \
+#   -r_step 0 \
+#   -r_epoch 5 \
 #   -epochs 5 \
 #   -bs 32 \
 #   -workers 8
@@ -94,11 +97,11 @@ def setup_logger(project_dir: str):
 
 
 def get_tokenizer_name(
-    train_data_path: str,
+    train_data_paths: str,
     val_data_path: str,
 ):
     """This will throw an error if there is a tokenizer mismatch"""
-    train_config = TrainingDataset.get_config_from_path(train_data_path)
+    train_config = TrainingDataset.get_config_from_path(train_data_paths[0])
     val_config = TrainingDataset.get_config_from_path(val_data_path)
 
     assert (
@@ -165,7 +168,7 @@ def _get_optim(
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
-        weight_decay=0.01,
+        weight_decay=0.1,
         betas=(0.9, 0.95),
         eps=1e-5,
     )
@@ -197,9 +200,9 @@ def get_optim(
     num_epochs: int,
     steps_per_epoch: int,
 ):
-    LR = 3e-5
+    LR = 3e-4
     END_RATIO = 0.1
-    WARMUP_STEPS = 1000
+    WARMUP_STEPS = 200
 
     return _get_optim(
         lr=LR,
@@ -212,7 +215,7 @@ def get_optim(
 
 
 def get_dataloaders(
-    train_data_dir: str,
+    train_data_dirs: List[str],
     val_data_dir: str,
     tokenizer: Tokenizer,
     batch_size: int,
@@ -224,36 +227,30 @@ def get_dataloaders(
     logger = logging.getLogger(__name__)
     if finetune == False:
         train_dataset = PretrainingDataset(
-            dir_path=train_data_dir,
+            dir_paths=train_data_dirs,
             tokenizer=tokenizer,
         )
         val_dataset = PretrainingDataset(
-            dir_path=val_data_dir,
+            dir_paths=val_data_dir,
             tokenizer=tokenizer,
         )
     elif finetune == True:
         train_dataset = FinetuningDataset(
-            dir_path=train_data_dir,
+            dir_paths=train_data_dirs,
             tokenizer=tokenizer,
         )
         val_dataset = FinetuningDataset(
-            dir_path=val_data_dir,
+            dir_paths=val_data_dir,
             tokenizer=tokenizer,
         )
     else:
         raise ValueError
 
     if init_epoch:
-        if init_epoch > train_dataset.num_epochs:
-            logger.warning(
-                f"Provided init_epoch is larger than the number of epoch files "
-                f"located in {train_data_dir}. The default behaviour in this case "
-                f"is to load the epochs in a cyclic fashion."
-            )
         train_dataset.init_epoch(idx=init_epoch)
 
     assert (
-        val_dataset.num_epochs == 1
+        len(val_dataset.epoch_files_by_dir[0]) == 1
     ), "val-data directory should only contain one epoch"
 
     if apply_aug:
@@ -273,14 +270,6 @@ def get_dataloaders(
     )
 
     return train_dataloader, val_dataloader
-
-
-def rolling_average(prev_avg: float, x_n: float, n: int):
-    # Returns rolling average without needing to recalculate
-    if n == 0:
-        return x_n
-    else:
-        return ((prev_avg * (n - 1)) / n) + (x_n / n)
 
 
 def _train(
@@ -309,7 +298,6 @@ def _train(
                 optimizer.zero_grad()
                 break
 
-        flop_counter = FlopCounterMode(display=False)
         logger.info(
             f"Model has "
             f"{'{:,}'.format(sum(p.numel() for p in model.parameters() if p.requires_grad))} "
@@ -317,6 +305,7 @@ def _train(
         )
 
         # logger.info("Profiling FLOP")
+        # flop_counter = FlopCounterMode(display=False)
         # _bench()
 
         # with flop_counter:
@@ -324,21 +313,25 @@ def _train(
         # total_flop = sum(flop_counter.get_flop_counts()["Global"].values())
         # logger.info(f"Forwards & backwards FLOP: {total_flop / 1e12} TF")
 
-    def make_checkpoint(_accelerator, _epoch: int, _step: int):
-        checkpoint_dir = os.path.join(
-            project_dir,
-            "checkpoints",
-            f"epoch{_epoch}_step{_step}",
-        )
+    def make_checkpoint(
+        _accelerator: accelerate.Accelerator, _epoch: int, _step: int
+    ):
+        if accelerator.is_main_process:
+            checkpoint_dir = os.path.join(
+                project_dir,
+                "checkpoints",
+                f"epoch{_epoch}_step{_step}",
+            )
 
-        logger.info(
-            f"EPOCH {_epoch}/{epochs + start_epoch}: Saving checkpoint - {checkpoint_dir}"
-        )
-        _accelerator.save_state(checkpoint_dir)
+            logger.info(
+                f"EPOCH {_epoch}/{epochs + start_epoch}: Saving checkpoint - {checkpoint_dir}"
+            )
+            _accelerator.save_state(checkpoint_dir)
 
     # This is all slightly messy as train_loop and val_loop make use of the
     # variables in the wider scope. Perhaps refactor this at some point.
     def train_loop(dataloader: DataLoader, _epoch: int, _resume_step: int = 0):
+        loss = torch.tensor([0.0])
         avg_train_loss = 0
         trailing_loss = 0
         loss_buffer = []
@@ -359,55 +352,57 @@ def _train(
                 leave=False,
             )
         ):
-            step = __step + _resume_step + 1
-            src, tgt, mask = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
-            logits = model(src)  # (b_sz, s_len, v_sz)
-            logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
-            loss = loss_fn(logits, tgt)
-
-            loss = loss * mask
-            loss = loss[loss != 0.0].mean()  # != 0.0 here is important
-
-            # Calculate statistics
-            loss_buffer.append(loss.item())
-            if len(loss_buffer) > TRAILING_LOSS_STEPS:
-                loss_buffer.pop(0)
-            trailing_loss = sum(loss_buffer) / len(loss_buffer)
-            avg_train_loss = rolling_average(
-                avg_train_loss, loss.item(), __step
-            )
-
-            # Logging
-            logger.debug(
-                f"EPOCH {_epoch} STEP {step}: "
-                f"lr={lr_for_print}, "
-                f"loss={round(loss.item(), 4)}, "
-                f"trailing_loss={round(trailing_loss, 4)}, "
-                f"average_loss={round(avg_train_loss, 4)}"
-            )
-            if accelerator.is_main_process:
-                loss_writer.writerow([_epoch, step, loss.item()])
             pbar.set_postfix_str(
                 f"lr={lr_for_print}, "
                 f"loss={round(loss.item(), 4)}, "
                 f"trailing={round(trailing_loss, 4)}"
             )
 
-            # Backwards step
-            accelerator.backward(loss)
-            optimizer.step()
-            optimizer.zero_grad()
-            if scheduler:
-                scheduler.step()
-                lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
+            with accelerator.accumulate(model):
+                step = __step + _resume_step + 1
+                src, tgt, mask = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
+                logits = model(src)  # (b_sz, s_len, v_sz)
+                logits = logits.transpose(
+                    1, 2
+                )  # Transpose for CrossEntropyLoss
+                loss = loss_fn(logits, tgt)
 
-            if steps_per_checkpoint:
-                if step % steps_per_checkpoint == 0:
-                    make_checkpoint(
-                        _accelerator=accelerator,
-                        _epoch=_epoch,
-                        _step=step,
-                    )
+                loss = loss * mask
+                loss = loss[loss != 0.0].mean()  # != 0.0 here is important
+
+                # Calculate statistics
+                loss_buffer.append(accelerator.gather(loss).mean(dim=0).item())
+                trailing_loss = sum(loss_buffer[-TRAILING_LOSS_STEPS:]) / len(
+                    loss_buffer[-TRAILING_LOSS_STEPS:]
+                )
+                avg_train_loss = sum(loss_buffer) / len(loss_buffer)
+
+                # Logging
+                logger.debug(
+                    f"EPOCH {_epoch} STEP {step}: "
+                    f"lr={lr_for_print}, "
+                    f"loss={round(loss.item(), 4)}, "
+                    f"trailing_loss={round(trailing_loss, 4)}, "
+                    f"average_loss={round(avg_train_loss, 4)}"
+                )
+
+                if accelerator.is_main_process:
+                    loss_writer.writerow([_epoch, step, loss.item()])
+
+                accelerator.backward(loss)
+                optimizer.step()
+                optimizer.zero_grad()
+                if scheduler:
+                    scheduler.step()
+                    lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
+
+                if steps_per_checkpoint:
+                    if step % steps_per_checkpoint == 0:
+                        make_checkpoint(
+                            _accelerator=accelerator,
+                            _epoch=_epoch,
+                            _step=step,
+                        )
 
         logger.info(
             f"EPOCH {_epoch}/{epochs + start_epoch}: Finished training - "
@@ -416,8 +411,9 @@ def _train(
 
         return avg_train_loss
 
+    @torch.no_grad()
     def val_loop(dataloader, _epoch: int):
-        avg_val_loss = 0
+        loss_buffer = []
         model.eval()
         for step, batch in (
             pbar := tqdm(
@@ -427,8 +423,7 @@ def _train(
             )
         ):
             src, tgt, mask = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
-            with torch.no_grad():
-                logits = model(src)  # (b_sz, s_len, v_sz)
+            logits = model(src)  # (b_sz, s_len, v_sz)
             logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
             loss = loss_fn(logits, tgt)
 
@@ -436,7 +431,8 @@ def _train(
             loss = loss[loss != 0.0].mean()
 
             # Logging
-            avg_val_loss = rolling_average(avg_val_loss, loss.item(), step)
+            loss_buffer.append(accelerator.gather(loss).mean(dim=0).item())
+            avg_val_loss = sum(loss_buffer) / len(loss_buffer)
             pbar.set_postfix_str(f"average_loss={round(avg_val_loss, 4)}")
 
         # EPOCH
@@ -509,15 +505,13 @@ def _train(
         epoch_csv.close()
 
 
-# NOTE: Any differences observed when resuming training are most likely the
-# result of randomness inherent to the data-augmentation. I'm currently unsure
-# how to register and restore this random state during checkpointing.
 def resume_train(
     model_name: str,
-    train_data_path: str,
+    train_data_paths: str,
     val_data_path: str,
     num_workers: int,
     batch_size: int,
+    grad_acc_steps: int,
     epochs: int,
     checkpoint_dir: str,
     resume_epoch: int,
@@ -531,10 +525,13 @@ def resume_train(
     assert batch_size > 0, "Invalid batch size"
     assert torch.cuda.is_available() is True, "CUDA not available"
     assert os.path.isdir(checkpoint_dir), f"No dir at {checkpoint_dir}"
-    assert os.path.isdir(train_data_path), f"No dir found at {train_data_path}"
+    for train_data_path in train_data_paths:
+        assert os.path.isdir(
+            train_data_path
+        ), f"No dir found at {train_data_path}"
     assert os.path.isdir(val_data_path), f"No dir found at {val_data_path}"
 
-    tokenizer_name = get_tokenizer_name(train_data_path, val_data_path)
+    tokenizer_name = get_tokenizer_name(train_data_paths, val_data_path)
     if tokenizer_name == "abs":
         tokenizer = AbsTokenizer(return_tensors=True)
     elif tokenizer_name == "separated_abs":
@@ -544,9 +541,9 @@ def resume_train(
     else:
         raise Exception("Invalid tokenizer name")
 
-    # TODO: Add support for verifying the resume_step and epoch, keep these
-    # save these variables as part of the state during checkpointing
-    accelerator = accelerate.Accelerator(project_dir=project_dir)
+    accelerator = accelerate.Accelerator(
+        project_dir=project_dir, gradient_accumulation_steps=grad_acc_steps
+    )
     if accelerator.is_main_process:
         project_dir = setup_project_dir(project_dir)
         logger = setup_logger(project_dir)
@@ -566,11 +563,13 @@ def resume_train(
         f"model_name={model_name}, "
         f"epochs={epochs}, "
         f"batch_size={batch_size}, "
+        f"grad_acc_steps={grad_acc_steps}, "
         f"num_workers={num_workers}, "
         f"checkpoint_dir={checkpoint_dir}, "
         f"resume_step={resume_step}, "
         f"resume_epoch={resume_epoch}"
     )
+
     if steps_per_checkpoint:
         logger.info(f"Creating checkpoints every {steps_per_checkpoint}")
 
@@ -578,9 +577,10 @@ def resume_train(
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerLM(model_config)
+    model.compile()
 
     train_dataloader, val_dataloader = get_dataloaders(
-        train_data_dir=train_data_path,
+        train_data_dirs=train_data_paths,
         val_data_dir=val_data_path,
         tokenizer=tokenizer,
         init_epoch=resume_epoch,
@@ -636,10 +636,11 @@ def resume_train(
 
 def train(
     model_name: str,
-    train_data_path: str,
+    train_data_paths: List[str],
     val_data_path: str,
     num_workers: int,
     batch_size: int,
+    grad_acc_steps: int,
     epochs: int,
     checkpoint_path: str | None = None,
     steps_per_checkpoint: int | None = None,
@@ -650,10 +651,13 @@ def train(
     assert epochs > 0, "Invalid number of epochs"
     assert batch_size > 0, "Invalid batch size"
     assert torch.cuda.is_available() is True, "CUDA not available"
-    assert os.path.isdir(train_data_path), f"No dir found at {train_data_path}"
+    for train_data_path in train_data_paths:
+        assert os.path.isdir(
+            train_data_path
+        ), f"No dir found at {train_data_path}"
     assert os.path.isdir(val_data_path), f"No dir found at {val_data_path}"
 
-    tokenizer_name = get_tokenizer_name(train_data_path, val_data_path)
+    tokenizer_name = get_tokenizer_name(train_data_paths, val_data_path)
     if tokenizer_name == "abs":
         tokenizer = AbsTokenizer(return_tensors=True)
     elif tokenizer_name == "separated_abs":
@@ -663,7 +667,9 @@ def train(
     else:
         raise Exception("Invalid tokenizer name")
 
-    accelerator = accelerate.Accelerator(project_dir=project_dir)
+    accelerator = accelerate.Accelerator(
+        project_dir=project_dir, gradient_accumulation_steps=grad_acc_steps
+    )
     if accelerator.is_main_process:
         project_dir = setup_project_dir(project_dir)
         logger = setup_logger(project_dir)
@@ -678,13 +684,18 @@ def train(
         else ""
         f"epochs={epochs}, "
         f"batch_size={batch_size}, "
+        f"grad_acc_steps={grad_acc_steps}, "
         f"num_workers={num_workers}"
     )
+
+    if steps_per_checkpoint:
+        logger.info(f"Creating checkpoints every {steps_per_checkpoint}")
 
     # Init model
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerLM(model_config)
+    model.compile()
     logger.info(f"Loaded model with config: {load_model_config(model_name)}")
     if checkpoint_path:
         try:
@@ -698,7 +709,7 @@ def train(
         logger.info(f"Loaded finetune checkpoint located at: {checkpoint_path}")
 
     train_dataloader, val_dataloader = get_dataloaders(
-        train_data_dir=train_data_path,
+        train_data_dirs=train_data_paths,
         val_data_dir=val_data_path,
         tokenizer=tokenizer,
         batch_size=batch_size,
@@ -706,6 +717,15 @@ def train(
         apply_aug=True,
         finetune=True if checkpoint_path is not None else False,
     )
+
+    assert (
+        train_dataloader.dataset.config["max_seq_len"]
+        == model_config.max_seq_len
+    )
+    assert (
+        val_dataloader.dataset.config["max_seq_len"] == model_config.max_seq_len
+    )
+
     optimizer, scheduler = get_optim(
         model,
         num_epochs=epochs,
@@ -776,13 +796,19 @@ def convert_cp_from_accelerate(
 def parse_resume_args():
     argp = argparse.ArgumentParser(prog="python aria/train.py resume")
     argp.add_argument("model", help="name of model config file")
-    argp.add_argument("train_data", help="path to train data")
-    argp.add_argument("val_data", help="path to val data")
-    argp.add_argument("-cdir", help="checkpoint dir", type=str, required=True)
-    argp.add_argument("-rstep", help="resume step", type=int, required=True)
-    argp.add_argument("-repoch", help="resume epoch", type=int, required=True)
+    argp.add_argument("-train_data", nargs="+", help="path to train dir")
+    argp.add_argument("-val_data", help="path to val dir")
+    argp.add_argument("-cp_dir", help="checkpoint dir", type=str, required=True)
+    argp.add_argument("-r_step", help="resume step", type=int, required=True)
+    argp.add_argument("-r_epoch", help="resume epoch", type=int, required=True)
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
     argp.add_argument("-bs", help="batch size", type=int, default=32)
+    argp.add_argument(
+        "-grad_acc_steps",
+        help="gradient accumulation steps",
+        type=int,
+        default=1,
+    )
     argp.add_argument("-workers", help="number workers", type=int, default=1)
     argp.add_argument("-pdir", help="project dir", type=str, required=False)
     argp.add_argument(
@@ -795,13 +821,19 @@ def parse_resume_args():
 def parse_train_args():
     argp = argparse.ArgumentParser(prog="python aria/train.py train")
     argp.add_argument("model", help="name of model config file")
-    argp.add_argument("train_data", help="path to train dir")
-    argp.add_argument("val_data", help="path to val dir")
+    argp.add_argument("-train_data", nargs="+", help="path to train dir")
+    argp.add_argument("-val_data", help="path to val dir")
     argp.add_argument(
-        "-cp", help="path to checkpoint", required=False, default=None
+        "-cp_path", help="path to checkpoint", required=False, default=None
     )
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
     argp.add_argument("-bs", help="batch size", type=int, default=32)
+    argp.add_argument(
+        "-grad_acc_steps",
+        help="gradient accumulation steps",
+        type=int,
+        default=1,
+    )
     argp.add_argument("-workers", help="number workers", type=int, default=1)
     argp.add_argument("-pdir", help="project dir", type=str, required=False)
     argp.add_argument(
@@ -828,12 +860,13 @@ if __name__ == "__main__":
         train_args = parse_train_args()
         train(
             model_name=train_args.model,
-            train_data_path=train_args.train_data,
+            train_data_paths=train_args.train_data,
             val_data_path=train_args.val_data,
             num_workers=train_args.workers,
             batch_size=train_args.bs,
+            grad_acc_steps=train_args.grad_acc_steps,
             epochs=train_args.epochs,
-            checkpoint_path=train_args.cp,
+            checkpoint_path=train_args.cp_path,
             steps_per_checkpoint=train_args.spc,
             project_dir=train_args.pdir,
         )
@@ -841,14 +874,15 @@ if __name__ == "__main__":
         resume_args = parse_resume_args()
         resume_train(
             model_name=resume_args.model,
-            train_data_path=resume_args.train_data,
+            train_data_paths=resume_args.train_data,
             val_data_path=resume_args.val_data,
             num_workers=resume_args.workers,
             batch_size=resume_args.bs,
+            grad_acc_steps=resume_args.grad_acc_steps,
             epochs=resume_args.epochs,
-            checkpoint_dir=resume_args.cdir,
-            resume_step=resume_args.rstep,
-            resume_epoch=resume_args.repoch,
+            checkpoint_dir=resume_args.cp_dir,
+            resume_step=resume_args.r_step,
+            resume_epoch=resume_args.r_epoch,
             steps_per_checkpoint=resume_args.spc,
             project_dir=resume_args.pdir,
         )

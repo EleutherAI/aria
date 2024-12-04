@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 from aria.inference import TransformerLM
 from aria.tokenizer import Tokenizer
+from aria.data.midi import MidiDict
 
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
@@ -193,8 +194,8 @@ def sample_top_p(probs, p):
 
 # TODO: Clean up a bit and get rid of footguns
 def get_inst_prompt(
-    tokenizer,
-    midi_dict,
+    tokenizer: Tokenizer,
+    midi_dict: MidiDict,
     truncate_len: int,
     noise: bool,
 ):
@@ -217,12 +218,15 @@ def get_inst_prompt(
         print("No notes found in prompt region")
         prompt_seq = prompt_seq[: prompt_seq.index(tokenizer.bos_tok) + 1]
 
+    if tokenizer.dim_tok in prompt_seq:
+        prompt_seq.remove(tokenizer.dim_tok)
+
     return prompt_seq
 
 
 def get_pt_prompt(
-    tokenizer,
-    midi_dict,
+    tokenizer: Tokenizer,
+    midi_dict: MidiDict,
     truncate_len: int,
 ):
     prompt_seq = tokenizer.tokenize(midi_dict=midi_dict)
@@ -230,5 +234,8 @@ def get_pt_prompt(
         tokenized_seq=prompt_seq,
         trunc_time_ms=truncate_len * 1e3,
     )
+
+    if tokenizer.dim_tok in prompt_seq:
+        prompt_seq.remove(tokenizer.dim_tok)
 
     return prompt_seq
