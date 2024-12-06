@@ -8,7 +8,7 @@ from typing import List
 from tqdm import tqdm
 
 from aria.inference import TransformerLM
-from aria.tokenizer import Tokenizer
+from ariautils.tokenizer import Tokenizer
 from ariautils.midi import MidiDict
 
 torch._inductor.config.coordinate_descent_tuning = True
@@ -82,7 +82,6 @@ def greedy_sample(
 ):
     """Performs greedy (top_p) auto-regressive sampling on a batch of prompts."""
 
-    assert tokenizer.return_tensors is True, "tokenizer must return tensors."
     if force_end:
         assert max_new_tokens > 130, "prompt too long to use force_end=True"
 
@@ -93,7 +92,9 @@ def greedy_sample(
     total_len = _prompt_len + max_new_tokens
     seq = torch.stack(
         [
-            tokenizer.encode(p + [tokenizer.pad_tok] * (total_len - len(p)))
+            torch.tensor(
+                tokenizer.encode(p + [tokenizer.pad_tok] * (total_len - len(p)))
+            )
             for p in prompts
         ]
     ).cuda()
@@ -200,7 +201,7 @@ def get_inst_prompt(
     truncate_len: int,
     noise: bool,
 ):
-    from aria.data.datasets import _noise_midi_dict
+    from aria.datasets import _noise_midi_dict
     from aria.config import load_config
 
     midi_dict.metadata["noisy_intervals"] = [[0, truncate_len * 1e3]]
@@ -214,6 +215,11 @@ def get_inst_prompt(
 
     if tokenizer.inst_end_tok in prompt_seq:
         prompt_seq = prompt_seq[: prompt_seq.index(tokenizer.inst_end_tok) + 1]
+    elif tokenizer.eos_tok in prompt_seq:
+        # TODO: This is a workaround for a bug where </INST> is not inserted if
+        # the pieces ends.
+        assert prompt_seq[-1] == tokenizer.eos_tok
+        prompt_seq[-1] = tokenizer.inst_end_tok
     else:
         print("No notes found in prompt region")
         prompt_seq = prompt_seq[: prompt_seq.index(tokenizer.bos_tok) + 1]

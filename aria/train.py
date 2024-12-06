@@ -19,13 +19,9 @@ from typing import List
 
 from aria.config import load_model_config
 from aria.model import ModelConfig, TransformerLM
-from aria.tokenizer import (
-    Tokenizer,
-    AbsTokenizer,
-    RelTokenizer,
-    SeparatedAbsTokenizer,
-)
-from aria.data.datasets import (
+from ariautils.tokenizer import Tokenizer, AbsTokenizer, RelTokenizer
+from aria.tokenizer import SeparatedAbsTokenizer
+from aria.datasets import (
     TrainingDataset,
     PretrainingDataset,
     FinetuningDataset,
@@ -533,11 +529,11 @@ def resume_train(
 
     tokenizer_name = get_tokenizer_name(train_data_paths, val_data_path)
     if tokenizer_name == "abs":
-        tokenizer = AbsTokenizer(return_tensors=True)
+        tokenizer = AbsTokenizer()
     elif tokenizer_name == "separated_abs":
-        tokenizer = SeparatedAbsTokenizer(return_tensors=True)
+        tokenizer = SeparatedAbsTokenizer()
     elif tokenizer_name == "rel":
-        tokenizer = RelTokenizer(return_tensors=True)
+        tokenizer = RelTokenizer()
     else:
         raise Exception("Invalid tokenizer name")
 
@@ -659,11 +655,11 @@ def train(
 
     tokenizer_name = get_tokenizer_name(train_data_paths, val_data_path)
     if tokenizer_name == "abs":
-        tokenizer = AbsTokenizer(return_tensors=True)
+        tokenizer = AbsTokenizer()
     elif tokenizer_name == "separated_abs":
-        tokenizer = SeparatedAbsTokenizer(return_tensors=True)
+        tokenizer = SeparatedAbsTokenizer()
     elif tokenizer_name == "rel":
-        tokenizer = RelTokenizer(return_tensors=True)
+        tokenizer = RelTokenizer()
     else:
         raise Exception("Invalid tokenizer name")
 
