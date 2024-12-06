@@ -1,8 +1,6 @@
-torch >= 2.0
+ariautils @ git+https://github.com/EleutherAI/aria-utils.git
+torch >= 2.3
 accelerate 
-mido
 jsonlines
-pydub
 tqdm
-einops
 safetensors

@@ -1,36 +1,115 @@
 {
     "data": {
         "tests": {
+            "note_density_in_interval":{
+                "run": true,
+                "args": {
+                    "test_params_list": 
+                    [
+                        {
+                            "max_notes_per_second": 60,
+                            "max_notes_per_second_per_pitch": 15,
+                            "interval_len_s": 3
+                        },
+                        {
+                            "max_notes_per_second": 45,
+                            "max_notes_per_second_per_pitch": 10,
+                            "interval_len_s": 5
+                        },
+                        {
+                            "max_notes_per_second": 40,
+                            "max_notes_per_second_per_pitch": 8,
+                            "interval_len_s": 10
+                        },
+                        {
+                            "max_notes_per_second": 30,
+                            "max_notes_per_second_per_pitch": 6,
+                            "interval_len_s": 45
+                        }
+                    ]
+                }
+            },
+            "note_timing_entropy":{
+                "run": true,
+                "args": {
+                    "min_length_entropy": 2.5,
+                    "min_onset_delta_entropy": 0.0
+                }
+            },
+            "note_pitch_entropy":{
+                "run": true,
+                "args": {
+                    "min_entropy": 3.0
+                }
+            },
+            "unique_pitch_count_in_interval":{
+                "run": true,
+                "args": {
+                    "test_params_list": 
+                    [
+                        {"min_unique_pitch_cnt": 5, "interval_len_s": 30},
+                        {"min_unique_pitch_cnt": 8, "interval_len_s": 60},
+                        {"min_unique_pitch_cnt": 10, "interval_len_s": 120}
+                    ]
+                }
+            },
+            "unique_pitch_count":{
+                "run": true,
+                "args": {
+                    "min_num_unique_pitches": 12
+                }
+            },
+            "silent_interval":{
+                "run": true,
+                "args": {
+                    "max_silence_s": 20
+                }
+            },
+            "mean_note_velocity":{
+                "run": true,
+                "args": {
+                    "min_mean_velocity": 20,
+                    "max_mean_velocity": 105
+                }
+            },
             "max_programs":{
-                "run": false,
+                "run": true,
                 "args": {
                     "max": 12
                 }
             },
             "max_instruments":{
-                "run": false,
+                "run": true,
                 "args": {
                     "max": 7
                 }
             },
             "total_note_frequency":{
-                "run": false,
+                "run": true,
                 "args": {
                     "min_per_second": 1.5,
                     "max_per_second": 30
                 }
             },
             "note_frequency_per_instrument":{
-                "run": false,
+                "run": true,
                 "args": {
                     "min_per_second": 1.0,
                     "max_per_second": 25
                 }
             },
             "min_length":{
-                "run": false,
+                "run": true,
                 "args": {
                     "min_seconds": 30
+                }
+            },
+            "repetitive_content":{
+                "run": true,
+                "args": {
+                    "min_length_m": 20,
+                    "num_chunks": 5,
+                    "kl_tolerance": 0.2
                 }
             }
         },
@@ -78,21 +157,11 @@
                     }
                 },
                 "maestro_json": {
-                    "run": true,
+                    "run": false,
                     "args": {
                         "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"],
                         "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"]
                     }
-                },
-                "listening_model": {
-                    "run": false,
-                    "args": {
-                        "tag_names": ["happy", "sad"]
-                    }
-                },
-                "abs_path": {
-                    "run": true,
-                    "args": {}
                 }
             },
             "manual": {
@@ -134,109 +203,6 @@
                     "max_vel_delta": 45
                 }
             }
-        }
-    },
-
-    "tokenizer": {
-        "rel": {
-            "ignore_instruments": {
-                "piano": false,
-                "chromatic": true,
-                "organ": false,
-                "guitar": false,
-                "bass": false,
-                "strings": false,
-                "ensemble": false,
-                "brass": false,
-                "reed": false,
-                "pipe": false,
-                "synth_lead": false,
-                "synth_pad": true,
-                "synth_effect": true,
-                "ethnic": true,
-                "percussive": true,
-                "sfx": true
-            },
-            "instrument_programs": {
-                "piano": 0,
-                "chromatic": 13,
-                "organ": 16,
-                "guitar": 24,
-                "bass": 32,
-                "strings": 40,
-                "ensemble": 48,
-                "brass": 56,
-                "reed": 64,
-                "pipe": 73,
-                "synth_lead": 80,
-                "synth_pad": 88,
-                "synth_effect": 96,
-                "ethnic": 104,
-                "percussive": 112,
-                "sfx": 120
-            },
-            "drum_velocity": 60,
-            "velocity_quantization": {
-                "step": 15
-            },
-            "time_quantization": {
-                "num_steps": 500,
-                "step": 10
-            },
-            "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"],
-            "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"],
-            "genre_names": ["jazz", "classical"]
-        },
-        "abs": {
-            "ignore_instruments": {
-                "piano": false,
-                "chromatic": true,
-                "organ": false,
-                "guitar": false,
-                "bass": false,
-                "strings": false,
-                "ensemble": false,
-                "brass": false,
-                "reed": false,
-                "pipe": false,
-                "synth_lead": false,
-                "synth_pad": true,
-                "synth_effect": true,
-                "ethnic": true,
-                "percussive": true,
-                "sfx": true
-            },
-            "instrument_programs": {
-                "piano": 0,
-                "chromatic": 13,
-                "organ": 16,
-                "guitar": 24,
-                "bass": 32,
-                "strings": 40,
-                "ensemble": 48,
-                "brass": 56,
-                "reed": 64,
-                "pipe": 73,
-                "synth_lead": 80,
-                "synth_pad": 88,
-                "synth_effect": 96,
-                "ethnic": 104,
-                "percussive": 112,
-                "sfx": 120
-            },
-            "drum_velocity": 60,
-            "velocity_quantization": {
-                "step": 10
-            },
-            "abs_time_step_ms": 5000,
-            "max_dur_ms": 5000,
-            "time_step_ms": 10,
-            "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"],
-            "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"],
-            "genre_names": ["jazz", "classical"]
-        },
-        "lm": {
-            "tags": ["happy", "sad"]
         }
     }
 }

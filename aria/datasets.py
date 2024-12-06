@@ -11,6 +11,7 @@ import random
 import torch
 import functools
 import shutil
+import multiprocessing
 
 from mido.midifiles.units import second2tick
 from pathlib import Path
@@ -18,11 +19,16 @@ from typing import List
 from copy import deepcopy
 from typing import Callable, Iterable
 from collections import defaultdict
-from multiprocessing import Pool, get_start_method
 
 from aria.config import load_config
-from aria.tokenizer import Tokenizer, SeparatedAbsTokenizer
-from aria.data.midi import MidiDict, get_test_fn, get_duration_ms
+from aria.tokenizer import SeparatedAbsTokenizer
+from ariautils.tokenizer import Tokenizer
+from ariautils.midi import (
+    MidiDict,
+    get_test_fn,
+    get_duration_ms,
+    get_metadata_fn,
+)
 
 
 def setup_logger():
@@ -45,6 +51,8 @@ def setup_logger():
     return logger
 
 
+# TODO: Change the build settings so that it saves the config used for tests
+# as json on the first line.
 class MidiDataset:
     """Container for datasets of MidiDict objects.
 
@@ -253,6 +261,23 @@ def _get_mididict(path: Path):
     # (bool, (MidiDict, str, Path)) where the first element determines if the
     # loaded MidiDict was succesfully preprocessed.
 
+    def _add_metadata(_mid_dict: MidiDict):
+        for metadata_process_name, metadata_process_config in config[
+            "metadata"
+        ]["functions"].items():
+            if metadata_process_config["run"] is True:
+                metadata_fn = get_metadata_fn(
+                    metadata_process_name=metadata_process_name
+                )
+                fn_args: dict = metadata_process_config["args"]
+
+                collected_metadata = metadata_fn(_mid_dict, **fn_args)
+                if collected_metadata:
+                    for k, v in collected_metadata.items():
+                        _mid_dict.metadata[k] = v
+
+        return _mid_dict
+
     def _run_tests(_mid_dict: MidiDict):
         failed_tests = []
         for test_name, test_config in config["tests"].items():
@@ -291,7 +316,6 @@ def _get_mididict(path: Path):
         logger.error(f"Failed to load MIDI at {path}: {e}")
         return False, None
 
-    mid_hash = mid_dict.calculate_hash()
     failed_tests = _run_tests(mid_dict)
     if failed_tests:
         logger.info(
@@ -299,7 +323,10 @@ def _get_mididict(path: Path):
         )
         return False, None
     else:
-        return True, (_preprocess_mididict(mid_dict), mid_hash, path)
+        mid_dict = _preprocess_mididict(mid_dict)
+        mid_dict = _add_metadata(mid_dict)
+        mid_hash = mid_dict.calculate_hash()
+        return True, (mid_dict, mid_hash, path)
 
 
 def build_mididict_dataset(
@@ -333,7 +360,7 @@ def build_mididict_dataset(
     """
 
     def _get_mididicts_mp(_paths):
-        with Pool() as pool:
+        with multiprocessing.Pool() as pool:
             results = pool.imap_unordered(_get_mididict, _paths)
             seen_hashes = defaultdict(list)
             dupe_cnt = 0
@@ -365,7 +392,7 @@ def build_mididict_dataset(
         )
 
     logger = setup_logger()
-    if get_start_method() == "spawn":
+    if multiprocessing.get_start_method() == "spawn":
         logger.warning(
             'The current multiprocessing start method is "spawn", this '
             "will slow down dataset building"
@@ -577,7 +604,11 @@ class TrainingDataset(torch.utils.data.Dataset):
         tgt = seq[1:] + [self.tokenizer.pad_tok]
         mask = self.get_loss_mask(tgt)
 
-        return self.tokenizer.encode(src), self.tokenizer.encode(tgt), mask
+        return (
+            torch.tensor(self.tokenizer.encode(src)),
+            torch.tensor(self.tokenizer.encode(tgt)),
+            mask,
+        )
 
     def check_config(self, epoch_load_path: str):
         def _check_config():
@@ -689,16 +720,14 @@ def get_seqs(
     tokenizer: Tokenizer,
     midi_dict_iter: Iterable,
 ):
-    num_proc = os.cpu_count()
-
     # Can't pickle geneator object when start method is spawn
-    if get_start_method() == "spawn":
+    if multiprocessing.get_start_method() == "spawn":
         logging.info(
             "Converting generator to list due to multiprocessing start method"
         )
         midi_dict_iter = [_ for _ in midi_dict_iter]
 
-    with Pool() as pool:
+    with multiprocessing.Pool() as pool:
         results = pool.imap_unordered(
             functools.partial(_get_seqs, _tokenizer=tokenizer), midi_dict_iter
         )
@@ -801,7 +830,7 @@ class PretrainingDataset(TrainingDataset):
         logger = setup_logger()
         assert max_seq_len > 0, "max_seq_len must be greater than 0"
         assert num_epochs > 0, "num_epochs must be greater than 0"
-        if get_start_method() == "spawn":
+        if multiprocessing.get_start_method() == "spawn":
             logger.warning(
                 'The current multiprocessing start method is "spawn", this '
                 "will slow down dataset building"
@@ -1229,7 +1258,7 @@ class FinetuningDataset(TrainingDataset):
         assert os.path.isfile(clean_dataset_path), "file not found"
         for __path in noisy_dataset_paths:
             assert os.path.isfile(__path), "file not found"
-        if get_start_method() == "spawn":
+        if multiprocessing.get_start_method() == "spawn":
             logger.warning(
                 'The current multiprocessing start method is "spawn", this '
                 "will slow down dataset building"

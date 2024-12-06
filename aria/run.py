@@ -88,18 +88,18 @@ def sample(args):
     from aria.inference import TransformerLM
     from aria.model import ModelConfig
     from aria.config import load_model_config, load_config
-    from aria.tokenizer import AbsTokenizer, SeparatedAbsTokenizer
+    from ariautils.tokenizer import AbsTokenizer
+    from aria.tokenizer import SeparatedAbsTokenizer
     from aria.sample import greedy_sample, get_pt_prompt, get_inst_prompt
-    from aria.data.midi import MidiDict
-    from aria.data.datasets import _noise_midi_dict
-    from aria.utils import midi_to_audio, _load_weight
+    from ariautils.midi import MidiDict
+    from aria.utils import _load_weight
 
     if not cuda_is_available():
         raise Exception("CUDA device is not available.")
 
     model_state = _load_weight(args.c, "cuda")
     model_state = {
-        k: v for k, v in model_state.items() if "rotary_emb" not in k
+        k.replace("_orig_mod.", ""): v for k, v in model_state.items()
     }
 
     manual_metadata = {k: v for k, v in args.metadata} if args.metadata else {}
@@ -117,9 +117,9 @@ def sample(args):
     model_name = args.m
 
     if args.pt == True:
-        tokenizer = AbsTokenizer(return_tensors=True)
+        tokenizer = AbsTokenizer()
     else:
-        tokenizer = SeparatedAbsTokenizer(return_tensors=True)
+        tokenizer = SeparatedAbsTokenizer()
 
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
@@ -233,7 +233,7 @@ def _parse_midi_dataset_args():
 
 def build_midi_dataset(args):
     """Entrypoint for building MidiDatasets from a directory"""
-    from aria.data.datasets import MidiDataset
+    from aria.datasets import MidiDataset
 
     assert args.dir, "build directory must be provided"
     manual_metadata = {k: v for k, v in args.metadata} if args.metadata else {}
@@ -269,8 +269,8 @@ def _parse_pretrain_dataset_args():
 
 
 def build_pretraining_dataset(args):
-    from aria.tokenizer import AbsTokenizer, RelTokenizer
-    from aria.data.datasets import PretrainingDataset
+    from ariautils.tokenizer import AbsTokenizer, RelTokenizer
+    from aria.datasets import PretrainingDataset
 
     if args.tokenizer_name == "abs":
         tokenizer = AbsTokenizer()
@@ -306,10 +306,10 @@ def _parse_finetune_dataset_args():
 
 def build_finetune_dataset(args):
     from aria.tokenizer import SeparatedAbsTokenizer
-    from aria.data.datasets import FinetuningDataset
+    from aria.datasets import FinetuningDataset
 
     tokenizer = SeparatedAbsTokenizer()
-    dataset = FinetuningDataset.build(
+    FinetuningDataset.build(
         tokenizer=tokenizer,
         save_dir=args.save_dir,
         max_seq_len=args.l,
