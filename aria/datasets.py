@@ -448,7 +448,7 @@ def build_mididict_dataset(
                         entry.metadata[k] = v
 
                 cnt += 1
-                # writer.write(entry.get_msg_dict())
+                writer.write(entry.get_msg_dict())
 
     logger.info(
         f"Finished - added {cnt}/{len(paths)} found MIDI files to dataset."
