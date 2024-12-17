@@ -44,8 +44,17 @@ class TransformerLM(nn.Module):
             model_config.d_model, model_config.vocab_size, bias=False
         )
 
-    def forward(self, idxs: torch.Tensor, input_pos: torch.Tensor):
-        hidden_states = self.model(idxs=idxs, input_pos=input_pos)
+    def forward(
+        self,
+        idxs: torch.Tensor,
+        input_pos: torch.Tensor,
+        pad_idxs: torch.Tensor | None = None,
+    ):
+        hidden_states = self.model(
+            idxs=idxs,
+            input_pos=input_pos,
+            pad_idxs=pad_idxs,
+        )
         logits = self.lm_head(hidden_states)
 
         return logits
@@ -98,10 +107,15 @@ class Transformer(nn.Module):
         self,
         idxs: torch.Tensor,
         input_pos: torch.Tensor,
+        pad_idxs: torch.Tensor | None = None,
     ):
         assert self.freqs_cis is not None, "Caches must be initialized first"
 
         mask = self.causal_mask[None, None, input_pos]
+
+        if pad_idxs is not None:
+            mask = mask & ~(pad_idxs.unsqueeze(1).unsqueeze(1))
+
         freqs_cis = self.freqs_cis[input_pos]
 
         x = self.tok_embeddings(idxs)

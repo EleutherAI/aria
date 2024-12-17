@@ -12,21 +12,24 @@ def _parse_sample_args():
     argp.add_argument("-c", help="path to model checkpoint")
     argp.add_argument("-p", help="path to midi file")
     argp.add_argument(
-        "-pt", help="sample using the pretrained model", action="store_true"
-    )
-    argp.add_argument(
         "-temp",
-        help="change temp value",
+        help="sampling temperature value",
         type=float,
         required=False,
         default=0.95,
     )
     argp.add_argument(
         "-top_p",
-        help="change top_p value",
+        help="sampling top_p value",
         type=float,
         required=False,
         default=0.95,
+    )
+    argp.add_argument(
+        "-cfg",
+        help="sampling cfg gamma value",
+        type=float,
+        required=False,
     )
     argp.add_argument(
         "-metadata",
@@ -49,38 +52,26 @@ def _parse_sample_args():
     )
     argp.add_argument("-e", action="store_true", help="enable force end")
     argp.add_argument("-l", type=int, help="generation length", default=1024)
-    argp.add_argument("-noise", action="store_true", help="add noise to prompt")
+    argp.add_argument(
+        "-guidance_path", type=str, help="path to guidance MIDI", required=False
+    )
+    argp.add_argument(
+        "-guidance_start_ms",
+        help="guidance interval start (ms)",
+        type=int,
+        required=False,
+    )
+    argp.add_argument(
+        "-guidance_end_ms",
+        help="guidance interval end (ms)",
+        type=int,
+        required=False,
+    )
     argp.add_argument("-compile", action="store_true", help="compile cudagraph")
 
     return argp.parse_args(sys.argv[2:])
 
 
-def _get_model_name(name: str | None, state: dict):
-    if name is not None:
-        return name
-
-    print("Model name is not provided. Trying to infer from checkpoint...")
-    _defaults = {
-        16: "small",
-        32: "medium",
-        64: "large",
-    }
-    try:
-        pattern = re.compile(r"encode_layers\.(\d+)\.")
-        layer_keys = [pattern.search(k) for k in state.keys()]
-        layer_keys = set(p.group(1) for p in layer_keys if p is not None)
-        for i in range(len(layer_keys)):
-            assert str(i) in layer_keys
-
-        if len(layer_keys) in _defaults:
-            print(f"Selecting model name: {_defaults[len(layer_keys)]}")
-            return _defaults[len(layer_keys)]
-        assert False
-    except:
-        raise ValueError("Model name is not provided and cannot be inferred.")
-
-
-# TODO: Add support for sampling from the pretrained model
 def sample(args):
     """Entrypoint for sampling"""
 
@@ -88,9 +79,12 @@ def sample(args):
     from aria.inference import TransformerLM
     from aria.model import ModelConfig
     from aria.config import load_model_config, load_config
-    from ariautils.tokenizer import AbsTokenizer
-    from aria.tokenizer import SeparatedAbsTokenizer
-    from aria.sample import greedy_sample, get_pt_prompt, get_inst_prompt
+    from aria.tokenizer import InferenceAbsTokenizer
+    from aria.sample import (
+        sample_batch_cfg,
+        sample_batch,
+        get_inference_prompt,
+    )
     from ariautils.midi import MidiDict
     from aria.utils import _load_weight
 
@@ -116,11 +110,7 @@ def sample(args):
     force_end = args.e
     model_name = args.m
 
-    if args.pt == True:
-        tokenizer = AbsTokenizer()
-    else:
-        tokenizer = SeparatedAbsTokenizer()
-
+    tokenizer = InferenceAbsTokenizer()
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model_config.grad_checkpoint = False
@@ -133,17 +123,6 @@ def sample(args):
             "Failed to load model_state. This is likely due to an incompatibility "
             "between the checkpoint file (-c) and model name/config (-m)."
         )
-        if args.pt:
-            print(
-                "When using the -pt flag make sure you provide a checkpoint for "
-                "the pretrained model."
-            )
-        else:
-            print(
-                "When not using the -pt flag make sure you provide a checkpoint "
-                " for the instuct-finetuned (inst) model."
-            )
-
         raise e
 
     assert args.l > 0, "Generation length must be positive."
@@ -151,6 +130,10 @@ def sample(args):
 
     # Load and format prompts and metadata
     midi_dict = MidiDict.from_midi(mid_path=args.p)
+    if args.guidance_path:
+        guidance_midi_dict = MidiDict.from_midi(mid_path=args.guidance_path)
+    else:
+        guidance_midi_dict = None
 
     for k, v in manual_metadata.items():
         midi_dict.metadata[k] = v
@@ -160,42 +143,48 @@ def sample(args):
         f"Instruments: {set([MidiDict.get_program_to_instrument()[msg['data']] for msg in midi_dict.instrument_msgs])}"
     )
 
-    if args.pt:
-        if args.noise:
-            print("Noising not supported with pretrained model")
+    prompt_seq, guidance_seq = get_inference_prompt(
+        tokenizer=tokenizer,
+        midi_dict=midi_dict,
+        truncate_len=truncate_len,
+        guidance_start_ms=args.guidance_start_ms,
+        guidance_end_ms=args.guidance_end_ms,
+        guidance_midi_dict=guidance_midi_dict,
+    )
 
-        prompt_seq = get_pt_prompt(
-            tokenizer=tokenizer,
-            midi_dict=midi_dict,
-            truncate_len=truncate_len,
+    if guidance_seq:
+        tokenizer.detokenize(guidance_seq).to_midi().save(
+            os.path.join(samples_dir, f"guidance.mid")
         )
-    else:
-        prompt_seq = get_inst_prompt(
-            tokenizer=tokenizer,
-            midi_dict=midi_dict,
-            truncate_len=truncate_len,
-            noise=args.noise,
-        )
-
-    prompts = [prompt_seq for _ in range(num_variations)]
     if len(prompt_seq) + args.l > model_config.max_seq_len:
         print(
             "WARNING: Required context exceeds max_seq_len supported by model"
         )
+    prompts = [prompt_seq for _ in range(num_variations)]
 
-    print(prompt_seq)
-
-    results = greedy_sample(
-        model=model,
-        tokenizer=tokenizer,
-        prompts=prompts,
-        max_new_tokens=max_new_tokens,
-        force_end=force_end,
-        # cfg_gamma=args.cfg,
-        temperature=args.temp,
-        top_p=args.top_p,
-        compile=args.compile,
-    )
+    if args.cfg is not None:
+        results = sample_batch_cfg(
+            model=model,
+            tokenizer=tokenizer,
+            prompts=prompts,
+            max_new_tokens=max_new_tokens,
+            cfg_gamma=args.cfg,
+            force_end=force_end,
+            temperature=args.temp,
+            top_p=args.top_p,
+            compile=args.compile,
+        )
+    else:
+        results = sample_batch(
+            model=model,
+            tokenizer=tokenizer,
+            prompts=prompts,
+            max_new_tokens=max_new_tokens,
+            force_end=force_end,
+            temperature=args.temp,
+            top_p=args.top_p,
+            compile=args.compile,
+        )
 
     samples_dir = os.path.join(os.path.dirname(__file__), "..", "samples")
     if os.path.isdir(samples_dir) is False:
@@ -204,7 +193,7 @@ def sample(args):
     for idx, tokenized_seq in enumerate(results):
         res_midi_dict = tokenizer.detokenize(tokenized_seq)
         res_midi = res_midi_dict.to_midi()
-        res_midi.save(f"samples/res_{idx + 1}.mid")
+        res_midi.save(os.path.join(samples_dir, f"res_{idx + 1}.mid"))
 
     print("Results saved to samples/")
 
@@ -277,7 +266,7 @@ def build_pretraining_dataset(args):
     elif args.tokenizer_name == "rel":
         tokenizer = RelTokenizer()
 
-    dataset = PretrainingDataset.build(
+    PretrainingDataset.build(
         tokenizer=tokenizer,
         save_dir=args.save_dir,
         max_seq_len=args.l,
@@ -289,13 +278,8 @@ def build_pretraining_dataset(args):
 def _parse_finetune_dataset_args():
     argp = argparse.ArgumentParser(prog="aria finetune-dataset")
     argp.add_argument(
-        "-clean_load_path",
-        help="path to the clean midi_dict dataset",
-    )
-    argp.add_argument(
-        "-noisy_load_paths",
-        nargs="+",
-        help="one or more paths to noisy midi_dict datasets",
+        "-midi_dataset_path",
+        help="path to midi_dict dataset",
     )
     argp.add_argument("-save_dir", help="path to save dataset")
     argp.add_argument("-l", help="max sequence length", type=int, default=4096)
@@ -305,17 +289,16 @@ def _parse_finetune_dataset_args():
 
 
 def build_finetune_dataset(args):
-    from aria.tokenizer import SeparatedAbsTokenizer
+    from aria.tokenizer import InferenceAbsTokenizer
     from aria.datasets import FinetuningDataset
 
-    tokenizer = SeparatedAbsTokenizer()
+    tokenizer = InferenceAbsTokenizer()
     FinetuningDataset.build(
         tokenizer=tokenizer,
         save_dir=args.save_dir,
         max_seq_len=args.l,
         num_epochs=args.e,
-        clean_dataset_path=args.clean_load_path,
-        noisy_dataset_paths=args.noisy_load_paths,
+        midi_dataset_path=args.midi_dataset_path,
     )
 
 

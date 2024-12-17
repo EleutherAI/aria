@@ -2,7 +2,7 @@
     "data": {
         "tests": {
             "note_density_in_interval":{
-                "run": true,
+                "run": false,
                 "args": {
                     "test_params_list": 
                     [
@@ -30,20 +30,20 @@
                 }
             },
             "note_timing_entropy":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_length_entropy": 2.5,
                     "min_onset_delta_entropy": 0.0
                 }
             },
             "note_pitch_entropy":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_entropy": 3.0
                 }
             },
             "unique_pitch_count_in_interval":{
-                "run": true,
+                "run": false,
                 "args": {
                     "test_params_list": 
                     [
@@ -54,58 +54,59 @@
                 }
             },
             "unique_pitch_count":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_num_unique_pitches": 12
                 }
             },
             "silent_interval":{
-                "run": true,
+                "run": false,
                 "args": {
                     "max_silence_s": 20
                 }
             },
             "mean_note_velocity":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_mean_velocity": 20,
                     "max_mean_velocity": 105
                 }
             },
             "max_programs":{
-                "run": true,
+                "run": false,
                 "args": {
                     "max": 12
                 }
             },
             "max_instruments":{
-                "run": true,
+                "run": false,
                 "args": {
                     "max": 7
                 }
             },
             "total_note_frequency":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_per_second": 1.5,
                     "max_per_second": 30
                 }
             },
             "note_frequency_per_instrument":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_per_second": 1.0,
                     "max_per_second": 25
                 }
             },
-            "min_length":{
-                "run": true,
+            "length":{
+                "run": false,
                 "args": {
-                    "min_seconds": 30
+                    "min_length_s": 30,
+                    "max_length_s": 7200
                 }
             },
             "repetitive_content":{
-                "run": true,
+                "run": false,
                 "args": {
                     "min_length_m": 20,
                     "num_chunks": 5,
@@ -138,6 +139,10 @@
         },
         "metadata": {
             "functions": {
+                "aria_midi_json": {
+                    "run": true,
+                    "args": {}
+                },
                 "composer_filename": {
                     "run": false,
                     "args": {
@@ -171,16 +176,17 @@
             }
         },
         "finetuning": {
+            "guidance_prob": 0.5,
             "min_noisy_interval_ms": 5000,
             "max_noisy_interval_ms": 60000,
             "min_clean_interval_ms": 60000,
             "max_clean_interval_ms": 200000,
             "noising": {
-                "activation_prob": 0.95,
+                "activation_prob": 0.8,
                 "remove_notes": {
-                    "activation_prob": 0.75,
-                    "min_ratio": 0.1,
-                    "max_ratio": 0.4
+                    "activation_prob": 0.5,
+                    "min_ratio": 0.0,
+                    "max_ratio": 0.3
                 },
                 "adjust_velocity": {
                     "activation_prob": 0.3,
@@ -190,11 +196,11 @@
                     "min_ratio": 0.30
                 },
                 "adjust_onsets": {
-                    "activation_prob": 0.5,
-                    "min_adjust_s": 0.03,
+                    "activation_prob": 0.25,
+                    "min_adjust_s": 0.01,
                     "max_adjust_s": 0.07,
                     "max_ratio": 0.15,
-                    "min_ratio": 0.5
+                    "min_ratio": 0.3
                 },
                 "quantize_onsets": {
                     "activation_prob": 0.15,
@@ -204,5 +210,16 @@
                 }
             }
         }
+    },
+    "tokenizer": {
+        "inference_abs": {
+            "guidance": {
+                "min_ms": 5000,
+                "max_ms": 30000
+            }
+    
+
+        }
     }
+
 }

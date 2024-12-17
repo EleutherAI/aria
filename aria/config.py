@@ -3,10 +3,13 @@
 import os
 import json
 
+from functools import lru_cache
+
 
 CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config")
 
 
+@lru_cache(maxsize=1)
 def load_config():
     """Returns a dictionary loaded from the config.json file."""
     with open(os.path.join(CONFIG_DIR, "config.json")) as f:

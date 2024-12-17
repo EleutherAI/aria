@@ -20,7 +20,7 @@ from typing import List
 from aria.config import load_model_config
 from aria.model import ModelConfig, TransformerLM
 from ariautils.tokenizer import Tokenizer, AbsTokenizer, RelTokenizer
-from aria.tokenizer import SeparatedAbsTokenizer
+from aria.tokenizer import InferenceAbsTokenizer
 from aria.datasets import (
     TrainingDataset,
     PretrainingDataset,
@@ -196,7 +196,7 @@ def get_optim(
     num_epochs: int,
     steps_per_epoch: int,
 ):
-    LR = 3e-4
+    LR = 3e-5
     END_RATIO = 0.1
     WARMUP_STEPS = 200
 
@@ -363,8 +363,11 @@ def _train(
                 )  # Transpose for CrossEntropyLoss
                 loss = loss_fn(logits, tgt)
 
-                loss = loss * mask
-                loss = loss[loss != 0.0].mean()  # != 0.0 here is important
+                if mask.sum() == 0:
+                    loss = (loss * 0).sum()
+                else:
+                    loss = loss * mask
+                    loss = loss[loss != 0.0].mean()
 
                 # Calculate statistics
                 loss_buffer.append(accelerator.gather(loss).mean(dim=0).item())
@@ -423,8 +426,11 @@ def _train(
             logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
             loss = loss_fn(logits, tgt)
 
-            loss = loss * mask
-            loss = loss[loss != 0.0].mean()
+            if mask.sum() == 0:
+                loss = (loss * 0).sum()
+            else:
+                loss = loss * mask
+                loss = loss[loss != 0.0].mean()
 
             # Logging
             loss_buffer.append(accelerator.gather(loss).mean(dim=0).item())
@@ -530,8 +536,8 @@ def resume_train(
     tokenizer_name = get_tokenizer_name(train_data_paths, val_data_path)
     if tokenizer_name == "abs":
         tokenizer = AbsTokenizer()
-    elif tokenizer_name == "separated_abs":
-        tokenizer = SeparatedAbsTokenizer()
+    elif tokenizer_name == "inference_abs":
+        tokenizer = InferenceAbsTokenizer()
     elif tokenizer_name == "rel":
         tokenizer = RelTokenizer()
     else:
@@ -656,8 +662,8 @@ def train(
     tokenizer_name = get_tokenizer_name(train_data_paths, val_data_path)
     if tokenizer_name == "abs":
         tokenizer = AbsTokenizer()
-    elif tokenizer_name == "separated_abs":
-        tokenizer = SeparatedAbsTokenizer()
+    elif tokenizer_name == "inference_abs":
+        tokenizer = InferenceAbsTokenizer()
     elif tokenizer_name == "rel":
         tokenizer = RelTokenizer()
     else:
