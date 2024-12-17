@@ -21,7 +21,7 @@ from typing import Callable, Iterable
 from collections import defaultdict
 
 from aria.config import load_config
-from aria.tokenizer import SeparatedAbsTokenizer
+from aria.tokenizer import InferenceAbsTokenizer
 from ariautils.tokenizer import Tokenizer
 from ariautils.midi import (
     MidiDict,
@@ -473,7 +473,7 @@ class TrainingDataset(torch.utils.data.Dataset):
     def build(**kwargs):
         raise NotImplementedError
 
-    def get_loss_mask(self, tokenized_seq: list):
+    def get_loss_mask(self, src_seq: list, tgt_seq: list):
         # Should returns a bool Tensor with False indicating a masked loss
         raise NotImplementedError
 
@@ -602,7 +602,7 @@ class TrainingDataset(torch.utils.data.Dataset):
 
         src = seq
         tgt = seq[1:] + [self.tokenizer.pad_tok]
-        mask = self.get_loss_mask(tgt)
+        mask = self.get_loss_mask(src_seq=src, tgt_seq=tgt)
 
         return (
             torch.tensor(self.tokenizer.encode(src)),
@@ -692,7 +692,11 @@ class TrainingDataset(torch.utils.data.Dataset):
             raise ValueError("Must provide function or list of functions.")
 
 
-def _get_seqs(_entry: MidiDict | dict, _tokenizer: Tokenizer):
+def _get_seqs(
+    _entry: MidiDict | dict,
+    _tokenizer: Tokenizer,
+    _tokenize_fn: Callable | None = None,
+):
     logger = setup_logger()
 
     if isinstance(_entry, str):
@@ -705,7 +709,10 @@ def _get_seqs(_entry: MidiDict | dict, _tokenizer: Tokenizer):
         raise Exception
 
     try:
-        _tokenized_seq = _tokenizer.tokenize(_midi_dict)
+        if _tokenize_fn is not None:
+            _tokenized_seq = _tokenize_fn(_midi_dict)
+        else:
+            _tokenized_seq = _tokenizer.tokenize(_midi_dict)
     except Exception as e:
         print(e)
         logger.info(f"Skipping midi_dict: {e}")
@@ -719,6 +726,7 @@ def _get_seqs(_entry: MidiDict | dict, _tokenizer: Tokenizer):
 def get_seqs(
     tokenizer: Tokenizer,
     midi_dict_iter: Iterable,
+    tokenize_fn: Callable | None = None,
 ):
     # Can't pickle geneator object when start method is spawn
     if multiprocessing.get_start_method() == "spawn":
@@ -729,7 +737,10 @@ def get_seqs(
 
     with multiprocessing.Pool() as pool:
         results = pool.imap_unordered(
-            functools.partial(_get_seqs, _tokenizer=tokenizer), midi_dict_iter
+            functools.partial(
+                _get_seqs, _tokenizer=tokenizer, _tokenize_fn=tokenize_fn
+            ),
+            midi_dict_iter,
         )
 
         yield from results
@@ -782,9 +793,9 @@ class PretrainingDataset(TrainingDataset):
     def __len__(self):
         return len(self.index)
 
-    def get_loss_mask(self, tokenized_seq: list):
+    def get_loss_mask(self, src_seq: list, tgt_seq: list):
         return torch.tensor(
-            [tok != self.tokenizer.pad_tok for tok in tokenized_seq],
+            [tok != self.tokenizer.pad_tok for tok in tgt_seq],
             dtype=torch.bool,
         )
 
@@ -876,10 +887,8 @@ class PretrainingDataset(TrainingDataset):
             f"Finished building, saved PretrainingDataset to {save_dir}"
         )
 
-        return cls(dir_paths=save_dir, tokenizer=tokenizer)
 
-
-# TODO: Improve this logic so it supports MIDI files with multiple tempo_msgs
+# TODO: Refactor for readability
 def _get_combined_mididict(
     clean_midi_dict: MidiDict,
     noisy_midi_dict: MidiDict,
@@ -887,7 +896,7 @@ def _get_combined_mididict(
     max_noisy_ms: int,
     min_clean_ms: int,
     max_clean_ms: int,
-):
+) -> MidiDict:
     # NOTE: We adopt the tempo/ticks_per_beat of the clean_midi_dict, and
     # adjust the noisy note messages accordingly.
     assert len(clean_midi_dict.tempo_msgs) == 1, "Unsupported tempo msgs"
@@ -904,24 +913,30 @@ def _get_combined_mididict(
     noisy_intervals = []
     clean_intervals = []
     prev_ms = -1
+    add_noisy_next = random.choice([True, False])
     while True:
-        # Add noise interval
-        noisy_end_ms = random.randint(
-            prev_ms + min_noisy_ms, prev_ms + max_noisy_ms
-        )
-        noisy_intervals.append([prev_ms + 1, noisy_end_ms])
-        prev_ms = noisy_end_ms
-        if prev_ms > total_length_ms:
-            break
-
-        # Add clean interval
-        clean_end_ms = random.randint(
-            prev_ms + min_clean_ms, prev_ms + max_clean_ms
-        )
-        clean_intervals.append([prev_ms + 1, clean_end_ms])
-        prev_ms = clean_end_ms
-        if prev_ms > total_length_ms:
-            break
+        if add_noisy_next is True:
+            # Add noisy interval
+            noisy_end_ms = random.randint(
+                prev_ms + min_noisy_ms, prev_ms + max_noisy_ms
+            )
+            noisy_intervals.append([prev_ms + 1, noisy_end_ms])
+            prev_ms = noisy_end_ms
+            if prev_ms > total_length_ms:
+                break
+            else:
+                add_noisy_next = False
+        else:
+            # Add clean interval
+            clean_end_ms = random.randint(
+                prev_ms + min_clean_ms, prev_ms + max_clean_ms
+            )
+            clean_intervals.append([prev_ms + 1, clean_end_ms])
+            prev_ms = clean_end_ms
+            if prev_ms > total_length_ms:
+                break
+            else:
+                add_noisy_next = True
 
     # Merge note_msgs
     clean_ms_to_tick = (clean_midi_dict.ticks_per_beat * 1e3) / (
@@ -930,20 +945,12 @@ def _get_combined_mididict(
 
     comb_note_msgs = []
     for _note_msg in noisy_midi_dict.note_msgs:
-        onset_time_ms = get_duration_ms(
-            start_tick=0,
-            end_tick=_note_msg["data"]["start"],
-            tempo_msgs=noisy_midi_dict.tempo_msgs,
-            ticks_per_beat=noisy_midi_dict.ticks_per_beat,
-        )
+        onset_time_ms = noisy_midi_dict.tick_to_ms(_note_msg["data"]["start"])
 
         for _interval_start_ms, _interval_end_ms in noisy_intervals:
             if _interval_start_ms < onset_time_ms < _interval_end_ms:
-                offset_time_ms = get_duration_ms(
-                    start_tick=0,
-                    end_tick=_note_msg["data"]["end"],
-                    tempo_msgs=noisy_midi_dict.tempo_msgs,
-                    ticks_per_beat=noisy_midi_dict.ticks_per_beat,
+                offset_time_ms = noisy_midi_dict.tick_to_ms(
+                    _note_msg["data"]["end"]
                 )
                 _adj_note_msg = copy.deepcopy(_note_msg)
                 _adj_onset_tick = int(onset_time_ms * clean_ms_to_tick)
@@ -956,20 +963,12 @@ def _get_combined_mididict(
                 break
 
     for _note_msg in clean_midi_dict.note_msgs:
-        onset_time_ms = get_duration_ms(
-            start_tick=0,
-            end_tick=_note_msg["data"]["start"],
-            tempo_msgs=clean_midi_dict.tempo_msgs,
-            ticks_per_beat=clean_midi_dict.ticks_per_beat,
-        )
+        onset_time_ms = clean_midi_dict.tick_to_ms(_note_msg["data"]["start"])
 
         for _interval_start_ms, _interval_end_ms in clean_intervals:
             if _interval_start_ms < onset_time_ms < _interval_end_ms:
                 comb_note_msgs.append(_note_msg)
                 break
-
-    # Redundant sort
-    comb_note_msgs = sorted(comb_note_msgs, key=lambda msg: msg["tick"])
 
     comb_metadata = deepcopy(clean_midi_dict.metadata)
     comb_metadata["noisy_intervals"] = noisy_intervals
@@ -986,7 +985,7 @@ def _get_combined_mididict(
     )
 
 
-# TODO: Move hyperparams into config.json (and TEST)
+# TODO: Refactor this function for readability
 def _noise_midi_dict(midi_dict: MidiDict, config: dict):
     def _get_velocity_adjusted_msg(
         __note_msg: dict,
@@ -1149,51 +1148,58 @@ def _noise_midi_dict(midi_dict: MidiDict, config: dict):
     )
 
 
-def _get_mixed_dataset(
-    _clean_dataset: Iterable,
-    _noisy_datasets: list[Iterable],
+def export_inference_abs_build_tokenize_fn(
+    midi_dict: MidiDict, tokenizer: InferenceAbsTokenizer
 ):
     finetuning_config = load_config()["data"]["finetuning"]
-    ACTIVATION_PROB = finetuning_config["noising"]["activation_prob"]
+    GUIDANCE_PROB = finetuning_config["guidance_prob"]
+    NOISING_PROB = finetuning_config["noising"]["activation_prob"]
     MIN_NOISY_MS = finetuning_config["min_noisy_interval_ms"]
     MAX_NOISY_MS = finetuning_config["max_noisy_interval_ms"]
     MIN_CLEAN_MS = finetuning_config["min_clean_interval_ms"]
     MAX_CLEAN_MS = finetuning_config["max_clean_interval_ms"]
 
-    comb_midi_dicts = []
-    _noisy_dataset_itt = random_selection_itt(_noisy_datasets)
-    for clean, noisy in zip(_clean_dataset, _noisy_dataset_itt):
-        assert (
-            os.path.splitext(os.path.basename(clean.metadata["abs_path"]))[0]
-            == os.path.splitext(os.path.basename(noisy.metadata["abs_path"]))[0]
-        ), f"file order mismatch: {clean.metadata['abs_path']}; {noisy.metadata['abs_path']}"
-
-        if random.random() < ACTIVATION_PROB:
-            noisy = _noise_midi_dict(noisy, config=finetuning_config["noising"])
-
-        comb_midi_dicts.append(
-            _get_combined_mididict(
-                clean,
-                noisy,
-                min_noisy_ms=MIN_NOISY_MS,
-                max_noisy_ms=MAX_NOISY_MS,
-                min_clean_ms=MIN_CLEAN_MS,
-                max_clean_ms=MAX_CLEAN_MS,
-            )
+    if random.random() <= NOISING_PROB:
+        noisy_midi_dict = _noise_midi_dict(
+            midi_dict, config=finetuning_config["noising"]
         )
+        midi_dict_for_tokenization = _get_combined_mididict(
+            clean_midi_dict=midi_dict,
+            noisy_midi_dict=noisy_midi_dict,
+            min_noisy_ms=MIN_NOISY_MS,
+            max_noisy_ms=MAX_NOISY_MS,
+            min_clean_ms=MIN_CLEAN_MS,
+            max_clean_ms=MAX_CLEAN_MS,
+        )
+    else:
+        midi_dict_for_tokenization = midi_dict
 
-    return MidiDataset(comb_midi_dicts)
+    if random.random() <= GUIDANCE_PROB:
+        return tokenizer.tokenize(
+            midi_dict=midi_dict_for_tokenization,
+            prompt_intervals_ms=midi_dict_for_tokenization.metadata.get(
+                "noisy_intervals", []
+            ),
+            guidance_midi_dict=midi_dict,
+        )
+    else:
+        return tokenizer.tokenize(
+            midi_dict=midi_dict_for_tokenization,
+            prompt_intervals_ms=midi_dict_for_tokenization.metadata.get(
+                "noisy_intervals", []
+            ),
+        )
 
 
 class FinetuningDataset(TrainingDataset):
     """Torch dataset object yielding sequences formatted for fine-tuning."""
 
     def __init__(
-        self, dir_paths: List[str] | str, tokenizer: SeparatedAbsTokenizer
+        self, dir_paths: List[str] | str, tokenizer: InferenceAbsTokenizer
     ):
         super().__init__(tokenizer=tokenizer)
 
-        assert tokenizer.name == "separated_abs", "invalid tokenizer"
+        assert tokenizer.name == "inference_abs", "invalid tokenizer"
 
         if isinstance(dir_paths, str):
             dir_paths = [dir_paths]
@@ -1205,31 +1211,33 @@ class FinetuningDataset(TrainingDataset):
     def __len__(self):
         return len(self.index)
 
-    def get_loss_mask(self, tokenized_seq: list):
-        mask = [True] * len(tokenized_seq)
-        inside_inst = False
+    def get_loss_mask(self, src_seq: list, tgt_seq: list):
+        mask = [False] * len(tgt_seq)
+        inside_target = True
 
-        for idx, token in enumerate(tokenized_seq):
-            if token == self.tokenizer.inst_start_tok:
-                mask[idx] = False
-                inside_inst = True
-            elif token == self.tokenizer.inst_end_tok:
-                mask[idx] = False
-                inside_inst = False
-            elif inside_inst:
-                mask[idx] = False
+        for idx, (src_tok, tgt_tok) in enumerate(zip(src_seq, tgt_seq)):
+            if src_tok == self.tokenizer.guidance_start_tok:
+                inside_target = False
+            elif src_tok == self.tokenizer.guidance_end_tok:
+                inside_target = True
+            elif tgt_tok == self.tokenizer.prompt_start_tok:
+                inside_target = False
+            elif src_tok == self.tokenizer.prompt_end_tok:
+                inside_target = True
+
+            if inside_target is True and tgt_tok != self.tokenizer.pad_tok:
+                mask[idx] = True
 
         return torch.tensor(mask, dtype=torch.bool)
 
     @classmethod
     def build(
         cls,
-        tokenizer: Tokenizer,
+        tokenizer: InferenceAbsTokenizer,
         save_dir: str,
         max_seq_len: int,
         num_epochs: int,
-        clean_dataset_path: str,
-        noisy_dataset_paths: str,
+        midi_dataset_path: str,
     ):
 
         def _build_epoch(_save_path, _midi_dataset):
@@ -1244,7 +1252,17 @@ class FinetuningDataset(TrainingDataset):
                 )
 
                 _idx = 0
-                for entry in reservoir(get_seqs(tokenizer, _midi_dataset), 10):
+                for entry in reservoir(
+                    get_seqs(
+                        tokenizer,
+                        _midi_dataset,
+                        tokenize_fn=functools.partial(
+                            export_inference_abs_build_tokenize_fn,
+                            tokenizer=tokenizer,
+                        ),
+                    ),
+                    10,
+                ):
                     for _entry in tokenizer.split(entry, max_seq_len):
                         writer.write(_entry)
 
@@ -1252,12 +1270,14 @@ class FinetuningDataset(TrainingDataset):
                     if _idx % 250 == 0:
                         logger.info(f"Finished processing {_idx}")
 
+                    # DEBUG
+                    if _idx == 1000:
+                        break
+
         logger = setup_logger()
         assert max_seq_len > 0, "max_seq_len must be greater than 0"
         assert num_epochs > 0, "num_epochs must be greater than 0"
-        assert os.path.isfile(clean_dataset_path), "file not found"
-        for __path in noisy_dataset_paths:
-            assert os.path.isfile(__path), "file not found"
+        assert os.path.isfile(midi_dataset_path), "file not found"
         if multiprocessing.get_start_method() == "spawn":
             logger.warning(
                 'The current multiprocessing start method is "spawn", this '
@@ -1284,21 +1304,14 @@ class FinetuningDataset(TrainingDataset):
             f"tokenizer_name={tokenizer.name}"
         )
 
-        clean_dataset = MidiDataset.load(clean_dataset_path)
-        noisy_datasets = [
-            MidiDataset.load(_path) for _path in noisy_dataset_paths
-        ]
-
         for idx in range(num_epochs):
             logger.info(f"Building epoch {idx}/{num_epochs - 1}...")
 
             # Reload the combined dataset for each epoch
-            combined_dataset = _get_mixed_dataset(clean_dataset, noisy_datasets)
+            midi_dataset = MidiDataset.get_generator(midi_dataset_path)
             _build_epoch(
                 _save_path=os.path.join(save_dir, f"epoch{idx}.jsonl"),
-                _midi_dataset=combined_dataset,
+                _midi_dataset=midi_dataset,
             )
 
         logger.info(f"Finished building, saved FinetuningDataset to {save_dir}")
-
-        return cls(dir_paths=save_dir, tokenizer=tokenizer)
