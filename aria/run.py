@@ -163,7 +163,7 @@ def sample(args):
         os.mkdir(samples_dir)
     if guidance_seq:
         tokenizer.detokenize(guidance_seq).to_midi().save(
-            os.path.join(samples_dir, f"res_{idx + 1}.mid")
+            os.path.join(samples_dir, f"guidance.mid")
         )
     if args.cfg is not None and guidance_seq is not None:
         results = sample_batch_cfg(
