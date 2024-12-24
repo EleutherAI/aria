@@ -174,8 +174,8 @@ class InferenceAbsTokenizer(_AbsTokenizer):
 
     def export_data_aug(self):
         return [
-            self.export_guidance_tempo_aug(max_tempo_aug=0.25, mixup=True),
-            self.export_guidance_pitch_aug(4),
+            self.export_guidance_tempo_aug(max_tempo_aug=0.2, mixup=True),
+            self.export_guidance_pitch_aug(3),
             self.export_guidance_velocity_aug(2),
         ]
 

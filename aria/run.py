@@ -152,17 +152,20 @@ def sample(args):
         guidance_midi_dict=guidance_midi_dict,
     )
 
-    if guidance_seq:
-        tokenizer.detokenize(guidance_seq).to_midi().save(
-            os.path.join(samples_dir, f"guidance.mid")
-        )
     if len(prompt_seq) + args.l > model_config.max_seq_len:
         print(
             "WARNING: Required context exceeds max_seq_len supported by model"
         )
     prompts = [prompt_seq for _ in range(num_variations)]
 
-    if args.cfg is not None:
+    samples_dir = os.path.join(os.path.dirname(__file__), "..", "samples")
+    if os.path.isdir(samples_dir) is False:
+        os.mkdir(samples_dir)
+    if guidance_seq:
+        tokenizer.detokenize(guidance_seq).to_midi().save(
+            os.path.join(samples_dir, f"guidance.mid")
+        )
+    if args.cfg is not None and guidance_seq is not None:
         results = sample_batch_cfg(
             model=model,
             tokenizer=tokenizer,
@@ -185,10 +188,6 @@ def sample(args):
             top_p=args.top_p,
             compile=args.compile,
         )
-
-    samples_dir = os.path.join(os.path.dirname(__file__), "..", "samples")
-    if os.path.isdir(samples_dir) is False:
-        os.mkdir(samples_dir)
 
     for idx, tokenized_seq in enumerate(results):
         res_midi_dict = tokenizer.detokenize(tokenized_seq)

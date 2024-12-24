@@ -303,6 +303,7 @@ def sample_batch_cfg(
         logits_cfg[:, tokenizer.tok_to_id[tokenizer.prompt_start_tok]] = float(
             "-inf"
         )
+        logits_cfg[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
 
         if temperature > 0.0:
             probs = torch.softmax(logits_cfg / temperature, dim=-1)
@@ -389,7 +390,10 @@ def get_inference_prompt(
     if tokenizer.dim_tok in prompt_seq:
         prompt_seq.remove(tokenizer.dim_tok)
 
-    if guidance_midi_dict is not None:
+    if (
+        guidance_midi_dict is not None
+        and tokenizer.guidance_start_tok in prompt_seq
+    ):
         guidance_seq = copy.deepcopy(prompt_seq)
         guidance_seq = guidance_seq[
             : guidance_seq.index(tokenizer.guidance_end_tok)
