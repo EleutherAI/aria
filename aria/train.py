@@ -61,9 +61,6 @@ torch._dynamo.config.optimize_ddp = False
 #   -bs 32 \
 #   -workers 8
 
-# TODO:
-# - Test that everything works on a distributed setup
-
 
 def setup_logger(project_dir: str):
     # Get logger and reset all handlers
@@ -196,7 +193,7 @@ def get_optim(
     num_epochs: int,
     steps_per_epoch: int,
 ):
-    LR = 3e-5
+    LR = 3e-4
     END_RATIO = 0.1
     WARMUP_STEPS = 200
 

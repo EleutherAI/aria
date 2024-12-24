@@ -1060,7 +1060,7 @@ def _noise_midi_dict(midi_dict: MidiDict, config: dict):
 
         return _temp_note_msg
 
-    _note_msgs = midi_dict.note_msgs
+    _note_msgs = copy.deepcopy(midi_dict.note_msgs)
 
     # Remove notes
     if random.random() < config["remove_notes"]["activation_prob"]:
@@ -1269,10 +1269,6 @@ class FinetuningDataset(TrainingDataset):
                     _idx += 1
                     if _idx % 250 == 0:
                         logger.info(f"Finished processing {_idx}")
-
-                    # DEBUG
-                    if _idx == 1000:
-                        break
 
         logger = setup_logger()
         assert max_seq_len > 0, "max_seq_len must be greater than 0"
