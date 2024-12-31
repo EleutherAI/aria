@@ -1,0 +1,785 @@
+#!/usr/bin/env python3
+
+import argparse
+import os
+import time
+import copy
+import logging
+import threading
+import queue
+import torch
+import mido
+import torch._dynamo.config
+import torch._inductor.config
+
+from torch.cuda import is_available as cuda_is_available
+from ariautils.midi import MidiDict, NoteMessage, midi_to_dict
+
+from aria.tokenizer import InferenceAbsTokenizer
+from aria.utils import _load_weight
+from aria.inference import TransformerLM
+from aria.model import ModelConfig
+from aria.config import load_model_config, load_config
+from aria.sample import prefill, decode_one, sample_top_p, update_seq_ids_
+
+# torch._inductor.config.coordinate_descent_tuning = True
+# torch._inductor.config.triton.unique_kernel_names = True
+# torch._inductor.config.fx_graph_cache = True
+
+DTYPE = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+MAX_SEQ_LEN = 8192
+
+# CONTROL FLOW:
+
+# 1. Loads model, compiles forward
+# 2. Listen on MIDI port for first note
+# 3. Start timer at first message seen
+# 4. Wait for control-signal
+# 3. Signal seen -> prefill all closed notes
+# 4. Wait for all notes to close (ignore new notes) -> prefill the rest of the notes
+# 5. Init main loop:
+
+# Generate next token
+# Decode NoteMessage
+# Add to message global NoteMessages
+# Convert into on/off MIDI message and add to dequeue
+# Check next message against current time and send message while msg_time <= curr_time
+# Listen for control-signal
+
+# 6. Pop all note-on msgs, pop all note-off messages that are not processed yet
+# 7. Go back to (3) - sending messages from extra list arg of off-msgs
+
+
+# TODO:
+# - Implement with flex attention to speed up prefill/decoding
+# - Possibly compile different kernels for decoding different shapes, and for prefill
+
+file_handler = logging.FileHandler("./demo.log", mode="w")
+file_handler.setLevel(logging.DEBUG)
+
+
+def get_logger(name: str | None = None) -> logging.Logger:
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        logger.propagate = False
+        logger.setLevel(logging.DEBUG)
+        if name is not None:
+            formatter = logging.Formatter(
+                "[%(asctime)s]: [%(levelname)s] [%(name)s] %(message)s"
+            )
+        else:
+            formatter = logging.Formatter(
+                "[%(asctime)s]: [%(levelname)s] %(message)s"
+            )
+
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
+
+        # Reuse shared file handler
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    return logger
+
+
+@torch.autocast("cuda", dtype=DTYPE)
+@torch.inference_mode()
+def compile_model(model: TransformerLM, max_seq_len: int):
+    logger = get_logger()
+    assert 10 < max_seq_len <= MAX_SEQ_LEN
+
+    model.eval()
+    model.setup_cache(
+        batch_size=1,
+        max_seq_len=max_seq_len,
+        dtype=DTYPE,
+    )
+
+    global decode_one
+    decode_one = torch.compile(
+        decode_one,
+        mode="reduce-overhead",
+        fullgraph=True,
+    )
+
+    # Might need to pass in pad_idxs?
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+        start_compile_time_s = time.time()
+        logger.info(f"Compiling forward pass")
+        decode_one(
+            model,
+            idxs=torch.tensor([[0]]).cuda(),
+            input_pos=torch.tensor([0], device="cuda", dtype=torch.int),
+        )
+        logger.info(
+            f"Finished compiling - took {time.time() - start_compile_time_s:.4f} seconds"
+        )
+
+        for _ in range(100):
+            decode_one(
+                model,
+                idxs=torch.tensor([[0]]).cuda(),
+                input_pos=torch.tensor([0], device="cuda", dtype=torch.int),
+            )
+
+        compiled_forward_start_s = time.time()
+        decode_one(
+            model,
+            idxs=torch.tensor([[0]]).cuda(),
+            input_pos=torch.tensor([0], device="cuda", dtype=torch.int),
+        )
+        compiled_forward_ms = (time.time() - compiled_forward_start_s) * 1000
+        compiled_forward_its = 1000 / compiled_forward_ms
+        logger.info(
+            f"Compiled forward pass benchmark: {compiled_forward_ms:.2f} ms/it ({compiled_forward_its:.2f} it/s)"
+        )
+
+    return model
+
+
+def load_model(
+    checkpoint_path: str,
+):
+    logger = get_logger()
+    if not cuda_is_available():
+        raise Exception("CUDA device is not available.")
+
+    init_start_time_s = time.time()
+
+    tokenizer = InferenceAbsTokenizer()
+    model_config = ModelConfig(**load_model_config("medium"))
+    model_config.set_vocab_size(tokenizer.vocab_size)
+    model_config.grad_checkpoint = False
+    model = TransformerLM(model_config).cuda()
+
+    logging.info(f"Loading model weights from {checkpoint_path}")
+    model_state = _load_weight(checkpoint_path, "cuda")
+    model_state = {
+        k.replace("_orig_mod.", ""): v for k, v in model_state.items()
+    }
+    model.load_state_dict(model_state)
+
+    logger.info(
+        f"Finished initializing model - took {time.time() - init_start_time_s:.4f} seconds"
+    )
+
+    return model
+
+
+# TODO: For testing purposes only - remove later
+@torch.autocast("cuda", dtype=DTYPE)
+@torch.inference_mode()
+def prefill_model(
+    seq: list, tokenizer: InferenceAbsTokenizer, model: TransformerLM
+):
+    logger = get_logger()
+    enc_seq = tokenizer.encode(seq)
+    idxs = torch.tensor([enc_seq, enc_seq], dtype=torch.int, device="cuda")
+    print(idxs.shape)
+
+    start_s = time.time()
+    prefill(
+        model=model,
+        idxs=idxs,
+        input_pos=torch.arange(
+            0, idxs.shape[1], device="cuda", dtype=torch.int
+        ),
+    )
+    logger.info(f"Took {(time.time() - start_s) * 1000:.4f}")
+
+
+# TODO: Support CFG
+# TODO: Context length switching
+# TODO: Fix issue with generating onsets before current time
+# - As a workaround we can not send messages which are more than 0.2s before curr_time
+# TODO: Handle introduction of prompt tags
+@torch.autocast("cuda", dtype=DTYPE)
+@torch.inference_mode()
+def generate_tokens(
+    priming_seq: list,
+    tokenizer: InferenceAbsTokenizer,
+    model: TransformerLM,
+    control_seen_sentinel: threading.Event,
+    generated_tokens_queue: queue.Queue,
+    temperature: float = 0.95,
+    top_p: float = 0.95,
+):
+    logger = get_logger("GENERATE")
+
+    priming_seq_len = len(priming_seq)
+    enc_seq = torch.tensor(
+        [
+            tokenizer.encode(
+                priming_seq
+                + [tokenizer.pad_tok] * (MAX_SEQ_LEN - len(priming_seq))
+            )
+        ],
+        device="cuda",
+    )
+    logger.debug(priming_seq)
+    logger.info(f"Priming sequence length: {priming_seq_len}")
+
+    prefill_start_s = time.time()
+    prefill(
+        model,
+        idxs=enc_seq[:, :priming_seq_len],
+        input_pos=torch.arange(0, priming_seq_len, device="cuda"),
+    )
+    logger.info(
+        f"Prefill took {(time.time() - prefill_start_s) * 1000:.2f} milliseconds"
+    )
+
+    idx = priming_seq_len
+    while (not control_seen_sentinel.is_set()) and idx < MAX_SEQ_LEN:
+        decode_one_start_time_s = time.time()
+        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+            logits = decode_one(
+                model,
+                idxs=torch.tensor([[enc_seq[0, idx - 1]]]).cuda(),  # Workaround
+                # idxs=enc_seq[:, idx - 1 : idx],
+                input_pos=torch.tensor(
+                    [idx - 1], device="cuda", dtype=torch.int
+                ),
+            )
+
+        logits[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
+        logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
+        logits[:, tokenizer.tok_to_id[tokenizer.prompt_start_tok]] = float(
+            "-inf"
+        )
+
+        if temperature > 0.0:
+            probs = torch.softmax(logits / temperature, dim=-1)
+            next_token_ids = sample_top_p(probs, top_p).flatten()
+        else:
+            next_token_ids = torch.argmax(logits, dim=-1).flatten()
+
+        enc_seq[:, idx] = next_token_ids
+        next_token = tokenizer.id_to_tok[next_token_ids[0].item()]
+        logger.info(
+            f"({(time.time() - decode_one_start_time_s)*1000:.2f}ms) {idx}: {next_token}"
+        )
+        generated_tokens_queue.put(next_token)
+        idx += 1
+
+        while generated_tokens_queue.qsize() > 250:
+            logger.info(f"Sleeping for 0.1s")
+            time.sleep(0.1)
+
+
+def decode_tokens_to_midi(
+    generated_tokens_queue: queue.Queue,
+    midi_messages_queue: queue.Queue,
+    tokenizer: InferenceAbsTokenizer,
+    first_on_msg_epoch_ms: float,
+    priming_seq_last_onset_ms: float,
+    control_seen_sentinel: threading.Event,
+):
+    logger = get_logger("DECODE")
+
+    assert (
+        first_on_msg_epoch_ms + priming_seq_last_onset_ms < time.time() * 1000
+    )
+
+    logger.info(f"first_on_msg_epoch_ms: {first_on_msg_epoch_ms}")
+    logger.info(f"priming_seq_last_onset_ms: {priming_seq_last_onset_ms}")
+    logger.info(f"curr_time_ms: {round(time.time() * 1000)}")
+
+    note_buffer = []
+    num_time_toks = priming_seq_last_onset_ms // 5000
+
+    while not control_seen_sentinel.is_set():
+        while True:
+            tok = generated_tokens_queue.get()
+            logger.info(f"Seen token: {tok}")
+            note_buffer.append(tok)
+            if isinstance(tok, tuple) and tok[0] == "dur":
+                break
+
+        while note_buffer and note_buffer[0] == tokenizer.time_tok:
+            logger.info("Popping time_tok")
+            num_time_toks += 1
+            note_buffer.pop(0)
+
+        assert len(note_buffer) == 3
+        logger.info(f"Decoded note: {note_buffer}")
+        note_tok, onset_tok, dur_tok = note_buffer
+        _, pitch, vel = note_tok
+        _, onset = onset_tok
+        _, dur = dur_tok
+
+        onset_epoch_ms = first_on_msg_epoch_ms + (num_time_toks * 5000) + onset
+        offset_epoch_ms = onset_epoch_ms + dur
+        on_msg = {"pitch": pitch, "vel": vel, "epoch_time_ms": onset_epoch_ms}
+        off_msg = {"pitch": pitch, "vel": 0, "epoch_time_ms": offset_epoch_ms}
+
+        midi_messages_queue.put(on_msg)
+        midi_messages_queue.put(off_msg)
+        logger.info(f"Put message: {on_msg}")
+        logger.info(f"Put message: {off_msg}")
+        logger.info(f"Ahead by {onset_epoch_ms - round(time.time() * 1000)}ms")
+
+        note_buffer = []
+
+
+# TODO: Add sent midi messages to msgs list (adjust time)
+# TODO: There is a bug here im 99% sure
+def stream_midi(
+    midi_messages_queue: queue.Queue,
+    msgs: list[mido.Message],
+    prev_msg_epoch_time_ms: float,
+    midi_output_port: str,
+    control_seen_sentinel: threading.Event,
+):
+    logger = get_logger("STREAM")
+    logger.info(
+        f"Sending generated messages on MIDI port: '{midi_output_port}'"
+    )
+    active_pitches = []
+    midi_messages = []
+
+    with mido.open_output(midi_output_port) as midi_out:
+        while not control_seen_sentinel.is_set():
+            if len(midi_messages) == 0:
+                while True:
+                    try:
+                        msg = midi_messages_queue.get(timeout=0.001)
+                    except queue.Empty:
+                        break
+                    else:
+                        logger.info(f"Got message: {msg}")
+                        midi_messages.append(msg)
+
+            midi_messages = sorted(
+                midi_messages, key=lambda msg: msg["epoch_time_ms"]
+            )
+
+            while midi_messages:
+                curr_epoch_time_ms = round(time.time() * 1000)
+                msg = midi_messages[0]
+
+                if 0 < curr_epoch_time_ms - msg["epoch_time_ms"] < 200:
+                    mido_msg = mido.Message(
+                        "note_on",
+                        note=msg["pitch"],
+                        velocity=msg["vel"],
+                        channel=0,
+                        time=0,
+                    )
+
+                    if msg["vel"] > 0:
+                        active_pitches.append(msg["pitch"])
+                    elif msg["vel"] == 0 and msg["pitch"] in active_pitches:
+                        active_pitches.remove(msg["pitch"])
+
+                    mido_msg_with_time = copy.deepcopy(mido_msg)
+                    mido_msg_with_time.time = max(
+                        0, msg["epoch_time_ms"] - prev_msg_epoch_time_ms
+                    )
+                    prev_msg_epoch_time_ms = curr_epoch_time_ms
+
+                    midi_out.send(mido_msg)
+                    msgs.append(mido_msg_with_time)
+                    logger.info(f"Sent message: {mido_msg}")
+                    midi_messages.pop(0)
+
+                elif curr_epoch_time_ms - msg["epoch_time_ms"] > 200:
+                    # Too far in the past
+                    # TODO: Potential BUG with notes not being turned off?
+                    midi_messages.pop(0)
+                else:
+                    break
+
+            time.sleep(0.01)
+
+        # Control sentinel seen
+        while True:
+            try:
+                msg = midi_messages_queue.get_nowait()
+            except queue.Empty:
+                break
+            else:
+                midi_messages.append(msg)
+
+        midi_messages = sorted(
+            midi_messages, key=lambda msg: msg["epoch_time_ms"]
+        )
+
+        # Turn off active pitches straight away
+        for msg in midi_messages:
+            if msg["vel"] == 0 and msg["pitch"] in active_pitches:
+                mido_msg = mido.Message(
+                    "note_on",
+                    note=msg["pitch"],
+                    velocity=0,
+                    channel=0,
+                    time=0,
+                )
+
+                curr_epoch_time_ms = round(time.time() * 1000)
+                mido_msg_with_time = copy.deepcopy(mido_msg)
+                mido_msg_with_time.time = max(
+                    0, curr_epoch_time_ms - prev_msg_epoch_time_ms
+                )
+
+                midi_out.send(mido_msg)
+                msgs.append(mido_msg_with_time)
+                logger.info(f"Sent message: {mido_msg}")
+                prev_msg_epoch_time_ms = curr_epoch_time_ms
+                active_pitches.remove(msg["pitch"])
+
+        return msgs
+
+
+def stream_msgs(
+    model: TransformerLM,
+    tokenizer: InferenceAbsTokenizer,
+    msgs: list[mido.Message],
+    midi_output_port: str,
+    first_on_msg_epoch_ms: int,
+    control_seen_sentinel: threading.Event,
+):
+    midi = convert_msgs_to_midi(msgs=msgs)
+    midi_dict = MidiDict(**midi_to_dict(midi))
+    priming_seq = tokenizer.tokenize(
+        midi_dict=midi_dict, prompt_intervals_ms=[]
+    )
+    priming_seq = priming_seq[: priming_seq.index(tokenizer.eos_tok)]
+    if tokenizer.dim_tok in priming_seq:
+        priming_seq.remove(tokenizer.dim_tok)
+
+    generated_tokens_queue = queue.Queue()
+    midi_messages_queue = queue.Queue()
+
+    generate_tokens_thread = threading.Thread(
+        target=generate_tokens,
+        kwargs={
+            "priming_seq": priming_seq,
+            "tokenizer": tokenizer,
+            "model": model,
+            "control_seen_sentinel": control_seen_sentinel,
+            "generated_tokens_queue": generated_tokens_queue,
+        },
+    )
+    generate_tokens_thread.start()
+
+    decode_tokens_to_midi_thread = threading.Thread(
+        target=decode_tokens_to_midi,
+        kwargs={
+            "generated_tokens_queue": generated_tokens_queue,
+            "midi_messages_queue": midi_messages_queue,
+            "tokenizer": tokenizer,
+            "first_on_msg_epoch_ms": first_on_msg_epoch_ms,
+            "priming_seq_last_onset_ms": tokenizer.calc_length_ms(
+                priming_seq[priming_seq.index(tokenizer.bos_tok) :],
+                onset=True,
+            ),
+            "control_seen_sentinel": control_seen_sentinel,
+        },
+    )
+    decode_tokens_to_midi_thread.start()
+
+    # stream_midi_thread = threading.Thread(
+    #     target=stream_midi,
+    #     kwargs={
+    #         "midi_messages_queue": midi_messages_queue,
+    #         "msgs": msgs,
+    #         "prev_msg_epoch_time_ms": first_on_msg_epoch_ms
+    #         + tokenizer.calc_length_ms(
+    #             priming_seq[priming_seq.index(tokenizer.bos_tok) :],
+    #             onset=False,
+    #         ),
+    #         "midi_output_port": midi_output_port,
+    #         "control_seen_sentinel": control_seen_sentinel,
+    #     },
+    # )
+    # stream_midi_thread.start()
+
+    msgs = stream_midi(
+        midi_messages_queue=midi_messages_queue,
+        msgs=msgs,
+        prev_msg_epoch_time_ms=first_on_msg_epoch_ms
+        + tokenizer.calc_length_ms(
+            priming_seq[priming_seq.index(tokenizer.bos_tok) :],
+            onset=False,
+        ),
+        midi_output_port=midi_output_port,
+        control_seen_sentinel=control_seen_sentinel,
+    )
+
+    generate_tokens_thread.join()
+    decode_tokens_to_midi_thread.join()
+
+    # Generate next token
+    # Decode NoteMessage
+    # Add to message global NoteMessages
+    # Convert into on/off MIDI message and add to dequeue
+    # Check next message against current time and send message while msg_time <= curr_time
+    # Listen for control-signal
+
+    # output_msg_queue = []
+    # while True:
+    #     pass
+
+
+def convert_msgs_to_midi(msgs: list[mido.Message]):
+    track = mido.MidiTrack()
+    track.append(mido.MetaMessage("set_tempo", tempo=500000, time=0))
+    track.append(mido.Message("program_change", program=0, channel=0, time=0))
+    for msg in msgs:
+        track.append(msg)
+
+    mid = mido.MidiFile(type=0)
+    mid.ticks_per_beat = 500
+    mid.tracks.append(track)
+
+    return mid
+
+
+# TODO: Make sure that pedal is closing?
+def capture_midi_input(midi_input_port: str):
+    logger = get_logger("CAPTURE")
+    logger.info(f"Listening on MIDI port: '{midi_input_port}'")
+    received_messages = []
+    seen_control = False
+    pedal_on = False
+    active_pitches = set()
+    first_on_msg_epoch_ms = None
+    prev_msg_epoch_time_ms = None
+
+    with mido.open_input(midi_input_port) as midi_input, mido.open_output(
+        "Midi Through:Midi Through Port-2"
+    ) as midi_output:
+        for _msg in midi_input:
+
+            if prev_msg_epoch_time_ms is None:
+                msg_time_ms = 0
+            else:
+                msg_time_ms = round(
+                    round((time.time() * 1000) - prev_msg_epoch_time_ms)
+                )
+
+            prev_msg_epoch_time_ms = round(time.time() * 1000)
+            msg = copy.deepcopy(_msg)
+            msg.time = msg_time_ms
+            msg.channel = 0
+            logger.info(f"({prev_msg_epoch_time_ms}) {msg}")
+
+            if msg.is_meta is True or msg.type == "program_change":
+                continue
+
+            if (
+                msg.type == "note_on" and msg.velocity == 0
+            ) or msg.type == "note_off":
+                active_pitches.discard(msg.note)
+                received_messages.append(msg)
+                midi_output.send(msg)
+            elif msg.type == "control_change" and msg.control == 64:
+                received_messages.append(msg)
+                midi_output.send(msg)
+                if msg.value < 64:
+                    pedal_on = False
+                else:
+                    pedal_on = True
+            elif (
+                msg.type == "control_change"
+                and msg.control == 66
+                and msg.value > 0
+            ):
+                # TODO: Change this to control arg
+                logger.info("Control signal seen")
+                logger.info(f"Active pitches: {active_pitches}")
+                seen_control = True
+
+            # TURN OFF ALL MSGS
+            if seen_control is True:
+                if active_pitches:
+                    pitch = active_pitches.pop()
+                    __msg = mido.Message(
+                        type="note_on",
+                        note=pitch,
+                        velocity=0,
+                        channel=0,
+                        time=msg_time_ms,
+                    )
+                    received_messages.append(__msg)
+                    midi_output.send(msg)
+                while active_pitches:
+                    pitch = active_pitches.pop()
+                    __msg = mido.Message(
+                        type="note_on",
+                        note=pitch,
+                        velocity=0,
+                        channel=0,
+                        time=0,
+                    )
+                    received_messages.append(__msg)
+                    midi_output.send(msg)
+
+                __msg = mido.Message(
+                    type="control_change",
+                    control=66,
+                    value=0,
+                    channel=0,
+                    time=0,
+                )
+                received_messages.append(__msg)
+                midi_output.send(msg)
+
+                return received_messages, first_on_msg_epoch_ms
+
+            # LET MSGS END NATURALLY
+            # if seen_control == True:
+            #     if pedal_on == False and len(active_pitches) == 0:
+            #         return received_messages, first_on_msg_epoch_ms
+            #     else:
+            #         continue
+            elif msg.type == "note_on" and msg.velocity > 0:
+                if first_on_msg_epoch_ms is None:
+                    first_on_msg_epoch_ms = round(time.time() * 1000)
+
+                received_messages.append(msg)
+                midi_output.send(msg)
+                active_pitches.add(msg.note)
+
+
+def play_midi_file(midi_port: str, midi_path: str):
+    logger = get_logger("FILE")
+    logger.info(f"Playing file at {midi_path} on MIDI port {midi_port}")
+    time.sleep(1)
+    with mido.open_output(midi_port) as output_port:
+        for msg in mido.MidiFile(midi_path).play():
+            # logger.info(f"MIDI OUTPUT: {msg}")
+            output_port.send(msg)
+
+
+def listen_for_control(midi_port: str, control_seen_sentinel: threading.Event):
+    logger = get_logger("LISTEN")
+    with mido.open_input(midi_port) as input_port:
+        for msg in input_port:
+            logger.info(f"MIDI INPUT: {msg}")
+            if (
+                msg.is_meta is False
+                and msg.type == "control_change"
+                and msg.control == 66
+                and msg.value > 0
+            ):
+                logger.info("Control signal seen")
+                control_seen_sentinel.set()
+                return
+
+
+def parse_args():
+    argp = argparse.ArgumentParser()
+    argp.add_argument("-cp", help="path to model checkpoint")
+    argp.add_argument("-midi_in", required=False, help="MIDI input port")
+    argp.add_argument("-midi_out", required=True, help="MIDI output port")
+    argp.add_argument(
+        "-midi_path",
+        required=False,
+        help="Use MIDI file instead of MIDI input port",
+    )
+    argp.add_argument(
+        "-control_signal",
+        default=66,
+        help="MIDI control change message for AI takeover",
+    )
+    argp.add_argument(
+        "-temp",
+        help="sampling temperature value",
+        type=float,
+        required=False,
+        default=0.95,
+    )
+    argp.add_argument(
+        "-top_p",
+        help="sampling top_p value",
+        type=float,
+        required=False,
+        default=0.95,
+    )
+    argp.add_argument(
+        "-cfg",
+        help="sampling cfg gamma value",
+        type=float,
+        required=False,
+    )
+    argp.add_argument(
+        "-metadata",
+        nargs=2,
+        metavar=("KEY", "VALUE"),
+        action="append",
+        help="manually add metadata key-value pair when sampling",
+    )
+    argp.add_argument(
+        "-guidance_path", type=str, help="path to guidance MIDI", required=False
+    )
+    argp.add_argument(
+        "-guidance_start_ms",
+        help="guidance interval start (ms)",
+        type=int,
+        required=False,
+    )
+    argp.add_argument(
+        "-guidance_end_ms",
+        help="guidance interval end (ms)",
+        type=int,
+        required=False,
+    )
+
+    return argp.parse_args()
+
+
+def main():
+    args = parse_args()
+    logger = get_logger()
+
+    tokenizer = InferenceAbsTokenizer()
+    model = load_model(checkpoint_path=args.cp)
+    model = compile_model(model=model, max_seq_len=MAX_SEQ_LEN)
+
+    assert (args.midi_path and os.path.isfile(args.midi_path)) or args.midi_in
+    if args.midi_path:
+        midi_input_port = "Midi Through:Midi Through Port-0"
+        play_file_thread = threading.Thread(
+            target=play_midi_file, args=(midi_input_port, args.midi_path)
+        )
+        play_file_thread.start()
+    else:
+        midi_input_port = args.midi_in
+
+    # TODO: All of the below logic should be in a loop:
+
+    msgs, first_on_msg_epoch_ms = capture_midi_input(midi_input_port)
+
+    # midi = convert_msgs_to_midi(msgs=msgs)
+    # midi.save("/home/loubb/Dropbox/shared/res.mid")
+    # midi_dict = MidiDict(**midi_to_dict(midi))
+    # prefill_model(
+    #     seq=tokenizer.tokenize(midi_dict, prompt_intervals_ms=[]),
+    #     tokenizer=tokenizer,
+    #     model=model,
+    # )
+    # raise Exception
+
+    control_seen_sentinel = threading.Event()
+
+    # listen_for_control_thread = threading.Thread(
+    #     target=listen_for_control, args=(midi_input_port, control_seen_sentinel)
+    # )
+    # listen_for_control_thread.start()
+
+    stream_msgs(
+        model=model,
+        tokenizer=tokenizer,
+        msgs=msgs,
+        midi_output_port=args.midi_out,
+        first_on_msg_epoch_ms=first_on_msg_epoch_ms,
+        control_seen_sentinel=control_seen_sentinel,
+    )
+
+
+if __name__ == "__main__":
+    main()
