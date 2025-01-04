@@ -49,9 +49,9 @@ class MIDIRouter:
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MIDI to UDP router')
-    parser.add_argument('-midi-p', type=str, default="14:0",
+    parser.add_argument('-midi_p', type=str, default="14:0",
                       help='MIDI port identifier (default: 14:0)')
-    parser.add_argument('-udp-p', type=int, default=5004,
+    parser.add_argument('-udp_p', type=int, default=5004,
                       help='UDP port for forwarding (default: 5004)')
     return parser.parse_args()
 
