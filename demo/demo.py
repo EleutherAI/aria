@@ -2,9 +2,7 @@
 
 import argparse
 import os
-import keyboard
 import time
-import functools
 import uuid
 import copy
 import logging
@@ -33,32 +31,9 @@ torch._inductor.config.fx_graph_cache = True
 DTYPE = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 MAX_SEQ_LEN = 8192
 
-
 # TODO:
 # - Add CFG support
-# - Add beam-search for first generated onset (watch out for <T>)
-# - Add loop functionality
-
-
-# CONTROL FLOW:
-
-# 1. Loads model, compiles forward
-# 2. Listen on MIDI port for first note
-# 3. Start timer at first message seen
-# 4. Wait for control-signal
-# 3. Signal seen -> prefill all closed notes
-# 4. Wait for all notes to close (ignore new notes) -> prefill the rest of the notes
-# 5. Init main loop:
-
-# Generate next token
-# Decode NoteMessage
-# Add to message global NoteMessages
-# Convert into on/off MIDI message and add to dequeue
-# Check next message against current time and send message while msg_time <= curr_time
-# Listen for control-signal
-
-# 6. Pop all note-on msgs, pop all note-off messages that are not processed yet
-# 7. Go back to (3) - sending messages from extra list arg of off-msgs
+# - Add looping functionality
 
 file_handler = logging.FileHandler("./demo.log", mode="w")
 file_handler.setLevel(logging.DEBUG)
@@ -70,10 +45,8 @@ def get_logger(name: str | None = None) -> logging.Logger:
         logger.propagate = False
         logger.setLevel(logging.DEBUG)
 
-        # Custom formatter class to handle millisecond timestamps
         class MillisecondFormatter(logging.Formatter):
             def formatTime(self, record, datefmt=None):
-                # Get milliseconds since epoch using int() to remove decimal places
                 created_ms = int(record.created * 1000)
                 return str(created_ms)
 
@@ -91,7 +64,6 @@ def get_logger(name: str | None = None) -> logging.Logger:
         ch.setFormatter(formatter)
         logger.addHandler(ch)
 
-        # Reuse shared file handler
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
 
@@ -122,7 +94,6 @@ def compile_model(model: TransformerLM, max_seq_len: int):
         fullgraph=True,
     )
 
-    # Might need to pass in pad_idxs?
     with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
         start_compile_time_s = time.time()
         logger.info(f"Compiling forward pass")
@@ -189,18 +160,25 @@ def load_model(
 @torch.autocast("cuda", dtype=DTYPE)
 @torch.inference_mode()
 def recalculate_dur_tokens(
+    model: TransformerLM,
     priming_seq: list,
     enc_seq: torch.Tensor,
     tokenizer: InferenceAbsTokenizer,
-    model: TransformerLM,
     start_idx: int,
 ):
     logger = get_logger("GENERATE")
-    priming_seq_len = len(priming_seq)
+    assert start_idx > 0
 
-    for idx in range(priming_seq_len - start_idx, priming_seq_len):
+    priming_seq_len = len(priming_seq)
+    num_time_toks_seen = priming_seq[:start_idx].count(tokenizer.time_tok)
+    curr_onset = num_time_toks_seen * 5000
+    last_offset = tokenizer.calc_length_ms(priming_seq)
+    LAST_OFFSET_BUFFER_MS = 50
+
+    for idx in range(start_idx, priming_seq_len):
         with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
             prev_tok_id = enc_seq[0, idx - 1]
+            prev_tok = tokenizer.id_to_tok[prev_tok_id.item()]
             logits = decode_one(
                 model,
                 idxs=torch.tensor([[prev_tok_id]]).cuda(),
@@ -208,141 +186,131 @@ def recalculate_dur_tokens(
                     [idx - 1], device="cuda", dtype=torch.int
                 ),
             )
-
-        logits[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
-        logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
-        logits[:, tokenizer.tok_to_id[tokenizer.prompt_start_tok]] = float(
-            "-inf"
-        )
+            logger.debug(
+                f"Sampled logits for position {idx} by inserting {prev_tok} at position {idx-1}"
+            )
 
         next_token_ids = torch.argmax(logits, dim=-1).flatten()
         priming_tok = tokenizer.id_to_tok[enc_seq[0, idx].item()]
         predicted_tok = tokenizer.id_to_tok[next_token_ids[0].item()]
 
+        logger.debug(
+            f"Ground truth token: {priming_tok}, resampled token: {predicted_tok}"
+        )
+
         resample = False
-        if isinstance(priming_tok, tuple) and priming_tok[0] == "dur":
+        if isinstance(priming_tok, tuple) and priming_tok[0] == "onset":
+            curr_onset = (num_time_toks_seen * 5000) + priming_tok[1]
+        elif priming_tok == tokenizer.time_tok:
+            num_time_toks_seen += 1
+            curr_onset = num_time_toks_seen * 5000
+        elif isinstance(priming_tok, tuple) and priming_tok[0] == "dur":
+            assert (
+                isinstance(predicted_tok, tuple) and predicted_tok[0] == "dur"
+            )
+
             priming_dur = priming_tok[1]
             predicted_dur = predicted_tok[1]
 
-            if predicted_dur > priming_dur:
+            if (predicted_dur > priming_dur) and (
+                curr_onset + priming_dur > last_offset - LAST_OFFSET_BUFFER_MS
+            ):
                 resample = True
 
         if resample is True:
             logger.info(
-                f"Resampled ground truth {tokenizer.id_to_tok[enc_seq[:, idx].item()]} -> {tokenizer.id_to_tok[next_token_ids[0].item()]}"
+                f"Replaced ground truth for position {idx}: {tokenizer.id_to_tok[enc_seq[:, idx].item()]} -> {tokenizer.id_to_tok[next_token_ids[0].item()]}"
             )
             enc_seq[:, idx] = next_token_ids
+            priming_seq[idx] = predicted_tok
 
-        return enc_seq
+    last_tok_id = enc_seq[0, idx]
+    last_tok = tokenizer.id_to_tok[last_tok_id.item()]
 
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+        next_token_logits = decode_one(
+            model,
+            idxs=torch.tensor([[last_tok_id]]).cuda(),
+            input_pos=torch.tensor([idx], device="cuda", dtype=torch.int),
+        )
 
-# TODO: Clean this up
-# - Replace the log statements with log statements of the normal form in generate for generating tokens
-# - clean up logging
-# - Make sure there is no bugs
+    logger.info(f"Updated KV-Cache by inserting {last_tok} at position {idx}")
+
+    return enc_seq, priming_seq, next_token_logits
 
 
 @torch.autocast("cuda", dtype=DTYPE)
 @torch.inference_mode()
-def decode_first_onset(
+def decode_first_tokens(
     model: TransformerLM,
+    first_token_logits: torch.Tensor,
     enc_seq: torch.Tensor,
     priming_seq: list,
     tokenizer: InferenceAbsTokenizer,
     generated_tokens_queue: queue.Queue,
     first_on_msg_epoch_ms: int,
 ):
-    logger = get_logger("GENERATE-FIRST")
+    logger = get_logger("GENERATE")
+
     BEAM_WIDTH = 5
+    BUFFER_MS = 50
+    TIME_TOK_ID = tokenizer.tok_to_id[tokenizer.time_tok]
+
+    logits = first_token_logits
     time_since_first_onset_ms = get_epoch_time_ms() - first_on_msg_epoch_ms
-    num_time_toks = priming_seq.count(tokenizer.time_tok)
-    time_tok_id = tokenizer.tok_to_id[tokenizer.time_tok]
-    idx = len(priming_seq)
+    idx = len(priming_seq) + 1
 
-    # DEBUG
-    logger.info(f"Priming seq if length {idx}")
-    logger.info(f"MS since start: {time_since_first_onset_ms}")
-    logger.info(f"Number of time_toks in priming seq: {num_time_toks}")
-    # END DEBUG
+    num_time_toks_required = (time_since_first_onset_ms + BUFFER_MS) // 5000
+    num_time_toks_in_priming_seq = priming_seq.count(tokenizer.time_tok)
+    num_time_toks_to_add = num_time_toks_required - num_time_toks_in_priming_seq
 
-    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
-        prev_tok_id = enc_seq[0, idx - 1]
-        logits = decode_one(
-            model,
-            idxs=torch.tensor([[prev_tok_id]]).cuda(),
-            input_pos=torch.tensor([idx - 1], device="cuda", dtype=torch.int),
-        )
-        logger.info(f"Sampled logits for tok at pos {idx}")
-        _, top_ids = torch.topk(logits, k=BEAM_WIDTH, dim=-1)
+    logger.info(f"Time since first onset: {time_since_first_onset_ms}ms")
+
+    while num_time_toks_to_add > 0:
+        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+            generated_tokens_queue.put(tokenizer.time_tok)
+            logits = decode_one(
+                model,
+                idxs=torch.tensor([[TIME_TOK_ID]]).cuda(),
+                input_pos=torch.tensor(
+                    [idx - 1], device="cuda", dtype=torch.int
+                ),
+            )
+
+        logger.info(f"Inserted time_tok at position {idx-1}")
+        num_time_toks_to_add -= 1
+        enc_seq[:, idx - 1] = torch.tensor([[TIME_TOK_ID]]).cuda()
         idx += 1
 
-    num_time_toks_to_add = (
-        (time_since_first_onset_ms + 200) // 5000
-    ) - num_time_toks
-    append_time_toks = (num_time_toks_to_add > 0) or (
-        tokenizer.tok_to_id[tokenizer.time_tok] in top_ids[0].tolist()
+    log_probs = torch.log_softmax(logits, dim=-1)
+    top_log_probs, top_ids = torch.topk(log_probs, k=BEAM_WIDTH, dim=-1)
+
+    if TIME_TOK_ID not in top_ids[0].tolist():
+        top_ids[0, -1] = TIME_TOK_ID
+        top_log_probs[0, -1] = log_probs[0, TIME_TOK_ID] - 1
+
+    top_toks = [tokenizer.id_to_tok[id] for id in top_ids[0].tolist()]
+
+    logger.debug(f"Calculated top {BEAM_WIDTH} tokens={top_toks}")
+    logger.debug(
+        f"Calculated top {BEAM_WIDTH} scores={top_log_probs[0].tolist()}"
     )
 
-    # DEBUG
-    logger.info(
-        f"top_toks = {[tokenizer.id_to_tok[id] for id in top_ids[0].tolist()]}"
-    )
-    logger.info(f"Append time tok: {append_time_toks}")
-    logger.info(f"Num time toks to add: {num_time_toks_to_add}")
-    # END DEBUG
+    masked_onset_ids = [
+        tokenizer.tok_to_id[tok]
+        for tok in tokenizer.onset_tokens
+        if tok[1] < ((time_since_first_onset_ms + BUFFER_MS) % 5000)
+    ]
 
-    if append_time_toks:
-        if num_time_toks_to_add == 0:
-            num_time_toks_to_add += 1
-
-        while num_time_toks_to_add > 0:
-            with torch.nn.attention.sdpa_kernel(
-                torch.nn.attention.SDPBackend.MATH
-            ):
-                enc_seq[:, idx] = torch.tensor([[time_tok_id]]).cuda()
-                generated_tokens_queue.put(tokenizer.time_tok)
-                logits = decode_one(
-                    model,
-                    idxs=torch.tensor([[time_tok_id]]).cuda(),
-                    input_pos=torch.tensor(
-                        [idx - 1], device="cuda", dtype=torch.int
-                    ),
-                )
-            logger.info(
-                f"Sampled logits for tok at pos {idx} by adding time_tok"
-            )
-            num_time_toks_to_add -= 1
-            idx += 1
-
-    # BEAM SEARCH
-    probs = torch.softmax(logits, dim=-1)
-    top_probs, top_ids = torch.topk(probs, k=BEAM_WIDTH, dim=-1)
-
-    # DEBUG
-    logger.info(
-        f"top_toks = {[tokenizer.id_to_tok[id] for id in top_ids[0].tolist()]}"
-    )
-    logger.info(f"top_probs = {top_probs}")
-    # END DEBUG
-
-    if append_time_toks is False:
-        masked_onset_ids = [
-            tokenizer.tok_to_id[tok]
-            for tok in tokenizer.onset_tokens
-            if tok[1] < (time_since_first_onset_ms % 5000)
-        ]
-    else:
-        masked_onset_ids = []
-
-    logger.info(
-        f"Masking onsets for {len(masked_onset_ids)} tokens ({time_since_first_onset_ms})"
+    logger.debug(
+        f"Masking onsets for {len(masked_onset_ids)} tokens ({time_since_first_onset_ms + BUFFER_MS})"
     )
 
-    best_score = 0
+    best_score = float("-inf")
     for i in range(BEAM_WIDTH):
+        tok = top_toks[i]
         tok_id = top_ids[0, i].item()
-        tok_prob = top_probs[0, i]
-        assert tok_id != tokenizer.tok_to_id[tokenizer.time_tok]
+        tok_log_prob = top_log_probs[0, i]
 
         with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
             next_logits = decode_one(
@@ -352,113 +320,86 @@ def decode_first_onset(
                     [idx - 1], device="cuda", dtype=torch.int
                 ),
             )
-            logger.info(
-                f"Sampled logits for tok at pos {idx} by adding {tokenizer.id_to_tok[tok_id]}"
+            logger.debug(
+                f"Sampled logits for positions {idx} by inserting {tok} at position {idx-1}"
             )
 
-        next_probs = torch.softmax(next_logits, dim=-1)
-        next_probs[:, masked_onset_ids] = 0
-        next_tok_prob, next_tok_id = torch.max(next_probs, dim=-1)
+        next_log_probs = torch.log_softmax(next_logits, dim=-1)
+        next_log_probs[:, masked_onset_ids] = float("-inf")
+        next_tok_log_prob, next_tok_id = torch.max(next_log_probs, dim=-1)
+        next_tok = tokenizer.id_to_tok[next_tok_id.item()]
+        score = tok_log_prob + next_tok_log_prob
 
         logger.info(
-            f"Sampled {tokenizer.id_to_tok[next_tok_id[0].item()]} with p={next_tok_prob}"
+            f"Calculated tuple {(tok, next_tok)} with scores {(tok_log_prob.item(), next_tok_log_prob.item())} (combined={score.item()})"
         )
 
-        score = (tok_prob * next_tok_prob).item()
         if score > best_score:
-            tok_id_1, tok_id_2 = tok_id, next_tok_id.item()
+            best_tok_id_1, best_tok_id_2 = tok_id, next_tok_id.item()
+            best_tok_1, best_tok_2 = (
+                tokenizer.id_to_tok[best_tok_id_1],
+                tokenizer.id_to_tok[best_tok_id_2],
+            )
             best_score = score
 
-        logger.info(f"Score={score}")
+    logger.info(
+        f"Chose tuple {(best_tok_1, best_tok_2)} with score {best_score.item()}"
+    )
+
+    enc_seq[:, idx - 1] = best_tok_id_1
+    enc_seq[:, idx] = best_tok_id_2
+    generated_tokens_queue.put(tokenizer.id_to_tok[best_tok_id_1])
+    generated_tokens_queue.put(tokenizer.id_to_tok[best_tok_id_2])
+
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+        decode_one(
+            model,
+            idxs=torch.tensor([[best_tok_id_1]]).cuda(),
+            input_pos=torch.tensor([idx - 1], device="cuda", dtype=torch.int),
+        )
 
     logger.info(
-        f"Filling in kv at position {idx-1} with {tokenizer.id_to_tok[tok_id_1]} "
+        f"Updated KV-Cache by re-inserting {best_tok_1} at position {idx-1}"
     )
-
-    decode_one(
-        model,
-        idxs=torch.tensor([[tok_id_1]]).cuda(),
-        input_pos=torch.tensor([idx - 1], device="cuda", dtype=torch.int),
-    )
-
     logger.info(
-        f"Selecting {tokenizer.id_to_tok[tok_id_1], tokenizer.id_to_tok[tok_id_2]}"
+        f"Inserted {best_tok_2} at position {idx} without updating KV-Cache"
     )
-
-    enc_seq[:, idx - 1] = tok_id_1
-    enc_seq[:, idx] = tok_id_2
-    generated_tokens_queue.put(tokenizer.id_to_tok[tok_id_1])
-    generated_tokens_queue.put(tokenizer.id_to_tok[tok_id_2])
 
     return enc_seq, idx + 1
 
 
-# TODO: Support CFG, guidance, and metadata tags
-# TODO: Context length switching
-# TODO: Get the model to predict durations of notes trucated by
-@torch.autocast("cuda", dtype=DTYPE)
-@torch.inference_mode()
-def generate_tokens(
-    priming_seq: list,
-    tokenizer: InferenceAbsTokenizer,
+def decode_tokens(
     model: TransformerLM,
+    enc_seq: torch.Tensor,
+    tokenizer: InferenceAbsTokenizer,
     control_sentinel: threading.Event,
     generated_tokens_queue: queue.Queue,
-    num_preceding_active_pitches: int,
-    first_on_msg_epoch_ms: int,
-    temperature: float = 0.95,
-    top_p: float = 0.95,
-    # cfg_gamma: float | None = None,
+    idx: int,
+    temperature: float,
+    top_p: float,
 ):
     logger = get_logger("GENERATE")
     logger.info(
         f"Using sampling parameters: temperature={temperature}, top_p={top_p}"
     )
 
-    priming_seq_len = len(priming_seq)
-    enc_seq = torch.tensor(
-        [
-            tokenizer.encode(
-                priming_seq
-                + [tokenizer.pad_tok] * (MAX_SEQ_LEN - len(priming_seq))
-            )
-        ],
-        device="cuda",
-    )
-    logger.debug(priming_seq)
-    logger.info(f"Priming sequence length: {priming_seq_len}")
-
-    prefill_start_s = time.time()
-    prefill(
-        model,
-        idxs=enc_seq[:, :priming_seq_len],
-        input_pos=torch.arange(0, priming_seq_len, device="cuda"),
-    )
-    logger.info(
-        f"Prefill took {(time.time() - prefill_start_s) * 1000:.2f} milliseconds"
-    )
-
-    # TODO: Still not 100% sure that decode_first_onset is completely correct
-    enc_seq, idx = decode_first_onset(
-        model=model,
-        enc_seq=enc_seq,
-        priming_seq=priming_seq,
-        tokenizer=tokenizer,
-        generated_tokens_queue=generated_tokens_queue,
-        first_on_msg_epoch_ms=first_on_msg_epoch_ms,
-    )
-
-    logger.info(f"Starting from idx={idx}")
     while (not control_sentinel.is_set()) and idx < MAX_SEQ_LEN:
         decode_one_start_time_s = time.time()
+
         with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
             prev_tok_id = enc_seq[0, idx - 1]
+            prev_tok = tokenizer.id_to_tok[prev_tok_id.item()]
+
             logits = decode_one(
                 model,
                 idxs=torch.tensor([[prev_tok_id]]).cuda(),
                 input_pos=torch.tensor(
                     [idx - 1], device="cuda", dtype=torch.int
                 ),
+            )
+
+            logger.debug(
+                f"Sampled logits for positions {idx} by inserting {prev_tok} at position {idx-1}"
             )
 
         logits[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
@@ -473,38 +414,109 @@ def generate_tokens(
         else:
             next_token_ids = torch.argmax(logits, dim=-1).flatten()
 
-        # NOTE: This logic controls re-sampling of potentially truncated notes
-        # (durations) due to control-signal interruption in capture_midi_input
-        if idx < priming_seq_len:
-            priming_tok = tokenizer.id_to_tok[enc_seq[0, idx].item()]
-            predicted_tok = tokenizer.id_to_tok[next_token_ids[0].item()]
-
-            resample = False
-            if isinstance(priming_tok, tuple) and priming_tok[0] == "dur":
-                priming_dur = priming_tok[1]
-                predicted_dur = predicted_tok[1]
-
-                if predicted_dur > priming_dur:
-                    resample = True
-
-            if resample is True:
-                logger.info(
-                    f"Resampled ground truth {tokenizer.id_to_tok[enc_seq[:, idx].item()]} -> {tokenizer.id_to_tok[next_token_ids[0].item()]}"
-                )
-            else:
-                next_token_ids = enc_seq[:, idx]
-
         enc_seq[:, idx] = next_token_ids
         next_token = tokenizer.id_to_tok[next_token_ids[0].item()]
         logger.info(
             f"({(time.time() - decode_one_start_time_s)*1000:.2f}ms) {idx}: {next_token}"
         )
 
-        # To account for re-sampling
-        if idx >= priming_seq_len:
-            generated_tokens_queue.put(next_token)
-
+        generated_tokens_queue.put(next_token)
         idx += 1
+
+    logger.info("Seen exit signal")
+    generated_tokens_queue.put(None)
+
+
+# TODO: Support CFG, guidance, and metadata tags
+# TODO: Context length switching
+# TODO: BUG: I'm still not 100% sure that the KV is being calculated correctly
+# TODO: BUG: Potentially a bug with dim_toks ect... being removed during kv-preprocessing
+@torch.autocast("cuda", dtype=DTYPE)
+@torch.inference_mode()
+def generate_tokens(
+    priming_seq: list,
+    tokenizer: InferenceAbsTokenizer,
+    model: TransformerLM,
+    control_sentinel: threading.Event,
+    generated_tokens_queue: queue.Queue,
+    num_preceding_active_pitches: int,
+    first_on_msg_epoch_ms: int,
+    temperature: float = 0.95,
+    top_p: float = 0.95,
+):
+    logger = get_logger("GENERATE")
+
+    generate_start_s = time.time()
+    priming_seq_len = len(priming_seq)
+    start_idx = max(2, priming_seq_len - 4 * num_preceding_active_pitches)
+    enc_seq = torch.tensor(
+        [
+            tokenizer.encode(
+                priming_seq
+                + [tokenizer.pad_tok] * (MAX_SEQ_LEN - len(priming_seq))
+            )
+        ],
+        device="cuda",
+    )
+
+    logger.debug(f"Priming sequence {priming_seq}")
+    logger.info(f"Priming sequence length: {priming_seq_len}")
+    logger.info(f"Prefilling up to (and including) position: {start_idx-2}")
+
+    # In theory we could reuse the logits from prefill
+    prefill_start_s = time.time()
+    prefill(
+        model,
+        idxs=enc_seq[:, : start_idx - 1],
+        input_pos=torch.arange(0, start_idx - 1, device="cuda"),
+    )
+
+    logger.info(
+        f"Prefill took {(time.time() - prefill_start_s) * 1000:.2f} milliseconds"
+    )
+    logger.info(f"Starting duration recalculation from: {start_idx}")
+
+    recalculate_dur_start_s = time.time()
+    enc_seq, priming_seq, next_token_logits = recalculate_dur_tokens(
+        model=model,
+        priming_seq=priming_seq,
+        enc_seq=enc_seq,
+        tokenizer=tokenizer,
+        start_idx=start_idx,
+    )
+
+    logger.info(
+        f"Recalculating durations took {(time.time() - recalculate_dur_start_s) * 1000:.2f} milliseconds"
+    )
+
+    decode_first_s = time.time()
+    enc_seq, idx = decode_first_tokens(
+        model=model,
+        first_token_logits=next_token_logits,
+        enc_seq=enc_seq,
+        priming_seq=priming_seq,
+        tokenizer=tokenizer,
+        generated_tokens_queue=generated_tokens_queue,
+        first_on_msg_epoch_ms=first_on_msg_epoch_ms,
+    )
+
+    logger.info(
+        f"Decode first two tokens took {(time.time() - decode_first_s) * 1000:.2f} milliseconds"
+    )
+    logger.info(
+        f"Time to first token took {(time.time() - generate_start_s) * 1000:.2f} milliseconds"
+    )
+
+    decode_tokens(
+        model=model,
+        enc_seq=enc_seq,
+        tokenizer=tokenizer,
+        control_sentinel=control_sentinel,
+        generated_tokens_queue=generated_tokens_queue,
+        idx=idx,
+        temperature=temperature,
+        top_p=top_p,
+    )
 
 
 def decode_tokens_to_midi(
@@ -521,22 +533,30 @@ def decode_tokens_to_midi(
         first_on_msg_epoch_ms + priming_seq_last_onset_ms < get_epoch_time_ms()
     )
 
-    logger.info(f"first_on_msg_epoch_ms: {first_on_msg_epoch_ms}")
-    logger.info(f"priming_seq_last_onset_ms: {priming_seq_last_onset_ms}")
+    logger.info(f"Priming sequence last onset: {priming_seq_last_onset_ms}")
+    logger.info(
+        f"Total time elapsed since first onset: {get_epoch_time_ms() - first_on_msg_epoch_ms}"
+    )
 
     note_buffer = []
     num_time_toks = priming_seq_last_onset_ms // 5000
 
-    while not control_sentinel.is_set():
+    while True:
         while True:
             tok = generated_tokens_queue.get()
-            logger.info(f"Seen token: {tok}")
+            if tok is None:
+                # This is triggered iff control sentinel is set a second time
+                logger.info("Seen exit signal")
+                midi_messages_queue.put(None)
+                return
+
+            logger.debug(f"Seen token: {tok}")
             note_buffer.append(tok)
             if isinstance(tok, tuple) and tok[0] == "dur":
                 break
 
         while note_buffer and note_buffer[0] == tokenizer.time_tok:
-            logger.info("Popping time_tok")
+            logger.debug("Popping time_tok")
             num_time_toks += 1
             note_buffer.pop(0)
 
@@ -565,8 +585,8 @@ def decode_tokens_to_midi(
 
         midi_messages_queue.put(on_msg)
         midi_messages_queue.put(off_msg)
-        logger.info(f"Put message: {on_msg}")
-        logger.info(f"Put message: {off_msg}")
+        logger.debug(f"Put message: {on_msg}")
+        logger.debug(f"Put message: {off_msg}")
         logger.info(f"Ahead by {onset_epoch_ms - get_epoch_time_ms()}ms")
 
         note_buffer = []
@@ -588,14 +608,13 @@ def stream_midi(
 
     with mido.open_output(midi_output_port) as midi_out:
         while not control_sentinel.is_set():
-
             while True:
                 try:
                     msg = midi_messages_queue.get_nowait()
                 except queue.Empty:
                     break
                 else:
-                    # logger.info(f"Got message: {msg}")
+                    logger.debug(f"Received message: {msg}")
                     midi_messages.append(msg)
 
             midi_messages = sorted(
@@ -633,23 +652,22 @@ def stream_midi(
                         mido_msg_with_time.time = max(
                             0, msg["epoch_time_ms"] - prev_msg_epoch_time_ms
                         )
-                        prev_msg_epoch_time_ms = curr_epoch_time_ms
+                        prev_msg_epoch_time_ms = msg["epoch_time_ms"]
 
                         midi_out.send(mido_msg)
                         msgs.append(mido_msg_with_time)
-                        logger.info(
-                            f"(D={msg['epoch_time_ms'] - curr_epoch_time_ms}) Sent message: {msg}"
-                        )
+                        logger.info(mido_msg_with_time)
+                        logger.info(f"Sent message: {msg}")
                     else:
                         logger.info(
-                            f"(D={msg['epoch_time_ms'] - curr_epoch_time_ms}) Skipping note_off message due to uuid mismatch: {msg}"
+                            f"Skipping note_off message due to uuid mismatch: {msg}"
                         )
                     midi_messages.pop(0)
 
                 elif curr_epoch_time_ms - msg["epoch_time_ms"] > 100:
                     # Message occurs too far in the past
                     logger.info(
-                        f"(D={msg["epoch_time_ms"] - curr_epoch_time_ms}) Skipping message occurring too far in the past: {msg}"
+                        f"Skipping message occurring too far ({curr_epoch_time_ms - msg["epoch_time_ms"]}ms) in the past: {msg}"
                     )
                     midi_messages.pop(0)
                 else:
@@ -658,48 +676,32 @@ def stream_midi(
 
             time.sleep(0.005)
 
-        # Control sentinel seen
-        while True:
-            try:
-                msg = midi_messages_queue.get_nowait()
-            except queue.Empty:
-                break
-            else:
-                midi_messages.append(msg)
+        logger.info("Processing remaining note_off messages")
 
-        midi_messages = sorted(
-            midi_messages,
-            key=lambda msg: (msg["epoch_time_ms"], msg["vel"]),
-        )
+        remaining_note_off_messages = [
+            msg
+            for msg in midi_messages
+            if msg["vel"] == 0
+            and last_pitch_uuid.get(msg["pitch"]) == msg["uuid"]
+        ]
 
-        # # Turn off active pitches straight away
-        # for msg in midi_messages:
-        #     if msg["vel"] == 0 and msg["pitch"] in active_pitches:
-        #         mido_msg = mido.Message(
-        #             "note_on",
-        #             note=msg["pitch"],
-        #             velocity=0,
-        #             channel=0,
-        #             time=0,
-        #         )
+        while remaining_note_off_messages:
+            msg = remaining_note_off_messages.pop(0)
+            mido_msg = mido.Message(
+                "note_on",
+                note=msg["pitch"],
+                velocity=0,
+                channel=0,
+                time=msg["epoch_time_ms"] - prev_msg_epoch_time_ms,
+            )
+            prev_msg_epoch_time_ms = msg["epoch_time_ms"]
+            midi_out.send(mido_msg)
+            logger.info(f"Sent message: {msg}")
+            msgs.append(mido_msg)
 
-        #         curr_epoch_time_ms = round(time.time() * 1000)
-        #         mido_msg_with_time = copy.deepcopy(mido_msg)
-        #         mido_msg_with_time.time = max(
-        #             0, curr_epoch_time_ms - prev_msg_epoch_time_ms
-        #         )
-
-        #         midi_out.send(mido_msg)
-        #         msgs.append(mido_msg_with_time)
-        #         logger.info(f"Sent message: {mido_msg}")
-        #         prev_msg_epoch_time_ms = curr_epoch_time_ms
-        #         active_pitches.remove(msg["pitch"])
-
-        return msgs
+    return msgs
 
 
-# TODO: Control sentinel needs to terminate generate and midi_msgs_queue
-# It also needs to keep sending the note_off msgs, if and only if they are on time
 def stream_msgs(
     model: TransformerLM,
     tokenizer: InferenceAbsTokenizer,
@@ -778,6 +780,8 @@ def stream_msgs(
     generate_tokens_thread.join()
     decode_tokens_to_midi_thread.join()
 
+    return msgs
+
 
 def convert_msgs_to_midi(msgs: list[mido.Message]):
     track = mido.MidiTrack()
@@ -820,12 +824,13 @@ def capture_midi_input(
 
         while not control_sentinel.is_set():
             msg = midi_input.receive(block=False)
-            # DEBUG REMEMBER TO REMOVE
+
             # if (
             #     first_on_msg_epoch_ms is not None
-            #     and get_epoch_time_ms() - first_on_msg_epoch_ms > 14100
+            #     and get_epoch_time_ms() - first_on_msg_epoch_ms > 14300
             # ):
             #     control_sentinel.set()
+
             if msg is None:
                 time.sleep(0.001)
                 continue
@@ -838,7 +843,7 @@ def capture_midi_input(
             prev_msg_epoch_time_ms = get_epoch_time_ms()
             msg.time = msg_time_ms
             msg.channel = 0
-            logger.info(f"{msg}")
+            logger.info(f"Received message: [{msg}]")
 
             if msg.is_meta is True or msg.type == "program_change":
                 continue
@@ -878,7 +883,7 @@ def capture_midi_input(
                 note=pitch,
                 velocity=0,
                 channel=0,
-                time=msg_time_ms,
+                time=get_epoch_time_ms() - prev_msg_epoch_time_ms,
             )
             received_messages.append(msg)
             if midi_through is not None:
@@ -911,7 +916,7 @@ def capture_midi_input(
         # Workaround for the way that file-playback is implemented - delete
         msg = mido.Message(
             type="control_change",
-            control=66,
+            control=midi_control_signal,
             value=0,
             channel=0,
             time=0,
@@ -935,10 +940,10 @@ def play_midi_file(midi_port: str, midi_path: str):
 def listen_for_control_signal_keypress(control_sentinel: threading.Event):
     logger = get_logger("KEYBOARD")
     for _ in range(2):
+        time.sleep(1)
         input()
         logger.info("Keypress seen")
         control_sentinel.set()
-        time.sleep(5)
 
 
 def parse_args():
@@ -1003,12 +1008,19 @@ def parse_args():
         type=int,
         required=False,
     )
+    argp.add_argument(
+        "-save_path",
+        type=str,
+        required=False,
+        help="Path to save complete MIDI file",
+    )
 
     return argp.parse_args()
 
 
 def main():
     args = parse_args()
+    logger = get_logger()
     tokenizer = InferenceAbsTokenizer()
     model = load_model(checkpoint_path=args.cp)
     model = compile_model(model=model, max_seq_len=MAX_SEQ_LEN)
@@ -1024,9 +1036,6 @@ def main():
         play_file_thread.start()
     else:
         midi_input_port = args.midi_in
-
-    # TODO: All of the below logic should be in a loop with additional handling
-    # for the control sentinel
 
     control_sentinel = threading.Event()
     keypress_thread = threading.Thread(
@@ -1044,7 +1053,7 @@ def main():
     )
 
     control_sentinel.clear()
-    stream_msgs(
+    msgs = stream_msgs(
         model=model,
         tokenizer=tokenizer,
         msgs=msgs,
@@ -1056,6 +1065,11 @@ def main():
         num_preceding_active_pitches=num_active_pitches,
     )
     keypress_thread.join()
+
+    if args.save_path:
+        logger.info(f"Saving result to {args.save_path}")
+        midi = convert_msgs_to_midi(msgs=msgs)
+        midi.save(args.save_path)
 
 
 if __name__ == "__main__":
