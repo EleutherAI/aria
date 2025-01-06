@@ -7,6 +7,7 @@ import sys
 import os
 import argparse
 
+SSH_SERVER = "home-4090.remote"
 def parse_arguments():
     parser = argparse.ArgumentParser(description='MIDI UDP bridge with SSH tunnel')
     parser.add_argument('-p', '--port', type=int, default=5004,
@@ -15,12 +16,12 @@ def parse_arguments():
 
 def kill_existing_process(port):
     # Check and kill existing process on remote server
-    check_command = f"ssh home-4090 'lsof -ti :{port}'"
+    check_command = f"ssh {SSH_SERVER} 'lsof -ti :{port}'"
     try:
         pid = subprocess.check_output(check_command, shell=True).decode().strip()
         if pid:
             print(f"Found existing process {pid} on port {port}, killing it...")
-            kill_command = f"ssh home-4090 'kill -9 {pid}'"
+            kill_command = f"ssh {SSH_SERVER} 'kill -9 {pid}'"
             subprocess.run(kill_command, shell=True)
             # Wait a moment for the port to be freed
             time.sleep(1)
@@ -29,19 +30,31 @@ def kill_existing_process(port):
         pass
 
 def setup_ssh_tunnel(port):
-    # Kill any existing process first
-    kill_existing_process(port)
-    
-    # Start SSH tunnel using socat
-    ssh_command = f"ssh home-4090 'socat -u UDP4-RECV:{port} STDOUT'"
-    local_socat = f"socat -u STDIN UDP4-SEND:localhost:{port}"
-    
-    ssh_process = subprocess.Popen(ssh_command, shell=True, stdout=subprocess.PIPE)
-    socat_process = subprocess.Popen(local_socat, shell=True, stdin=ssh_process.stdout)
-    
-    # Give the tunnel a moment to establish
-    time.sleep(1)
-    return ssh_process, socat_process
+    while True:
+        try:
+            # Kill any existing process first
+            kill_existing_process(port)
+
+            # Start SSH tunnel using socat
+            print(f"Attempting to establish SSH tunnel on port {port}...")
+            ssh_command = f"ssh {SSH_SERVER} 'socat -u UDP4-RECV:{port} STDOUT'"
+            local_socat = f"socat -u STDIN UDP4-SEND:localhost:{port}"
+
+            ssh_process = subprocess.Popen(ssh_command, shell=True, stdout=subprocess.PIPE)
+            socat_process = subprocess.Popen(local_socat, shell=True, stdin=ssh_process.stdout)
+
+            # Check if the processes started successfully
+            time.sleep(1)
+            if ssh_process.poll() is not None:  # Process terminated
+                raise subprocess.CalledProcessError(ssh_process.returncode, ssh_command)
+            
+            print("SSH tunnel established successfully!")
+            return ssh_process, socat_process
+
+        except (subprocess.CalledProcessError, OSError) as e:
+            print(f"Failed to establish SSH tunnel: {str(e)}")
+            print("Retrying in 1 second...")
+            time.sleep(1)
 
 def create_virtual_port(port):
     midi_out = rtmidi.MidiOut()
@@ -91,25 +104,25 @@ def cleanup(ssh_process, socat_process, midi_out, sock):
 def main():
     args = parse_arguments()
     port = args.port
-    
+
     ssh_process = None
     socat_process = None
     midi_out = None
     sock = None
-    
+
     try:
         # Setup SSH tunnel first
         print(f"Setting up SSH tunnel on port {port}...")
         ssh_process, socat_process = setup_ssh_tunnel(port)
-        
+
         # Setup MIDI and UDP
         print(f"Creating virtual MIDI port UDP_{port}...")
         midi_out = create_virtual_port(port)
         print(f"Starting UDP listener on port {port}...")
         sock = start_udp_listener(port)
-        
+
         print(f"UDP MIDI Bridge started - listening on port {port}")
-        
+
         while True:
             data, addr = sock.recvfrom(1024)
             if data:
@@ -118,7 +131,7 @@ def main():
                 for midi_message in midi_messages:
                     print(f"Sending MIDI message: {midi_message}")
                     midi_out.send_message(midi_message)
-                
+
     except KeyboardInterrupt:
         print("\nShutting down UDP MIDI Bridge...")
     except Exception as e:
