@@ -255,6 +255,7 @@ def decode_first_tokens(
     BEAM_WIDTH = 5
     BUFFER_MS = 50
     TIME_TOK_ID = tokenizer.tok_to_id[tokenizer.time_tok]
+    TIME_TOK_WEIGHTING = -3
 
     logits = first_token_logits
     time_since_first_onset_ms = get_epoch_time_ms() - first_on_msg_epoch_ms
@@ -282,12 +283,16 @@ def decode_first_tokens(
         enc_seq[:, idx - 1] = torch.tensor([[TIME_TOK_ID]]).cuda()
         idx += 1
 
+    logits[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
+    logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
+    logits[:, tokenizer.tok_to_id[tokenizer.prompt_start_tok]] = float("-inf")
+
     log_probs = torch.log_softmax(logits, dim=-1)
     top_log_probs, top_ids = torch.topk(log_probs, k=BEAM_WIDTH, dim=-1)
 
     if TIME_TOK_ID not in top_ids[0].tolist():
         top_ids[0, -1] = TIME_TOK_ID
-        top_log_probs[0, -1] = log_probs[0, TIME_TOK_ID] - 1
+        top_log_probs[0, -1] = log_probs[0, TIME_TOK_ID] + TIME_TOK_WEIGHTING
 
     top_toks = [tokenizer.id_to_tok[id] for id in top_ids[0].tolist()]
 
@@ -326,6 +331,9 @@ def decode_first_tokens(
 
         next_log_probs = torch.log_softmax(next_logits, dim=-1)
         next_log_probs[:, masked_onset_ids] = float("-inf")
+        if tok_id == TIME_TOK_ID:
+            next_log_probs[:, TIME_TOK_ID] = float("-inf")
+
         next_tok_log_prob, next_tok_id = torch.max(next_log_probs, dim=-1)
         next_tok = tokenizer.id_to_tok[next_tok_id.item()]
         score = tok_log_prob + next_tok_log_prob
@@ -422,6 +430,9 @@ def decode_tokens(
 
         generated_tokens_queue.put(next_token)
         idx += 1
+
+    while not control_sentinel.is_set():
+        time.sleep(0.1)
 
     logger.info("Seen exit signal")
     generated_tokens_queue.put(None)
@@ -525,7 +536,6 @@ def decode_tokens_to_midi(
     tokenizer: InferenceAbsTokenizer,
     first_on_msg_epoch_ms: int,
     priming_seq_last_onset_ms: int,
-    control_sentinel: threading.Event,
 ):
     logger = get_logger("DECODE")
 
@@ -616,6 +626,9 @@ def stream_midi(
                 else:
                     logger.debug(f"Received message: {msg}")
                     midi_messages.append(msg)
+
+            if control_sentinel.is_set():
+                break
 
             midi_messages = sorted(
                 midi_messages,
@@ -712,18 +725,23 @@ def stream_msgs(
     temperature: float,
     top_p: float,
     num_preceding_active_pitches: int,
+    guidance_midi_dict: MidiDict | None = None,
+    guidance_start_ms: int | None = None,
+    guidance_end_ms: int | None = None,
 ):
     midi = convert_msgs_to_midi(msgs=msgs)
     midi_dict = MidiDict(**midi_to_dict(midi))
     priming_seq = tokenizer.tokenize(
         midi_dict=midi_dict,
         # prompt_intervals_ms=[
-        #     (0, round(time.time() * 1000) - first_on_msg_epoch_ms)
+        #     (0, (get_epoch_time_ms() - 5000) - first_on_msg_epoch_ms)
         # ],
         prompt_intervals_ms=[],
+        guidance_midi_dict=guidance_midi_dict,
+        guidance_start_ms=guidance_start_ms,
+        guidance_end_ms=guidance_end_ms,
     )
     priming_seq = priming_seq[: priming_seq.index(tokenizer.eos_tok)]
-    # priming_seq = priming_seq[: priming_seq.index(tokenizer.prompt_end_tok) + 1]
 
     if tokenizer.dim_tok in priming_seq:
         priming_seq.remove(tokenizer.dim_tok)
@@ -759,7 +777,6 @@ def stream_msgs(
                 priming_seq[priming_seq.index(tokenizer.bos_tok) :],
                 onset=True,
             ),
-            "control_sentinel": control_sentinel,
         },
         daemon=True,
     )
@@ -824,12 +841,6 @@ def capture_midi_input(
 
         while not control_sentinel.is_set():
             msg = midi_input.receive(block=False)
-
-            # if (
-            #     first_on_msg_epoch_ms is not None
-            #     and get_epoch_time_ms() - first_on_msg_epoch_ms > 14300
-            # ):
-            #     control_sentinel.set()
 
             if msg is None:
                 time.sleep(0.001)
@@ -1025,6 +1036,25 @@ def main():
     model = load_model(checkpoint_path=args.cp)
     model = compile_model(model=model, max_seq_len=MAX_SEQ_LEN)
 
+    if args.guidance_path:
+        assert (
+            args.guidance_start_ms is not None and args.guidance_start_ms >= 0
+        )
+        assert args.guidance_end_ms is not None and args.guidance_end_ms >= 0
+        assert (
+            tokenizer._config["guidance"]["min_ms"]
+            <= args.guidance_end_ms - args.guidance_start_ms
+            <= tokenizer._config["guidance"]["max_ms"]
+        )
+        guidance_midi_dict = MidiDict.from_midi(args.guidance_path)
+
+        logger.info(
+            f"Using guidance from {args.guidance_path} in interval {[args.guidance_start_ms, args.guidance_end_ms]}"
+        )
+
+    else:
+        guidance_midi_dict = None
+
     assert (args.midi_path and os.path.isfile(args.midi_path)) or args.midi_in
     if args.midi_path:
         midi_input_port = "Midi Through:Midi Through Port-0"
@@ -1063,6 +1093,9 @@ def main():
         temperature=args.temp,
         top_p=args.top_p,
         num_preceding_active_pitches=num_active_pitches,
+        guidance_midi_dict=guidance_midi_dict,
+        guidance_start_ms=args.guidance_start_ms,
+        guidance_end_ms=args.guidance_end_ms,
     )
     keypress_thread.join()
 
