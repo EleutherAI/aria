@@ -27,9 +27,11 @@ from aria.sample import prefill, decode_one, sample_top_p
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True
+# torch.set_float32_matmul_precision("high")
 
 DTYPE = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 MAX_SEQ_LEN = 8192
+PREFILL_COMPILE_SEQ_LEN = 1024
 
 # TODO:
 # - Add CFG support
@@ -74,6 +76,106 @@ def get_epoch_time_ms() -> int:
     return round(time.time() * 1000)
 
 
+def compiled_prefill(
+    model: TransformerLM,
+    enc_seq: torch.Tensor,
+):
+    return prefill(
+        model=model,
+        idxs=enc_seq[:, :PREFILL_COMPILE_SEQ_LEN],
+        input_pos=torch.arange(0, PREFILL_COMPILE_SEQ_LEN, device="cuda"),
+    )
+
+
+def _compile_prefill(
+    model: TransformerLM,
+    logger: logging.Logger,
+):
+    global compiled_prefill
+    compiled_prefill = torch.compile(
+        compiled_prefill,
+        mode="reduce-overhead",
+        fullgraph=True,
+    )
+
+    start_compile_time_s = time.time()
+    logger.info(f"Compiling prefill")
+    compiled_prefill(
+        model, enc_seq=torch.ones(1, 8192, device="cuda", dtype=torch.int)
+    )
+    print
+    logger.info(
+        f"Finished compiling - took {time.time() - start_compile_time_s:.4f} seconds"
+    )
+
+    for _ in range(5):
+        compiled_prefill(
+            model,
+            enc_seq=torch.ones(1, 8192, device="cuda", dtype=torch.int),
+        )
+
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    start_event.record()
+    compiled_prefill(
+        model, enc_seq=torch.ones(1, 8192, device="cuda", dtype=torch.int)
+    )
+    end_event.record()
+    end_event.synchronize()
+    compiled_prefill_ms = start_event.elapsed_time(end_event)
+    logger.info(f"Compiled prefill benchmark: {compiled_prefill_ms:.2f}ms")
+
+    return model
+
+
+def _compile_decode_one(model: TransformerLM, logger: logging.Logger):
+    global decode_one
+    decode_one = torch.compile(
+        decode_one,
+        mode="reduce-overhead",
+        fullgraph=True,
+    )
+
+    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+        start_compile_time_s = time.time()
+        logger.info(f"Compiling forward pass")
+        decode_one(
+            model,
+            idxs=torch.tensor([[0]], device="cuda", dtype=torch.int),
+            input_pos=torch.tensor([0], device="cuda", dtype=torch.int),
+        )
+        logger.info(
+            f"Finished compiling - took {time.time() - start_compile_time_s:.4f} seconds"
+        )
+
+        for _ in range(5):
+            decode_one(
+                model,
+                idxs=torch.tensor([[0]], device="cuda", dtype=torch.int).cuda(),
+                input_pos=torch.tensor([0], device="cuda", dtype=torch.int),
+            )
+
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        start_event.record()
+        decode_one(
+            model,
+            idxs=torch.tensor([[0]], device="cuda", dtype=torch.int).cuda(),
+            input_pos=torch.tensor([0], device="cuda", dtype=torch.int),
+        )
+        end_event.record()
+        end_event.synchronize()
+
+        compiled_forward_ms = start_event.elapsed_time(end_event)
+        compiled_forward_its = 1000 / compiled_forward_ms
+        logger.info(
+            f"Compiled forward pass benchmark: {compiled_forward_ms:.2f} ms/it ({compiled_forward_its:.2f} it/s)"
+        )
+
+        return model
+
+
 @torch.autocast("cuda", dtype=DTYPE)
 @torch.inference_mode()
 def compile_model(model: TransformerLM, max_seq_len: int):
@@ -87,43 +189,8 @@ def compile_model(model: TransformerLM, max_seq_len: int):
         dtype=DTYPE,
     )
 
-    global decode_one
-    decode_one = torch.compile(
-        decode_one,
-        mode="reduce-overhead",
-        fullgraph=True,
-    )
-
-    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
-        start_compile_time_s = time.time()
-        logger.info(f"Compiling forward pass")
-        decode_one(
-            model,
-            idxs=torch.tensor([[0]]).cuda(),
-            input_pos=torch.tensor([0], device="cuda", dtype=torch.int),
-        )
-        logger.info(
-            f"Finished compiling - took {time.time() - start_compile_time_s:.4f} seconds"
-        )
-
-        for _ in range(100):
-            decode_one(
-                model,
-                idxs=torch.tensor([[0]]).cuda(),
-                input_pos=torch.tensor([0], device="cuda", dtype=torch.int),
-            )
-
-        compiled_forward_start_s = time.time()
-        decode_one(
-            model,
-            idxs=torch.tensor([[0]]).cuda(),
-            input_pos=torch.tensor([0], device="cuda", dtype=torch.int),
-        )
-        compiled_forward_ms = (time.time() - compiled_forward_start_s) * 1000
-        compiled_forward_its = 1000 / compiled_forward_ms
-        logger.info(
-            f"Compiled forward pass benchmark: {compiled_forward_ms:.2f} ms/it ({compiled_forward_its:.2f} it/s)"
-        )
+    model = _compile_decode_one(model=model, logger=logger)
+    model = _compile_prefill(model=model, logger=logger)
 
     return model
 
@@ -181,7 +248,9 @@ def recalculate_dur_tokens(
             prev_tok = tokenizer.id_to_tok[prev_tok_id.item()]
             logits = decode_one(
                 model,
-                idxs=torch.tensor([[prev_tok_id]]).cuda(),
+                idxs=torch.tensor(
+                    [[prev_tok_id]], device="cuda", dtype=torch.int
+                ),
                 input_pos=torch.tensor(
                     [idx - 1], device="cuda", dtype=torch.int
                 ),
@@ -230,7 +299,7 @@ def recalculate_dur_tokens(
     with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
         next_token_logits = decode_one(
             model,
-            idxs=torch.tensor([[last_tok_id]]).cuda(),
+            idxs=torch.tensor([[last_tok_id]], device="cuda", dtype=torch.int),
             input_pos=torch.tensor([idx], device="cuda", dtype=torch.int),
         )
 
@@ -253,7 +322,7 @@ def decode_first_tokens(
     logger = get_logger("GENERATE")
 
     BEAM_WIDTH = 5
-    BUFFER_MS = 50
+    BUFFER_MS = 100
     TIME_TOK_ID = tokenizer.tok_to_id[tokenizer.time_tok]
     TIME_TOK_WEIGHTING = -3
 
@@ -272,7 +341,9 @@ def decode_first_tokens(
             generated_tokens_queue.put(tokenizer.time_tok)
             logits = decode_one(
                 model,
-                idxs=torch.tensor([[TIME_TOK_ID]]).cuda(),
+                idxs=torch.tensor(
+                    [[TIME_TOK_ID]], device="cuda", dtype=torch.int
+                ),
                 input_pos=torch.tensor(
                     [idx - 1], device="cuda", dtype=torch.int
                 ),
@@ -320,7 +391,7 @@ def decode_first_tokens(
         with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
             next_logits = decode_one(
                 model,
-                idxs=torch.tensor([[tok_id]]).cuda(),
+                idxs=torch.tensor([[tok_id]], device="cuda", dtype=torch.int),
                 input_pos=torch.tensor(
                     [idx - 1], device="cuda", dtype=torch.int
                 ),
@@ -362,7 +433,9 @@ def decode_first_tokens(
     with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
         decode_one(
             model,
-            idxs=torch.tensor([[best_tok_id_1]]).cuda(),
+            idxs=torch.tensor(
+                [[best_tok_id_1]], device="cuda", dtype=torch.int
+            ),
             input_pos=torch.tensor([idx - 1], device="cuda", dtype=torch.int),
         )
 
@@ -400,7 +473,9 @@ def decode_tokens(
 
             logits = decode_one(
                 model,
-                idxs=torch.tensor([[prev_tok_id]]).cuda(),
+                idxs=torch.tensor(
+                    [[prev_tok_id]], device="cuda", dtype=torch.int
+                ),
                 input_pos=torch.tensor(
                     [idx - 1], device="cuda", dtype=torch.int
                 ),
@@ -468,6 +543,7 @@ def generate_tokens(
             )
         ],
         device="cuda",
+        dtype=torch.int,
     )
 
     logger.debug(f"Priming sequence {priming_seq}")
@@ -476,12 +552,22 @@ def generate_tokens(
 
     # In theory we could reuse the logits from prefill
     prefill_start_s = time.time()
-    prefill(
-        model,
-        idxs=enc_seq[:, : start_idx - 1],
-        input_pos=torch.arange(0, start_idx - 1, device="cuda"),
-    )
+    if start_idx < PREFILL_COMPILE_SEQ_LEN:
+        logger.info(
+            f"Using compiled prefill for sequence length: {PREFILL_COMPILE_SEQ_LEN}"
+        )
+        compiled_prefill(
+            model=model,
+            enc_seq=enc_seq,
+        )
+    else:
+        prefill(
+            model,
+            idxs=enc_seq[:, : start_idx - 1],
+            input_pos=torch.arange(0, start_idx - 1, device="cuda"),
+        )
 
+    torch.cuda.synchronize()
     logger.info(
         f"Prefill took {(time.time() - prefill_start_s) * 1000:.2f} milliseconds"
     )
@@ -734,7 +820,7 @@ def stream_msgs(
     priming_seq = tokenizer.tokenize(
         midi_dict=midi_dict,
         # prompt_intervals_ms=[
-        #     (0, (get_epoch_time_ms() - 5000) - first_on_msg_epoch_ms)
+        #     (0, (get_epoch_time_ms() - 3000) - first_on_msg_epoch_ms)
         # ],
         prompt_intervals_ms=[],
         guidance_midi_dict=guidance_midi_dict,
