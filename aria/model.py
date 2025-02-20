@@ -20,6 +20,8 @@ class ModelConfig:
     max_seq_len: int
     grad_checkpoint: bool
     vocab_size: Optional[int] = None
+    class_size: Optional[int] = None
+    tag_to_id: Optional[dict] = None
 
     def set_vocab_size(self, vocab_size: int):
         self.vocab_size = vocab_size
@@ -197,6 +199,7 @@ class TransformerLM(nn.Module):
 
     def __init__(self, model_config: ModelConfig):
         super().__init__()
+        assert model_config.vocab_size is not None
 
         self.max_seq_len = model_config.max_seq_len
         self.model = Transformer(model_config)
@@ -224,6 +227,47 @@ class TransformerLM(nn.Module):
         """
         hidden = self.model(src)
         logits = self.lm_head(hidden)
+
+        return logits
+
+
+class TransformerCL(nn.Module):
+    """Transformer decoder with head for classification.
+
+    Args:
+        model_config (ModelConfig): Model config settings.
+    """
+
+    def __init__(self, model_config: ModelConfig):
+        super().__init__()
+        assert model_config.class_size is not None
+
+        self.max_seq_len = model_config.max_seq_len
+        self.model = Transformer(model_config)
+        self.class_head = nn.Linear(
+            model_config.d_model, model_config.class_size, bias=False
+        )
+
+    def forward(
+        self,
+        src: torch.Tensor,
+    ):
+        """Forward pass of Transformer decoder with CL head.
+
+        Args:
+            src (torch.tensor): Input to encoder block, of shape (batch_size,
+                seq_len, d_model).
+            attn_mask (Optional[torch.tensor]): Attention mask of shape
+                (batch_size, seq_len). Defaults to None.
+            past_kv (Optional[list[KVCache]]): a list of kv caches. The list index
+                corresponds to the layer index.
+
+        Returns:
+            torch.tensor: Forward pass of src through Transformer and CL head.
+                Has shape (batch_size, seq_len, vocab_size).
+        """
+        hidden = self.model(src)
+        logits = self.class_head(hidden)
 
         return logits
 

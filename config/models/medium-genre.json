@@ -1,0 +1,15 @@
+{
+    "d_model": 1536,
+    "n_heads": 24,
+    "n_layers": 16,
+    "ff_mult": 4,
+    "drop_p": 0.0,
+    "max_seq_len": 8192,
+    "grad_checkpoint": true,
+    "class_size": 3,
+    "tag_to_id": {
+        "classical": 0,
+        "jazz": 1,
+        "other": 2
+    }
+}
