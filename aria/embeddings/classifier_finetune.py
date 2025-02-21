@@ -24,6 +24,28 @@ from accelerate.logging import get_logger
 from logging.handlers import RotatingFileHandler
 from tqdm import tqdm
 
+TAG_IDS = {
+    "chopin": 0,
+    "bach": 1,
+    "beethoven": 2,
+    "liszt": 3,
+    "mozart": 4,
+    "debussy": 5,
+    "schumann": 6,
+    "schubert": 7,
+    "rachmaninoff": 8,
+    "brahms": 9,
+    "tchaikovsky": 10,
+    "haydn": 11,
+    "scriabin": 12,
+    "mendelssohn": 13,
+    "czerny": 14,
+    "ravel": 15,
+    "scarlatti": 16,
+    "other": 17,
+}
+METADATA_CATEGORY = "composer"
+
 
 def setup_logger(project_dir: str):
     # Get logger and reset all handlers
@@ -327,7 +349,6 @@ def get_dataloaders(
     num_workers: int,
     apply_aug=True,
 ):
-    TAG_IDS = {"classical": 0, "jazz": 1, "other": 2}
     train_dataset = FinetuningDataset(
         load_path=train_data_path,
         tag_ids=TAG_IDS,
@@ -601,8 +622,8 @@ def test_build_dataset():
         min_slice_notes=100,
         max_slice_notes=165,
         max_seq_len=512,
-        metadata_category="genre",
-        tag_ids={"classical": 0, "jazz": 1, "other": 2},
+        metadata_category=METADATA_CATEGORY,
+        tag_ids=TAG_IDS,
     )
 
     # FinetuningDataset.build(
@@ -611,15 +632,15 @@ def test_build_dataset():
     #     min_slice_notes=100,
     #     max_slice_notes=165,
     #     max_seq_len=512,
-    #     metadata_category="genre",
-    #     tag_ids={"classical": 0, "jazz": 1, "other": 2},
+    #     metadata_category=METADATA_CATEGORY,
+    #     tag_ids=TAG_IDS,
     # )
 
 
 def test_dataset():
     dataset = FinetuningDataset(
         load_path="/mnt/ssd1/aria/data/test.jsonl",
-        tag_ids={"classical": 0, "jazz": 1, "other": 2},
+        tag_ids=TAG_IDS,
     )
 
     for idx, entry in enumerate(dataset):
@@ -645,18 +666,18 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    args = parse_args()
-    train(
-        model_name=args.model_name,
-        checkpoint_path=args.checkpoint_path,
-        train_data_path=args.train_data_path,
-        val_data_path=args.val_data_path,
-        batch_size=args.batch_size,
-        num_epochs=args.num_epochs,
-        num_workers=args.num_workers,
-        grad_acc_steps=args.grad_acc_steps,
-        project_dir=args.project_dir,
-    )
+    # args = parse_args()
+    # train(
+    #     model_name=args.model_name,
+    #     checkpoint_path=args.checkpoint_path,
+    #     train_data_path=args.train_data_path,
+    #     val_data_path=args.val_data_path,
+    #     batch_size=args.batch_size,
+    #     num_epochs=args.num_epochs,
+    #     num_workers=args.num_workers,
+    #     grad_acc_steps=args.grad_acc_steps,
+    #     project_dir=args.project_dir,
+    # )
 
-    # test_build_dataset()
+    test_build_dataset()
     # test_dataset()
