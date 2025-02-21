@@ -252,6 +252,11 @@ def _parse_pretrain_dataset_args():
     )
     argp.add_argument("-l", help="max sequence length", type=int, default=4096)
     argp.add_argument("-e", help="num epochs", type=int, default=1)
+    argp.add_argument(
+        "-sep_sequences",
+        help="start each with a new entry",
+        action="store_true",
+    )
 
     return argp.parse_args(sys.argv[2:])
 
@@ -271,6 +276,7 @@ def build_pretraining_dataset(args):
         max_seq_len=args.l,
         num_epochs=args.e,
         midi_dataset_path=args.load_path,
+        separate_sequences=args.sep_sequences,
     )
 
 

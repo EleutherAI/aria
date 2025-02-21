@@ -808,6 +808,7 @@ class PretrainingDataset(TrainingDataset):
         num_epochs: int,
         midi_dataset: MidiDataset = None,
         midi_dataset_path: str = None,
+        separate_sequences: bool = False,
     ):
         """Builds and returns PretrainingDataset."""
 
@@ -822,21 +823,47 @@ class PretrainingDataset(TrainingDataset):
                     }
                 )
 
-                buffer = []
-                _idx = 0
-                for entry in reservoir(get_seqs(tokenizer, _midi_dataset), 10):
-                    if entry is not None:
-                        buffer += entry
-                    while len(buffer) >= max_seq_len:
+                if separate_sequences is False:
+                    buffer = []
+                    _idx = 0
+                    for entry in reservoir(
+                        get_seqs(tokenizer, _midi_dataset), 10
+                    ):
+                        if entry is not None:
+                            buffer += entry
+                        while len(buffer) >= max_seq_len:
+                            writer.write(buffer[:max_seq_len])
+                            buffer = buffer[max_seq_len:]
+
+                        _idx += 1
+                        if _idx % 250 == 0:
+                            logger.info(f"Finished processing {_idx}")
+
+                    buffer += [tokenizer.pad_tok] * (max_seq_len - len(buffer))
+                    writer.write(buffer[:max_seq_len])
+                elif separate_sequences is True:
+                    _idx = 0
+                    for entry in reservoir(
+                        get_seqs(tokenizer, _midi_dataset), 10
+                    ):
+                        if entry is None:
+                            continue
+
+                        buffer = entry
+                        while len(buffer) >= max_seq_len:
+                            writer.write(buffer[:max_seq_len])
+                            buffer = buffer[max_seq_len:]
+
+                        buffer += [tokenizer.pad_tok] * (
+                            max_seq_len - len(buffer)
+                        )
                         writer.write(buffer[:max_seq_len])
-                        buffer = buffer[max_seq_len:]
 
-                    _idx += 1
-                    if _idx % 250 == 0:
-                        logger.info(f"Finished processing {_idx}")
-
-                buffer += [tokenizer.pad_tok] * (max_seq_len - len(buffer))
-                writer.write(buffer[:max_seq_len])
+                        _idx += 1
+                        if _idx % 250 == 0:
+                            logger.info(f"Finished processing {_idx}")
+                else:
+                    raise ValueError
 
         logger = setup_logger()
         assert max_seq_len > 0, "max_seq_len must be greater than 0"
