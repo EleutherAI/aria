@@ -2,7 +2,6 @@ import torch
 import accelerate
 import os
 import mmap
-import time
 import json
 import functools
 import multiprocessing
@@ -16,7 +15,7 @@ from collections import deque
 from typing import Callable
 from concurrent.futures import ThreadPoolExecutor
 
-from aria.model import ModelConfig, TransformerLM
+from aria.model import ModelConfig, TransformerLM, TransformerCL
 from aria.config import load_model_config
 from aria.utils import _load_weight
 from ariautils.midi import MidiDict
@@ -24,8 +23,28 @@ from ariautils.tokenizer import AbsTokenizer
 
 MODEL_PATH = "/mnt/ssd1/aria/v2/medium-dedupe-pt-cont2/checkpoints/epoch18_step0/model.safetensors"
 MAX_SEQ_LEN = 512
-TAG_IDS = {"classical": 0, "jazz": 1, "other": 2}
-ID_TO_TAG = {v: k for k, v in TAG_IDS.items()}
+TAG_TO_ID = {
+    "chopin": 0,
+    "bach": 1,
+    "beethoven": 2,
+    "liszt": 3,
+    "mozart": 4,
+    "debussy": 5,
+    "schumann": 6,
+    "schubert": 7,
+    "rachmaninoff": 8,
+    "brahms": 9,
+    "tchaikovsky": 10,
+    "haydn": 11,
+    "scriabin": 12,
+    "mendelssohn": 13,
+    "czerny": 14,
+    "ravel": 15,
+    "scarlatti": 16,
+    "other": 17,
+}
+ID_TO_TAG = {v: k for k, v in TAG_TO_ID.items()}
+METADATA_CATEGORY = "composer"
 
 
 def chunk_and_pad(lst: list, n: int):
@@ -385,20 +404,17 @@ def train_classifier(
     )
 
 
-def eval(model: nn.Module):
+def evaluate_model(model: nn.Module, val_dataset_path: str):
     val_dataset = EvaluationDataset(
-        load_path="/mnt/ssd1/aria/data/val.jsonl",
-        tag_ids=TAG_IDS,
+        load_path=val_dataset_path,
+        tag_ids=TAG_TO_ID,
     )
     model = model.cpu()
 
     correct = 0
     total = 0
-    dist = {
-        "classical": 0,
-        "jazz": 0,
-        "other": 0,
-    }
+    dist = {k: 0 for k in TAG_TO_ID.keys()}
+
     for midi_emb, tag_id in val_dataset:
         with torch.no_grad():
             logits = model(torch.tensor(midi_emb.view(1, -1)))
@@ -413,11 +429,39 @@ def eval(model: nn.Module):
                 correct += 1
             total += 1
 
-            print(ID_TO_TAG[tag_id.item()], ID_TO_TAG[pred_tag_id])
-            input("...")
-
     print(f"Total accuracy: {correct/total}")
     print(f"Label distribution: {dist}")
+
+
+def build_dataset():
+    MODEL_PATH = "/mnt/ssd1/aria/v2/medium-dedupe-pt-cont2/checkpoints/epoch18_step0/model.safetensors"
+
+    model_state = _load_weight(MODEL_PATH, "cuda")
+    model_state = {
+        k.replace("_orig_mod.", ""): v for k, v in model_state.items()
+    }
+    pretrained_model_config = ModelConfig(**load_model_config("medium"))
+    pretrained_model_config.set_vocab_size(tokenizer.vocab_size)
+    pretrained_model_config.grad_checkpoint = False
+    pretrained_model = TransformerLM(pretrained_model_config)
+    pretrained_model.load_state_dict(model_state)
+    pretrained_model.eval()
+
+    EvaluationDataset.build(
+        midi_dataset_load_path="/mnt/ssd1/aria/data/mididict-ft_train.jsonl",
+        save_path="/mnt/ssd1/aria/data/train.jsonl",
+        max_seq_len=MAX_SEQ_LEN,
+        slice_len_notes=165,
+        metadata_category="genre",
+        tag_ids=TAG_TO_ID,
+        batch_size=128,
+        embedding_hook=functools.partial(
+            get_baseline_embedding, pool_mode="mean"
+        ),
+        hook_model=pretrained_model.model.cuda(),
+        hook_max_seq_len=512,
+        hook_tokenizer=tokenizer,
+    )
 
 
 if __name__ == "__main__":
@@ -425,40 +469,16 @@ if __name__ == "__main__":
 
     dataset = EvaluationDataset(
         load_path="/mnt/ssd1/aria/data/train.jsonl",
-        tag_ids=TAG_IDS,
+        tag_ids=TAG_TO_ID,
     )
 
     model = train_classifier(
         emb_d=1536,
         train_dataset=dataset,
         batch_size=32,
-        tag_ids=TAG_IDS,
+        tag_ids=TAG_TO_ID,
     )
-    eval(model=model)
-
-    # model_state = _load_weight(MODEL_PATH, "cuda")
-    # model_state = {
-    #     k.replace("_orig_mod.", ""): v for k, v in model_state.items()
-    # }
-    # pretrained_model_config = ModelConfig(**load_model_config("medium"))
-    # pretrained_model_config.set_vocab_size(tokenizer.vocab_size)
-    # pretrained_model_config.grad_checkpoint = False
-    # pretrained_model = TransformerLM(pretrained_model_config)
-    # pretrained_model.load_state_dict(model_state)
-    # pretrained_model.eval()
-
-    # EvaluationDataset.build(
-    #     midi_dataset_load_path="/mnt/ssd1/aria/data/mididict-ft_train.jsonl",
-    #     save_path="/mnt/ssd1/aria/data/train.jsonl",
-    #     max_seq_len=MAX_SEQ_LEN,
-    #     slice_len_notes=165,
-    #     metadata_category="genre",
-    #     tag_ids=TAG_IDS,
-    #     batch_size=128,
-    #     embedding_hook=functools.partial(
-    #         get_baseline_embedding, pool_mode="mean"
-    #     ),
-    #     hook_model=pretrained_model.model.cuda(),
-    #     hook_max_seq_len=512,
-    #     hook_tokenizer=tokenizer,
-    # )
+    evaluate_model(
+        model=model,
+        val_dataset_path="/mnt/ssd1/aria/data/val.jsonl",
+    )
