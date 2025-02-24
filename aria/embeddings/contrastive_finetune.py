@@ -368,7 +368,9 @@ def _train(
             _accelerator.save_state(checkpoint_dir)
 
     def train_loop(
-        dataloader: DataLoader, _epoch: int, steps_per_checkpoint: int
+        dataloader: DataLoader,
+        _epoch: int,
+        steps_per_checkpoint: int | None = None,
     ):
         loss = torch.tensor([0.0])
         avg_train_loss = 0
