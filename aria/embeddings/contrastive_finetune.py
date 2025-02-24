@@ -515,9 +515,12 @@ def _train(
     logger = get_logger(__name__)
     TRAILING_LOSS_STEPS = 100
 
-    train_loop(dataloader=train_dataloader, _epoch=0, steps_per_checkpoint=2000)
-    make_checkpoint(_accelerator=accelerator, _epoch=1, _step=0)
-    val_loop(dataloader=val_dataloader, _epoch=0)
+    for _epoch_num in range(num_epochs):
+        train_loop(dataloader=train_dataloader, _epoch=_epoch_num)
+        make_checkpoint(
+            _accelerator=accelerator, _epoch=_epoch_num + 1, _step=0
+        )
+        val_loop(dataloader=val_dataloader, _epoch=_epoch_num)
 
 
 def train(
