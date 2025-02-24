@@ -1,0 +1,30 @@
+{
+    "d_model": 1536,
+    "n_heads": 24,
+    "n_layers": 16,
+    "ff_mult": 4,
+    "drop_p": 0.0,
+    "max_seq_len": 8192,
+    "grad_checkpoint": true,
+    "class_size": 18,
+    "tag_to_id": {
+            "chopin": 0,
+            "bach": 1,
+            "beethoven": 2,
+            "liszt": 3,
+            "mozart": 4,
+            "debussy": 5,
+            "schumann": 6,
+            "schubert": 7,
+            "rachmaninoff": 8,
+            "brahms": 9,
+            "tchaikovsky": 10,
+            "haydn": 11,
+            "scriabin": 12,
+            "mendelssohn": 13,
+            "czerny": 14,
+            "ravel": 15,
+            "scarlatti": 16,
+            "other": 17
+        }
+}

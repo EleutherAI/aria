@@ -22,6 +22,7 @@ class ModelConfig:
     vocab_size: Optional[int] = None
     class_size: Optional[int] = None
     tag_to_id: Optional[dict] = None
+    emb_size: Optional[dict] = None
 
     def set_vocab_size(self, vocab_size: int):
         self.vocab_size = vocab_size
@@ -257,19 +258,51 @@ class TransformerCL(nn.Module):
         Args:
             src (torch.tensor): Input to encoder block, of shape (batch_size,
                 seq_len, d_model).
-            attn_mask (Optional[torch.tensor]): Attention mask of shape
-                (batch_size, seq_len). Defaults to None.
-            past_kv (Optional[list[KVCache]]): a list of kv caches. The list index
-                corresponds to the layer index.
 
         Returns:
             torch.tensor: Forward pass of src through Transformer and CL head.
-                Has shape (batch_size, seq_len, vocab_size).
+                Has shape (batch_size, seq_len, class_size).
         """
         hidden = self.model(src)
         logits = self.class_head(hidden)
 
         return logits
+
+
+class TransformerEMB(nn.Module):
+    """Transformer decoder with head for embedding.
+
+    Args:
+        model_config (ModelConfig): Model config settings.
+    """
+
+    def __init__(self, model_config: ModelConfig):
+        super().__init__()
+        assert model_config.emb_size is not None
+
+        self.max_seq_len = model_config.max_seq_len
+        self.model = Transformer(model_config)
+        self.emb_head = nn.Linear(
+            model_config.d_model, model_config.emb_size, bias=False
+        )
+
+    def forward(
+        self,
+        src: torch.Tensor,
+    ):
+        """Forward pass of Transformer decoder with EMB head.
+
+        Args:
+            src (torch.tensor): Input to encoder block, of shape (batch_size,
+                seq_len, d_model).
+        Returns:
+            torch.tensor: Forward pass of src through Transformer and EMB head.
+                Has shape (batch_size, seq_len, emb_size).
+        """
+        hidden = self.model(src)
+        emb = self.emb_head(hidden)
+
+        return emb
 
 
 def precompute_freqs_cis(
