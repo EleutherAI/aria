@@ -3,26 +3,26 @@ import accelerate
 import os
 import mmap
 import json
+import time
 import functools
 import multiprocessing
+import queue
 import copy
 import jsonlines
 import torch.nn as nn
 import torch.nn.functional as F
 
 from tqdm import tqdm
-from collections import deque
 from typing import Callable
 from concurrent.futures import ThreadPoolExecutor
 
-from aria.model import ModelConfig, TransformerLM, TransformerCL
+from aria.model import ModelConfig, TransformerLM, TransformerEMB
 from aria.config import load_model_config
 from aria.utils import _load_weight
 from ariautils.midi import MidiDict
 from ariautils.tokenizer import AbsTokenizer
 
-MODEL_PATH = "/mnt/ssd1/aria/v2/medium-dedupe-pt-cont2/checkpoints/epoch18_step0/model.safetensors"
-MAX_SEQ_LEN = 512
+METADATA_CATEGORY = "composer"
 TAG_TO_ID = {
     "chopin": 0,
     "bach": 1,
@@ -44,16 +44,17 @@ TAG_TO_ID = {
     "other": 17,
 }
 ID_TO_TAG = {v: k for k, v in TAG_TO_ID.items()}
-METADATA_CATEGORY = "composer"
+
+
+def model_forward(
+    model: nn.Module,
+    idxs: torch.Tensor,
+):
+    return model(idxs)
 
 
 def chunk_and_pad(lst: list, n: int):
     return [lst[i : i + n] for i in range(0, len(lst), n)]
-
-
-def init_worker():
-    global tokenizer
-    tokenizer = AbsTokenizer()
 
 
 def write_entries(writer, entries):
@@ -61,22 +62,13 @@ def write_entries(writer, entries):
         writer.write(entry)
 
 
-# The worker function processes a single JSON-lines entry.
 def process_entry(
     entry,
-    metadata_category: str,
-    tag_ids: dict,
     slice_len_notes: int,
     max_seq_len: int,
+    tokenizer: AbsTokenizer,
 ):
     midi_dict = MidiDict.from_msg_dict(entry)
-    metadata_tag = midi_dict.metadata.get(metadata_category, None)
-
-    # Skip metadata tag
-    if metadata_tag is None:
-        return []
-    elif metadata_tag not in tag_ids.keys():
-        metadata_tag = "other"
 
     outputs = []
     for slice_note_msgs in chunk_and_pad(
@@ -89,16 +81,51 @@ def process_entry(
         slice_midi_dict.note_msgs = slice_note_msgs
         slice_midi_dict.metadata = {}
         tokenized_slice = tokenizer.tokenize(slice_midi_dict)
-        if tokenizer.eos_tok in tokenized_slice:
-            tokenized_slice.remove(tokenizer.eos_tok)
         if tokenizer.dim_tok in tokenized_slice:
             tokenized_slice.remove(tokenizer.dim_tok)
 
         tokenized_slice = tokenized_slice[:max_seq_len]
 
-        outputs.append({"seq": tokenized_slice, "tag": metadata_tag})
+        outputs.append({"seq": tokenized_slice, "metadata": midi_dict.metadata})
 
     return outputs
+
+
+def _pad_seq(seq: list, tokenizer: AbsTokenizer, max_seq_len: int):
+    seq = seq[:max_seq_len]
+    seq += [tokenizer.pad_tok] * (max_seq_len - len(seq))
+
+    if tokenizer.eos_tok not in seq:
+        seq[-1] = tokenizer.eos_tok
+
+    return seq
+
+
+@torch.autocast("cuda", dtype=torch.bfloat16)
+@torch.inference_mode()
+def get_contrastive_embedding(
+    seqs: list,
+    hook_model: nn.Module,
+    hook_max_seq_len: int,
+    hook_tokenizer: AbsTokenizer,
+    hook_model_forward: Callable,
+):
+    seqs = [
+        _pad_seq(
+            seq=seq, tokenizer=hook_tokenizer, max_seq_len=hook_max_seq_len
+        )
+        for seq in seqs
+    ]
+
+    eos_positions = [seq.index(hook_tokenizer.eos_tok) for seq in seqs]
+    enc_seqs = torch.tensor(
+        [hook_tokenizer.encode(seq) for seq in seqs], device="cuda"
+    )
+    hidden_states = hook_model_forward(model=hook_model, idxs=enc_seqs)
+    idx = torch.arange(hidden_states.shape[0], device=hidden_states.device)
+    emb = hidden_states[idx, eos_positions].tolist()
+
+    return emb
 
 
 @torch.autocast("cuda", dtype=torch.bfloat16)
@@ -110,6 +137,10 @@ def get_baseline_embedding(
     hook_tokenizer: AbsTokenizer,
     pool_mode: str = "last",  # "last" or "mean"
 ):
+    for seq in seqs:
+        if hook_tokenizer.eos_tok in seq:
+            seq.remove(hook_tokenizer.eos_tok)
+
     orig_lengths = [len(seq) for seq in seqs]
     last_tok_positions = [length - 1 for length in orig_lengths]
     seqs = [
@@ -126,7 +157,7 @@ def get_baseline_embedding(
         idx = torch.arange(hidden_states.shape[0], device=hidden_states.device)
         emb = hidden_states[idx, last_tok_positions].tolist()
     elif pool_mode == "mean":
-        pad_id = tokenizer.pad_id
+        pad_id = hook_tokenizer.pad_id
         # Create a mask by comparing enc_seqs to pad_id.
         mask = (enc_seqs != pad_id).unsqueeze(-1).to(hidden_states.dtype)
         # Sum over valid tokens and average.
@@ -141,9 +172,10 @@ def get_baseline_embedding(
 
 
 class EvaluationDataset(torch.utils.data.Dataset):
-    def __init__(self, load_path: str, tag_ids: dict):
+    def __init__(self, load_path: str, tag_ids: dict, metadata_category: str):
         self.load_path = load_path
         self.tag_ids = tag_ids
+        self.metadata_category = metadata_category
         self.tokenizer = AbsTokenizer()
         self.index = []
 
@@ -167,7 +199,9 @@ class EvaluationDataset(torch.utils.data.Dataset):
         json_data = json.loads(raw_data)
 
         emb = json_data["emb"]
-        tag = json_data["tag"]
+        metadata = json_data["metadata"]
+        tag = metadata.get(self.metadata_category, "other")
+        tag = tag if tag in self.tag_ids.keys() else "other"
 
         assert tag in self.tag_ids
         tag_tensor = torch.tensor(self.tag_ids[tag])
@@ -199,67 +233,128 @@ class EvaluationDataset(torch.utils.data.Dataset):
         save_path: str,
         slice_len_notes: int,
         max_seq_len: int,
-        metadata_category: str,
-        tag_ids: dict,
         batch_size: int,
         embedding_hook: Callable,
         **embedding_hook_kwargs,
     ):
+        def batch_producer(
+            results_queue: queue.Queue,
+            batch_queue: queue.Queue,
+            batch_size: int,
+        ):
+            buffer = []
+            while True:
+                if batch_queue.qsize() >= 5:
+                    time.sleep(1)
+
+                try:
+                    result = results_queue.get(timeout=0.01)
+                    if result is None:
+                        if len(buffer) > 0:
+                            batch_queue.put(buffer)
+                        break
+
+                    buffer.append(result)
+                    if len(buffer) == batch_size:
+                        batch_queue.put(buffer)
+                        buffer = []
+                except queue.Empty:
+                    pass
+
+        def producer(
+            midi_dataset_load_path: str,
+            midi_dict_queue: queue.Queue,
+        ):
+            cnt = 0
+            with jsonlines.open(midi_dataset_load_path, "r") as midi_dataset:
+                for midi_dict in midi_dataset:
+                    while midi_dict_queue.qsize() >= 250:
+                        time.sleep(0.1)
+                    midi_dict_queue.put(midi_dict)
+                    cnt += 1
+
+                    if cnt % 500 == 0:
+                        print(f"Finished {cnt}")
+
+            for _ in range(16):
+                midi_dict_queue.put(None)
+
+        def worker(
+            midi_dict_queue: queue.Queue,
+            results_queue: queue.Queue,
+            slice_len_notes: int,
+            max_seq_len: int,
+        ):
+            tokenizer = AbsTokenizer()
+
+            while True:
+                midi_dict = midi_dict_queue.get()
+                if midi_dict is None:
+                    results_queue.put(None)
+                    break
+
+                while results_queue.qsize() > 500:
+                    time.sleep(0.5)
+
+                _result = process_entry(
+                    entry=midi_dict,
+                    slice_len_notes=slice_len_notes,
+                    max_seq_len=max_seq_len,
+                    tokenizer=tokenizer,
+                )
+                for _sub_result in _result:
+                    results_queue.put(_sub_result)
+
         assert os.path.isfile(midi_dataset_load_path)
         assert os.path.isfile(save_path) is False
 
-        with jsonlines.open(
-            midi_dataset_load_path, "r"
-        ) as midi_dataset, jsonlines.open(save_path, "w") as writer:
+        write_executor = ThreadPoolExecutor(max_workers=1)
+        results_queue = multiprocessing.Queue()
+        midi_dict_queue = multiprocessing.Queue()
+        batch_queue = multiprocessing.Queue()
+        producer_process = multiprocessing.Process(
+            target=producer, args=(midi_dataset_load_path, midi_dict_queue)
+        )
+        batch_producer_process = multiprocessing.Process(
+            target=batch_producer, args=(results_queue, batch_queue, batch_size)
+        )
+        worker_processes = [
+            multiprocessing.Process(
+                target=worker,
+                args=(
+                    midi_dict_queue,
+                    results_queue,
+                    slice_len_notes,
+                    max_seq_len,
+                ),
+            )
+            for _ in range(4)
+        ]
 
-            cnt = 0
-            buffer = deque()
-            write_executor = ThreadPoolExecutor(max_workers=1)
-            with multiprocessing.Pool(
-                processes=8, initializer=init_worker
-            ) as pool:
-                for result in pool.imap_unordered(
-                    functools.partial(
-                        process_entry,
-                        metadata_category=metadata_category,
-                        tag_ids=tag_ids,
-                        slice_len_notes=slice_len_notes,
-                        max_seq_len=max_seq_len,
-                    ),
-                    midi_dataset,
-                    chunksize=10,
-                ):
+        producer_process.start()
+        batch_producer_process.start()
+        for p in worker_processes:
+            p.start()
 
-                    cnt += 1
-                    if cnt % 500 == 0:
-                        print(f"Completed {cnt}")
+        with jsonlines.open(save_path, "w") as writer:
+            while batch_producer_process.is_alive() or not batch_queue.empty():
+                try:
+                    batch = batch_queue.get(timeout=0.01)
 
-                    for entry in result:
-                        buffer.append(entry)
+                    _seqs = [item["seq"] for item in batch]
+                    _metadata = [item["metadata"] for item in batch]
+                    _embs = embedding_hook(seqs=_seqs, **embedding_hook_kwargs)
 
-                    # Inside your processing loop:
-                    if len(buffer) >= batch_size:
-                        _buffer = [buffer.popleft() for _ in range(batch_size)]
-                        _seqs = [entry["seq"] for entry in _buffer]
-                        _tags = [entry["tag"] for entry in _buffer]
-                        _embs = embedding_hook(
-                            seqs=_seqs, **embedding_hook_kwargs
-                        )
+                    write_objs = [
+                        {"seq": s, "emb": e, "metadata": m}
+                        for s, e, m in zip(_seqs, _embs, _metadata)
+                    ]
+                    write_executor.submit(write_entries, writer, write_objs)
 
-                        # Prepare the write objects
-                        write_objs = [
-                            {"seq": _seq, "emb": _emb, "tag": _tag}
-                            for _seq, _emb, _tag in zip(_seqs, _embs, _tags)
-                        ]
+                except queue.Empty:
+                    continue
 
-                        write_executor.submit(write_entries, writer, write_objs)
-
-            if buffer:
-                _seqs = [entry["seq"] for entry in buffer]
-                _tags = [entry["tag"] for entry in buffer]
-                _embs = embedding_hook(seqs=_seqs, **embedding_hook_kwargs)
-                for _seq, _tag, _emb in zip(_seqs, _tags, _embs):
-                    writer.write({"seq": _seq, "emb": _emb, "tag": _tag})
+            write_executor.shutdown(wait=True)
 
 
 def _get_optim(
@@ -300,17 +395,12 @@ def _get_optim(
 
 
 class ClassifierHead(nn.Module):
-    def __init__(self, d_emb: int, hidden_dim: int, num_class: int):
+    def __init__(self, d_emb: int, num_class: int):
         super().__init__()
-        self.fc1 = nn.Linear(d_emb, hidden_dim)
-        self.activation = nn.ReLU()
-        self.fc2 = nn.Linear(hidden_dim, num_class)
+        self.linear = nn.Linear(d_emb, num_class)
 
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.activation(x)
-        logits = self.fc2(x)
-        return logits
+    def forward(self, x: torch.Tensor):
+        return self.linear(x)
 
 
 def _train(
@@ -319,6 +409,7 @@ def _train(
     train_dataloader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
+    num_epochs: int = 1,
 ):
     TRAILING_LOSS_STEPS = 100
     loss = torch.tensor([0.0])
@@ -329,32 +420,33 @@ def _train(
     model.train()
     loss_fn = nn.CrossEntropyLoss()
 
-    for __step, batch in (
-        pbar := tqdm(enumerate(train_dataloader), leave=False)
-    ):
-        pbar.set_postfix_str(
-            f"lr={lr_for_print}, "
-            f"loss={round(loss.item(), 4)}, "
-            f"trailing={round(trailing_loss, 4)}"
-        )
+    for _epoch in range(num_epochs):
+        for __step, batch in (
+            pbar := tqdm(enumerate(train_dataloader), leave=False)
+        ):
+            pbar.set_postfix_str(
+                f"lr={lr_for_print}, "
+                f"loss={round(loss.item(), 4)}, "
+                f"trailing={round(trailing_loss, 4)}"
+            )
 
-        emb, tag_ids = batch
-        tag_ids = tag_ids.view(-1)
+            emb, tag_ids = batch
+            tag_ids = tag_ids.view(-1)
 
-        logits = model(emb)
-        loss = loss_fn(logits, tag_ids)
+            logits = model(emb)
+            loss = loss_fn(logits, tag_ids)
 
-        loss_buffer.append(accelerator.gather(loss).mean(dim=0).item())
-        trailing_loss = sum(loss_buffer[-TRAILING_LOSS_STEPS:]) / len(
-            loss_buffer[-TRAILING_LOSS_STEPS:]
-        )
+            loss_buffer.append(accelerator.gather(loss).mean(dim=0).item())
+            trailing_loss = sum(loss_buffer[-TRAILING_LOSS_STEPS:]) / len(
+                loss_buffer[-TRAILING_LOSS_STEPS:]
+            )
 
-        accelerator.backward(loss)
-        optimizer.step()
-        optimizer.zero_grad()
-        if scheduler:
-            scheduler.step()
-            lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
+            accelerator.backward(loss)
+            optimizer.step()
+            optimizer.zero_grad()
+            if scheduler:
+                scheduler.step()
+                lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
 
     if accelerator.is_main_process:
         accelerator.save_state("/mnt/ssd1/aria/test")
@@ -368,23 +460,23 @@ def train_classifier(
     tag_ids: dict,
     batch_size: int,
 ):
+    num_epochs = 1
     train_dataloader = torch.utils.data.DataLoader(
         dataset=train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=8,
+        num_workers=24,
         worker_init_fn=EvaluationDataset.export_worker_init_fn(),
     )
 
     model = ClassifierHead(
         d_emb=emb_d,
-        hidden_dim=emb_d,
         num_class=len(tag_ids.keys()),
     )
     optimizer, scheduler = _get_optim(
         lr=3e-4,
         model=model,
-        total_steps=len(train_dataloader),
+        total_steps=num_epochs * len(train_dataloader),
     )
     accelerator = accelerate.Accelerator()
 
@@ -401,6 +493,7 @@ def train_classifier(
         train_dataloader=train_dataloader,
         optimizer=optimizer,
         scheduler=scheduler,
+        num_epochs=num_epochs,
     )
 
 
@@ -408,34 +501,55 @@ def evaluate_model(model: nn.Module, val_dataset_path: str):
     val_dataset = EvaluationDataset(
         load_path=val_dataset_path,
         tag_ids=TAG_TO_ID,
+        metadata_category=METADATA_CATEGORY,
     )
-    model = model.cpu()
+    model = model.cpu().eval()
 
-    correct = 0
-    total = 0
-    dist = {k: 0 for k in TAG_TO_ID.keys()}
+    # Count true values and correct predictions per tag.
+    dist = {k: {"correct": 0, "total": 0} for k in TAG_TO_ID.keys()}
+    # New dictionary to count predictions per tag.
+    pred_dist = {k: 0 for k in TAG_TO_ID.keys()}
 
     for midi_emb, tag_id in val_dataset:
         with torch.no_grad():
             logits = model(torch.tensor(midi_emb.view(1, -1)))
-            probs = F.softmax(logits)
+            probs = F.softmax(logits, dim=-1)
             pred_tag_id = probs.argmax(dim=-1).item()
-            dist[ID_TO_TAG[tag_id.item()]] += 1
 
-            if ID_TO_TAG[tag_id.item()] == "other":
-                continue
+            true_tag = ID_TO_TAG[tag_id.item()]
+            pred_tag = ID_TO_TAG[pred_tag_id]
+
+            dist[true_tag]["total"] += 1
+            pred_dist[pred_tag] += 1
 
             if pred_tag_id == tag_id.item():
-                correct += 1
-            total += 1
+                dist[true_tag]["correct"] += 1
 
-    print(f"Total accuracy: {correct/total}")
-    print(f"Label distribution: {dist}")
+    total_correct = sum(v["correct"] for v in dist.values())
+    total_samples = sum(v["total"] for v in dist.values())
+    print(f"Total accuracy: {total_correct/total_samples}")
+
+    for tag in TAG_TO_ID.keys():
+        TP = dist[tag]["correct"]
+        FN = dist[tag]["total"] - TP
+        FP = pred_dist[tag] - TP
+        precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+        recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+        f1 = (
+            2 * precision * recall / (precision + recall)
+            if (precision + recall) > 0
+            else 0
+        )
+        print(
+            f"{tag} -- Accuracy: {TP/dist[tag]['total']}, Precision: {precision}, Recall: {recall}, F1: {f1}"
+        )
 
 
-def build_dataset():
+def build_baseline_dataset():
+    MAX_SEQ_LEN = 512
     MODEL_PATH = "/mnt/ssd1/aria/v2/medium-dedupe-pt-cont2/checkpoints/epoch18_step0/model.safetensors"
 
+    tokenizer = AbsTokenizer()
     model_state = _load_weight(MODEL_PATH, "cuda")
     model_state = {
         k.replace("_orig_mod.", ""): v for k, v in model_state.items()
@@ -447,38 +561,83 @@ def build_dataset():
     pretrained_model.load_state_dict(model_state)
     pretrained_model.eval()
 
+    global model_forward
+    model_forward = torch.compile(
+        model_forward,
+        mode="reduce-overhead",
+        fullgraph=True,
+    )
+
     EvaluationDataset.build(
         midi_dataset_load_path="/mnt/ssd1/aria/data/mididict-ft_train.jsonl",
         save_path="/mnt/ssd1/aria/data/train.jsonl",
         max_seq_len=MAX_SEQ_LEN,
         slice_len_notes=165,
-        metadata_category="genre",
-        tag_ids=TAG_TO_ID,
         batch_size=128,
         embedding_hook=functools.partial(
             get_baseline_embedding, pool_mode="mean"
         ),
         hook_model=pretrained_model.model.cuda(),
-        hook_max_seq_len=512,
+        hook_max_seq_len=MAX_SEQ_LEN,
         hook_tokenizer=tokenizer,
     )
 
 
-if __name__ == "__main__":
+def build_contrastive_dataset():
+    MAX_SEQ_LEN = 1024
+    MODEL_PATH = (
+        "/home/loubb/work/aria/models/medium-emb-t0.5-s1024-e20.safetensors"
+    )
+
     tokenizer = AbsTokenizer()
+    model_state = _load_weight(MODEL_PATH, "cuda")
+    model_state = {
+        k.replace("_orig_mod.", ""): v for k, v in model_state.items()
+    }
+    pretrained_model_config = ModelConfig(**load_model_config("medium-emb"))
+    pretrained_model_config.set_vocab_size(tokenizer.vocab_size)
+    pretrained_model_config.grad_checkpoint = False
+    pretrained_model = TransformerEMB(pretrained_model_config)
+    pretrained_model.load_state_dict(model_state)
+    pretrained_model.eval()
 
-    dataset = EvaluationDataset(
-        load_path="/mnt/ssd1/aria/data/train.jsonl",
-        tag_ids=TAG_TO_ID,
+    hook_model_forward = torch.compile(
+        model_forward,
+        mode="reduce-overhead",
+        fullgraph=True,
     )
 
-    model = train_classifier(
-        emb_d=1536,
-        train_dataset=dataset,
-        batch_size=32,
-        tag_ids=TAG_TO_ID,
+    EvaluationDataset.build(
+        midi_dataset_load_path="/mnt/ssd1/aria/data/mididict-all_train.jsonl",
+        save_path="/mnt/ssd1/aria/data/eval/test.jsonl",
+        max_seq_len=MAX_SEQ_LEN,
+        slice_len_notes=300,
+        batch_size=128,
+        embedding_hook=get_contrastive_embedding,
+        hook_model=pretrained_model.cuda(),
+        hook_max_seq_len=MAX_SEQ_LEN,
+        hook_tokenizer=tokenizer,
+        hook_model_forward=hook_model_forward,
     )
-    evaluate_model(
-        model=model,
-        val_dataset_path="/mnt/ssd1/aria/data/val.jsonl",
-    )
+
+
+if __name__ == "__main__":
+    # tokenizer = AbsTokenizer()
+    # dataset = EvaluationDataset(
+    #     load_path="/mnt/ssd1/aria/data/eval/temp-train.jsonl",
+    #     tag_ids=TAG_TO_ID,
+    #     metadata_category=METADATA_CATEGORY,
+    # )
+
+    # model = train_classifier(
+    #     emb_d=512,
+    #     train_dataset=dataset,
+    #     batch_size=32,
+    #     tag_ids=TAG_TO_ID,
+    # )
+    # evaluate_model(
+    #     model=model,
+    #     val_dataset_path="/mnt/ssd1/aria/data/eval/temp-val.jsonl",
+    # )
+
+    build_contrastive_dataset()
