@@ -241,34 +241,37 @@ class EvaluationDataset(torch.utils.data.Dataset):
             results_queue: queue.Queue,
             batch_queue: queue.Queue,
             batch_size: int,
+            total_workers: int,
         ):
             buffer = []
-            while True:
+            termination_signals = 0
+            while termination_signals < total_workers:
                 if batch_queue.qsize() >= 5:
                     time.sleep(1)
-
                 try:
                     result = results_queue.get(timeout=0.01)
                     if result is None:
-                        if len(buffer) > 0:
-                            batch_queue.put(buffer)
-                        break
-
+                        termination_signals += 1
+                        continue
                     buffer.append(result)
                     if len(buffer) == batch_size:
                         batch_queue.put(buffer)
                         buffer = []
                 except queue.Empty:
-                    pass
+                    continue
+
+            if buffer:
+                batch_queue.put(buffer)
 
         def producer(
             midi_dataset_load_path: str,
             midi_dict_queue: queue.Queue,
+            num_workers: int,
         ):
             cnt = 0
             with jsonlines.open(midi_dataset_load_path, "r") as midi_dataset:
                 for midi_dict in midi_dataset:
-                    while midi_dict_queue.qsize() >= 250:
+                    while midi_dict_queue.qsize() >= 1000:
                         time.sleep(0.1)
                     midi_dict_queue.put(midi_dict)
                     cnt += 1
@@ -276,7 +279,7 @@ class EvaluationDataset(torch.utils.data.Dataset):
                     if cnt % 500 == 0:
                         print(f"Finished {cnt}")
 
-            for _ in range(16):
+            for _ in range(num_workers):
                 midi_dict_queue.put(None)
 
         def worker(
@@ -293,7 +296,7 @@ class EvaluationDataset(torch.utils.data.Dataset):
                     results_queue.put(None)
                     break
 
-                while results_queue.qsize() > 500:
+                while results_queue.qsize() > 1000:
                     time.sleep(0.5)
 
                 _result = process_entry(
@@ -308,15 +311,18 @@ class EvaluationDataset(torch.utils.data.Dataset):
         assert os.path.isfile(midi_dataset_load_path)
         assert os.path.isfile(save_path) is False
 
+        TOTAL_WORKERS = 8
         write_executor = ThreadPoolExecutor(max_workers=1)
         results_queue = multiprocessing.Queue()
         midi_dict_queue = multiprocessing.Queue()
         batch_queue = multiprocessing.Queue()
         producer_process = multiprocessing.Process(
-            target=producer, args=(midi_dataset_load_path, midi_dict_queue)
+            target=producer,
+            args=(midi_dataset_load_path, midi_dict_queue, TOTAL_WORKERS),
         )
         batch_producer_process = multiprocessing.Process(
-            target=batch_producer, args=(results_queue, batch_queue, batch_size)
+            target=batch_producer,
+            args=(results_queue, batch_queue, batch_size, TOTAL_WORKERS),
         )
         worker_processes = [
             multiprocessing.Process(
@@ -328,7 +334,7 @@ class EvaluationDataset(torch.utils.data.Dataset):
                     max_seq_len,
                 ),
             )
-            for _ in range(4)
+            for _ in range(TOTAL_WORKERS)
         ]
 
         producer_process.start()
@@ -612,7 +618,7 @@ def build_contrastive_dataset():
         save_path="/mnt/ssd1/aria/data/eval/test.jsonl",
         max_seq_len=MAX_SEQ_LEN,
         slice_len_notes=300,
-        batch_size=128,
+        batch_size=256,
         embedding_hook=get_contrastive_embedding,
         hook_model=pretrained_model.cuda(),
         hook_max_seq_len=MAX_SEQ_LEN,
