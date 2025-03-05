@@ -138,6 +138,7 @@ class ContrastiveDataset(Dataset):
         min_num_notes: int,
         max_num_notes: int,
         max_seq_len: int,
+        apply_aug: bool = False,
     ):
         _midi_dict = copy.deepcopy(midi_dict)
         slice_length = random.randint(min_num_notes, max_num_notes)
@@ -147,6 +148,15 @@ class ContrastiveDataset(Dataset):
         _midi_dict.metadata = {}
 
         tokenized_slice = self.tokenizer.tokenize(_midi_dict)
+
+        if apply_aug:
+            assert self.aug_fns
+            for fn in self.aug_fns:
+                tokenized_slice = fn(tokenized_slice)
+
+            while self.tokenizer.pad_tok in tokenized_slice:
+                tokenized_slice.remove(self.tokenizer.pad_tok)
+
         if self.tokenizer.dim_tok in tokenized_slice:
             tokenized_slice.remove(self.tokenizer.dim_tok)
 
@@ -163,12 +173,6 @@ class ContrastiveDataset(Dataset):
         return tokenized_slice, pos
 
     def __getitem__(self, idx: int):
-        def _format(tok):
-            # Required because json formats tuples into lists
-            if isinstance(tok, list):
-                return tuple(tok)
-            return tok
-
         file_pos = self.index[idx]
         self.mmap_obj.seek(file_pos)
 
@@ -181,22 +185,15 @@ class ContrastiveDataset(Dataset):
             min_num_notes=self.min_number_slice_notes,
             max_num_notes=self.max_number_slice_notes,
             max_seq_len=self.max_seq_len,
+            apply_aug=self.apply_aug,
         )
         slice_seq_2, slice_pos_2 = self.get_slice(
             midi_dict=midi_dict,
             min_num_notes=self.min_number_slice_notes,
             max_num_notes=self.max_number_slice_notes,
             max_seq_len=self.max_seq_len,
+            apply_aug=self.apply_aug,
         )
-
-        slice_seq_1 = [_format(tok) for tok in slice_seq_1]
-        slice_seq_2 = [_format(tok) for tok in slice_seq_2]
-
-        if self.apply_aug:
-            assert self.aug_fns
-            for fn in self.aug_fns:
-                slice_seq_1 = fn(slice_seq_1)
-                slice_seq_2 = fn(slice_seq_2)
 
         assert len(slice_seq_1) <= self.max_seq_len
         assert len(slice_seq_2) <= self.max_seq_len
@@ -431,24 +428,6 @@ def _train(
                 z1 = z1_full[batch_indices, eos_pos_1]
                 z2 = z2_full[batch_indices, eos_pos_2]
 
-                # seqs_1 = seqs[:, 0, :]
-                # eos_pos_1 = eos_pos[:, 0]
-                # z1_full = model(seqs_1)
-                # z1 = z1_full[
-                #     torch.arange(z1_full.shape[0], device=z1_full.device),
-                #     eos_pos_1,
-                # ]
-
-                # seqs_2 = seqs[:, 1, :]
-                # eos_pos_2 = eos_pos[:, 1]
-                # z2_full = model(seqs_2)
-                # z2 = z2_full[
-                #     torch.arange(z2_full.shape[0], device=z2_full.device),
-                #     eos_pos_2,
-                # ]
-
-                ####
-
                 loss = symmetric_nt_xent_loss_cosine(z1, z2)
 
                 # Calculate statistics
@@ -634,6 +613,7 @@ def test_dataset():
         min_number_slice_notes=150,
         max_number_slice_notes=300,
         max_seq_len=1024,
+        apply_aug=True,
     )
 
     for idx, (enc, pos) in enumerate(dataset):
