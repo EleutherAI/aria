@@ -104,15 +104,22 @@ class ContrastiveDataset(Dataset):
         min_number_slice_notes: int,
         max_number_slice_notes: int,
         max_seq_len: int,
+        apply_aug: bool = False,
     ):
         self.load_path = load_path
         self.min_number_slice_notes = min_number_slice_notes
         self.max_number_slice_notes = max_number_slice_notes
         self.max_seq_len = max_seq_len
+        self.apply_aug = apply_aug
 
         self.tokenizer = AbsTokenizer()
-        self.index = []
 
+        if apply_aug is True:
+            self.aug_fns = self.tokenizer.export_data_aug()
+        else:
+            self.aug_fns = None
+
+        self.index = []
         self.file_buff = open(self.load_path, "rb")
         self.mmap_obj = mmap.mmap(
             self.file_buff.fileno(), 0, access=mmap.ACCESS_READ
@@ -184,6 +191,12 @@ class ContrastiveDataset(Dataset):
 
         slice_seq_1 = [_format(tok) for tok in slice_seq_1]
         slice_seq_2 = [_format(tok) for tok in slice_seq_2]
+
+        if self.apply_aug:
+            assert self.aug_fns
+            for fn in self.aug_fns:
+                slice_seq_1 = fn(slice_seq_1)
+                slice_seq_2 = fn(slice_seq_2)
 
         assert len(slice_seq_1) <= self.max_seq_len
         assert len(slice_seq_2) <= self.max_seq_len
