@@ -142,7 +142,10 @@ class ContrastiveDataset(Dataset):
     ):
         _midi_dict = copy.deepcopy(midi_dict)
         slice_length = random.randint(min_num_notes, max_num_notes)
-        idx = random.randint(0, len(_midi_dict.note_msgs) - min_num_notes)
+        if len(_midi_dict.note_msgs) <= min_num_notes:
+            idx = 0
+        else:
+            idx = random.randint(0, len(_midi_dict.note_msgs) - min_num_notes)
 
         _midi_dict.note_msgs = _midi_dict.note_msgs[idx : idx + slice_length]
         _midi_dict.metadata = {}
