@@ -148,10 +148,6 @@ class Transformer(nn.Module):
         Args:
             src (torch.tensor): Input to encoder block, of shape (batch_size,
                 seq_len, d_model).
-            attn_mask (Optional[torch.tensor]): Attention mask of shape
-                (batch_size, seq_len). Defaults to None.
-            past_kv (Optional[list[KVCache]]): a list of kv caches. The list index
-                corresponds to the layer index.
 
         Returns:
             torch.tensor: Model outputs with shape (batch_size, seq_len,

@@ -330,7 +330,8 @@ def _get_mididict(path: Path):
 
 
 def build_mididict_dataset(
-    dir: str,
+    dir: str | None = None,
+    mid_paths: list[str] = [],
     recur: bool = False,
     stream_save_path: str = None,
     overwrite: bool = False,
@@ -398,13 +399,16 @@ def build_mididict_dataset(
             "will slow down dataset building"
         )
 
-    paths = []
-    if recur is True:
-        paths += Path(dir).rglob(f"*.mid")
-        paths += Path(dir).rglob(f"*.midi")
-    else:
-        paths += Path(dir).glob(f"*.mid")
-        paths += Path(dir).glob(f"*.midi")
+    assert mid_paths or dir, "Must provider paths or a directory to glob files"
+
+    paths = mid_paths if mid_paths else []
+    if dir is not None:
+        if recur is True:
+            paths += Path(dir).rglob(f"*.mid")
+            paths += Path(dir).rglob(f"*.midi")
+        else:
+            paths += Path(dir).glob(f"*.mid")
+            paths += Path(dir).glob(f"*.midi")
 
     num_paths = len(paths)
     if num_paths == 0:
@@ -839,8 +843,12 @@ class PretrainingDataset(TrainingDataset):
                         if _idx % 250 == 0:
                             logger.info(f"Finished processing {_idx}")
 
-                    buffer += [tokenizer.pad_tok] * (max_seq_len - len(buffer))
-                    writer.write(buffer[:max_seq_len])
+                    if buffer:
+                        buffer += [tokenizer.pad_tok] * (
+                            max_seq_len - len(buffer)
+                        )
+                        writer.write(buffer[:max_seq_len])
+
                 elif separate_sequences is True:
                     _idx = 0
                     for entry in reservoir(
@@ -854,10 +862,11 @@ class PretrainingDataset(TrainingDataset):
                             writer.write(buffer[:max_seq_len])
                             buffer = buffer[max_seq_len:]
 
-                        buffer += [tokenizer.pad_tok] * (
-                            max_seq_len - len(buffer)
-                        )
-                        writer.write(buffer[:max_seq_len])
+                        if buffer:
+                            buffer += [tokenizer.pad_tok] * (
+                                max_seq_len - len(buffer)
+                            )
+                            writer.write(buffer[:max_seq_len])
 
                         _idx += 1
                         if _idx % 250 == 0:

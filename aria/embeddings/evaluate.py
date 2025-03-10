@@ -54,6 +54,7 @@ CATEGORY_TAGS = {
         "waltz": 5,
     },
 }
+LEARNING_RATE = 3e-4
 
 
 def model_forward(
@@ -235,9 +236,9 @@ def get_baseline_embedding(
         emb = hidden_states[idx, last_tok_positions].tolist()
     elif pool_mode == "mean":
         pad_id = hook_tokenizer.pad_id
-        # Create a mask by comparing enc_seqs to pad_id.
+        # Create a mask by comparing enc_seqs to pad_id
         mask = (enc_seqs != pad_id).unsqueeze(-1).to(hidden_states.dtype)
-        # Sum over valid tokens and average.
+        # Sum over valid tokens and average
         sum_hidden = (hidden_states * mask).sum(dim=1)
         valid_counts = mask.sum(dim=1)
         mean_hidden = sum_hidden / valid_counts
@@ -312,6 +313,7 @@ class EvaluationDataset(torch.utils.data.Dataset):
         max_seq_len: int,
         batch_size: int,
         embedding_hook: Callable,
+        per_file_embeddings: bool = False,
         **embedding_hook_kwargs,
     ):
         def batch_producer(
@@ -319,25 +321,36 @@ class EvaluationDataset(torch.utils.data.Dataset):
             batch_queue: queue.Queue,
             batch_size: int,
             total_workers: int,
+            per_file: bool = False,
         ):
             buffer = []
             termination_signals = 0
+
             while termination_signals < total_workers:
-                if batch_queue.qsize() >= 5:
-                    time.sleep(1)
+                if batch_queue.qsize() > 10:
+                    time.sleep(0.25)
+
                 try:
                     result = results_queue.get(timeout=0.01)
-                    if result is None:
-                        termination_signals += 1
-                        continue
-                    buffer.append(result)
-                    if len(buffer) == batch_size:
-                        batch_queue.put(buffer)
-                        buffer = []
                 except queue.Empty:
                     continue
+                if result is None:
+                    termination_signals += 1
+                    continue
 
-            if buffer:
+                if per_file:
+                    batch_queue.put(result)
+                    if len(result) > batch_size:
+                        print(
+                            f"WARNING: Generated batch of size {len(result)} (batch_size={batch_size})"
+                        )
+                else:
+                    buffer.extend(result)
+                    while len(buffer) >= batch_size:
+                        batch_queue.put(buffer[:batch_size])
+                        buffer = buffer[batch_size:]
+
+            if not per_file and buffer:
                 batch_queue.put(buffer)
 
         def producer(
@@ -373,7 +386,7 @@ class EvaluationDataset(torch.utils.data.Dataset):
                     results_queue.put(None)
                     break
 
-                while results_queue.qsize() > 1000:
+                while results_queue.qsize() > 250:
                     time.sleep(0.5)
 
                 _result = process_entry(
@@ -382,8 +395,7 @@ class EvaluationDataset(torch.utils.data.Dataset):
                     max_seq_len=max_seq_len,
                     tokenizer=tokenizer,
                 )
-                for _sub_result in _result:
-                    results_queue.put(_sub_result)
+                results_queue.put(_result)
 
         assert os.path.isfile(midi_dataset_load_path)
         assert os.path.isfile(save_path) is False
@@ -399,7 +411,13 @@ class EvaluationDataset(torch.utils.data.Dataset):
         )
         batch_producer_process = multiprocessing.Process(
             target=batch_producer,
-            args=(results_queue, batch_queue, batch_size, TOTAL_WORKERS),
+            args=(
+                results_queue,
+                batch_queue,
+                batch_size,
+                TOTAL_WORKERS,
+                per_file_embeddings,
+            ),
         )
         worker_processes = [
             multiprocessing.Process(
@@ -428,10 +446,20 @@ class EvaluationDataset(torch.utils.data.Dataset):
                     _metadata = [item["metadata"] for item in batch]
                     _embs = embedding_hook(seqs=_seqs, **embedding_hook_kwargs)
 
-                    write_objs = [
-                        {"seq": s, "emb": e, "metadata": m}
-                        for s, e, m in zip(_seqs, _embs, _metadata)
-                    ]
+                    if not per_file_embeddings:
+                        write_objs = [
+                            {"emb": e, "metadata": m}
+                            for e, m in zip(_embs, _metadata)
+                        ]
+                    else:
+                        avg_emb = torch.tensor(_embs).mean(dim=0).tolist()
+                        write_objs = [
+                            {
+                                "emb": avg_emb,
+                                "metadata": _metadata[0],
+                            }
+                        ]
+
                     write_executor.submit(write_entries, writer, write_objs)
 
                 except queue.Empty:
@@ -441,7 +469,6 @@ class EvaluationDataset(torch.utils.data.Dataset):
 
 
 def _get_optim(
-    lr: float,
     model: nn.Module,
     total_steps: int,
     warmup: int = 100,
@@ -449,7 +476,7 @@ def _get_optim(
 ):
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=lr,
+        lr=LEARNING_RATE,
         weight_decay=0.1,
         betas=(0.9, 0.95),
         eps=1e-5,
@@ -538,12 +565,18 @@ def _train(
 
 
 def train_classifier(
-    emb_d: int,
-    train_dataset: EvaluationDataset,
+    embedding_dimension: int,
+    train_dataset_path: str,
+    metadata_category: str,
     tag_to_id: dict,
     batch_size: int,
+    num_epochs: int = 1,
 ):
-    num_epochs = 1
+    train_dataset = EvaluationDataset(
+        load_path=train_dataset_path,
+        tag_to_id=tag_to_id,
+        metadata_category=metadata_category,
+    )
     train_dataloader = torch.utils.data.DataLoader(
         dataset=train_dataset,
         batch_size=batch_size,
@@ -553,11 +586,10 @@ def train_classifier(
     )
 
     model = ClassifierHead(
-        d_emb=emb_d,
+        d_emb=embedding_dimension,
         num_class=len(tag_to_id.keys()),
     )
     optimizer, scheduler = _get_optim(
-        lr=3e-4,
         model=model,
         total_steps=num_epochs * len(train_dataloader),
     )
@@ -580,15 +612,15 @@ def train_classifier(
     )
 
 
-def evaluate_model(
+def evaluate_classifier(
     model: nn.Module,
-    val_dataset_path: str,
+    evaluation_dataset_path: str,
     metadata_category: str,
     tag_to_id: dict,
 ):
     id_to_tag = {v: k for k, v in tag_to_id.items()}
     val_dataset = EvaluationDataset(
-        load_path=val_dataset_path,
+        load_path=evaluation_dataset_path,
         tag_to_id=tag_to_id,
         metadata_category=metadata_category,
     )
@@ -669,53 +701,3 @@ def build_baseline_dataset():
         hook_max_seq_len=MAX_SEQ_LEN,
         hook_tokenizer=tokenizer,
     )
-
-
-def eval_all():
-    metadata_category = "music_period"
-    tag_to_id = CATEGORY_TAGS[metadata_category]
-
-    dataset = EvaluationDataset(
-        load_path="/mnt/ssd1/aria/data/paper/classification/period-aria/train-aria.jsonl",
-        metadata_category=metadata_category,
-        tag_to_id=tag_to_id,
-    )
-    model = train_classifier(
-        emb_d=512,
-        train_dataset=dataset,
-        batch_size=8,
-        tag_to_id=tag_to_id,
-    )
-    print("ARIA aria_midi-test:")
-    evaluate_model(
-        model=model,
-        val_dataset_path="/mnt/ssd1/aria/data/paper/classification/period-aria/test-aria.jsonl",
-        metadata_category=metadata_category,
-        tag_to_id=tag_to_id,
-    )
-
-    ###
-
-    dataset = EvaluationDataset(
-        load_path="/mnt/ssd1/aria/data/paper/classification/period-aria/train-m3.jsonl",
-        metadata_category=metadata_category,
-        tag_to_id=tag_to_id,
-    )
-    model = train_classifier(
-        emb_d=768,
-        train_dataset=dataset,
-        batch_size=8,
-        tag_to_id=tag_to_id,
-    )
-    print("M3 aria_midi-test:")
-    evaluate_model(
-        model=model,
-        val_dataset_path="/mnt/ssd1/aria/data/paper/classification/period-aria/test-m3.jsonl",
-        metadata_category=metadata_category,
-        tag_to_id=tag_to_id,
-    )
-
-
-if __name__ == "__main__":
-    # TODO: Move this
-    eval_all()

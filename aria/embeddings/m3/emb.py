@@ -201,6 +201,7 @@ def get_midi_embedding(
 
 # Example usage:
 if __name__ == "__main__":
+    checkpoint_url = "https://huggingface.co/sander-wood/clamp3/resolve/main/weights_clamp3_saas_h_size_768_t_model_FacebookAI_xlm-roberta-base_t_length_128_a_size_768_a_layers_12_a_length_128_s_size_768_s_layers_12_p_size_64_p_length_512.pth"
     midi_file_path = "/home/loubb/Dropbox/shared/test/test.mid"
     model, patchilizer = load_clamp3_model(
         "/home/loubb/work/clamp3/weights_clamp3_saas_h_size_768_t_model_FacebookAI_xlm-roberta-base_t_length_128_a_size_768_a_layers_12_a_length_128_s_size_768_s_layers_12_p_size_64_p_length_512.pth"

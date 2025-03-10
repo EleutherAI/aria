@@ -28,7 +28,9 @@ def build_aria_dataset(
     midi_dataset_load_path: str,
     embedding_dataset_save_path: str,
     checkpoint_path: str,
-    max_batch_size,
+    per_file_embeddings: bool,
+    max_batch_size: int,
+    compile: bool,
 ):
     from aria.config import load_model_config
     from aria.utils import _load_weight
@@ -50,11 +52,14 @@ def build_aria_dataset(
     pretrained_model.load_state_dict(model_state)
     pretrained_model.eval()
 
-    hook_model_forward = torch.compile(
-        aria_model_forward,
-        mode="reduce-overhead",
-        fullgraph=True,
-    )
+    if compile is True:
+        hook_model_forward = torch.compile(
+            aria_model_forward,
+            mode="reduce-overhead",
+            fullgraph=True,
+        )
+    else:
+        hook_model_forward = aria_model_forward
 
     EvaluationDataset.build(
         midi_dataset_load_path=midi_dataset_load_path,
@@ -62,6 +67,7 @@ def build_aria_dataset(
         max_seq_len=MAX_SEQ_LEN,
         slice_len_notes=NUM_SLICE_NOTES,
         batch_size=SEQS_BATCH_SIZE,
+        per_file_embeddings=per_file_embeddings,
         embedding_hook=get_aria_contrastive_embedding,
         hook_model=pretrained_model.cuda(),
         hook_max_seq_len=MAX_SEQ_LEN,
@@ -75,6 +81,7 @@ def build_m3_dataset(
     midi_dataset_load_path: str,
     embedding_dataset_save_path: str,
     checkpoint_path: str,
+    per_file_embeddings: bool,
 ):
     from aria.embeddings.m3.emb import load_clamp3_model
 
@@ -91,6 +98,7 @@ def build_m3_dataset(
         max_seq_len=MAX_SEQ_LEN,
         slice_len_notes=NUM_SLICE_NOTES,
         batch_size=SEQS_BATCH_SIZE,
+        per_file_embeddings=per_file_embeddings,
         embedding_hook=get_clamp3_embedding,
         hook_model=model,
         hook_patchilizer=patchilizer,
@@ -101,6 +109,7 @@ def build_m3_dataset(
 def build_mert_dataset(
     midi_dataset_load_path: str,
     embedding_dataset_save_path: str,
+    per_file_embeddings: bool,
     pianoteq_exec_path: str,
     pianoteq_num_procs: int,
 ):
@@ -119,6 +128,7 @@ def build_mert_dataset(
         max_seq_len=MAX_SEQ_LEN,
         slice_len_notes=NUM_SLICE_NOTES,
         batch_size=SEQS_BATCH_SIZE,
+        per_file_embeddings=per_file_embeddings,
         embedding_hook=get_mert_embedding,
         hook_model=model,
         hook_processor=processor,
@@ -157,10 +167,20 @@ def main():
         help="Path where the dataset will be saved.",
     )
     parser.add_argument(
+        "--compute_per_file_embeddings",
+        action="store_true",
+        help="Compute embeddings on a per-file basis",
+    )
+    parser.add_argument(
         "--aria_max_batch_size",
         type=int,
         default=128,
         help="Max batch size for aria embedding forward pass",
+    )
+    parser.add_argument(
+        "--aria_compile",
+        action="store_true",
+        help="Compile forward pass",
     )
     parser.add_argument(
         "--mert_pianoteq_exec_path",
@@ -179,26 +199,28 @@ def main():
 
     if args.model == "aria":
         assert args.aria_max_batch_size > 0
-
-        # TODO: TEST
         build_aria_dataset(
             midi_dataset_load_path=args.dataset_load_path,
             embedding_dataset_save_path=args.dataset_save_path,
             checkpoint_path=args.model_cp_path,
+            per_file_embeddings=args.compute_per_file_embeddings,
             max_batch_size=args.aria_max_batch_size,
+            compile=args.aria_compile,
         )
     elif args.model == "m3":
-        # TODO: TEST
         build_m3_dataset(
             midi_dataset_load_path=args.dataset_load_path,
             embedding_dataset_save_path=args.dataset_save_path,
             checkpoint_path=args.model_cp_path,
+            per_file_embeddings=args.compute_per_file_embeddings,
         )
     elif args.model == "mert":
-        # TODO: TEST
+        assert args.mert_pianoteq_exec_path
+        assert args.mert_pianoteq_num_procs > 0
         build_mert_dataset(
             midi_dataset_load_path=args.dataset_load_path,
             embedding_dataset_save_path=args.dataset_save_path,
+            per_file_embeddings=args.compute_per_file_embeddings,
             pianoteq_exec_path=args.mert_pianoteq_exec_path,
             pianoteq_num_procs=args.mert_pianoteq_num_procs,
         )
