@@ -53,6 +53,16 @@ CATEGORY_TAGS = {
         "fugue": 4,
         "waltz": 5,
     },
+    "pianist": {
+        "hisaishi": 0,
+        "hancock": 1,
+        "bethel": 2,
+        "einaudi": 3,
+        "clayderman": 4,
+        "ryuichi": 5,
+        "yiruma": 6,
+        "hillsong": 7,
+    },
 }
 LEARNING_RATE = 3e-4
 
@@ -64,13 +74,13 @@ def model_forward(
     return model(idxs)
 
 
-def chunk_and_pad(lst: list, n: int):
-    return [lst[i : i + n] for i in range(0, len(lst), n)]
-
-
 def write_entries(writer, entries):
     for entry in entries:
         writer.write(entry)
+
+
+def chunk_and_pad(lst: list, n: int):
+    return [lst[i : i + n] for i in range(0, len(lst), n)]
 
 
 def process_entry(
@@ -281,7 +291,7 @@ class EvaluationDataset(torch.utils.data.Dataset):
         tag = metadata.get(self.metadata_category, "other")
         tag = tag if tag in self.tag_to_id.keys() else "other"
 
-        assert tag in self.tag_to_id
+        assert tag in self.tag_to_id, metadata
         tag_tensor = torch.tensor(self.tag_to_id[tag])
         emb_tensor = torch.tensor(emb)
 
@@ -448,13 +458,14 @@ class EvaluationDataset(torch.utils.data.Dataset):
 
                     if not per_file_embeddings:
                         write_objs = [
-                            {"emb": e, "metadata": m}
-                            for e, m in zip(_embs, _metadata)
+                            {"seq": s, "emb": e, "metadata": m}
+                            for s, e, m in zip(_seqs, _embs, _metadata)
                         ]
                     else:
                         avg_emb = torch.tensor(_embs).mean(dim=0).tolist()
                         write_objs = [
                             {
+                                "seqs": _seqs,
                                 "emb": avg_emb,
                                 "metadata": _metadata[0],
                             }

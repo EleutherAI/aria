@@ -1,7 +1,6 @@
 import os
 import argparse
 import torch
-
 import torch.nn as nn
 
 from ariautils.tokenizer import AbsTokenizer
@@ -81,6 +80,7 @@ def build_m3_dataset(
     midi_dataset_load_path: str,
     embedding_dataset_save_path: str,
     checkpoint_path: str,
+    is_encoder_checkpoint: bool,
     per_file_embeddings: bool,
 ):
     from aria.embeddings.m3.emb import load_clamp3_model
@@ -90,13 +90,19 @@ def build_m3_dataset(
     assert not os.path.isfile(embedding_dataset_save_path)
 
     tokenizer = AbsTokenizer()
-    model, patchilizer = load_clamp3_model(checkpoint_path=checkpoint_path)
+    model, patchilizer = load_clamp3_model(
+        checkpoint_path=checkpoint_path, m3_only=is_encoder_checkpoint
+    )
+
+    # Workaround to outsource global_emb calculation to model
+    slice_len_notes = NUM_SLICE_NOTES if per_file_embeddings is False else 10000
+    max_seq_len = MAX_SEQ_LEN if per_file_embeddings is False else 100000
 
     EvaluationDataset.build(
         midi_dataset_load_path=midi_dataset_load_path,
         save_path=embedding_dataset_save_path,
-        max_seq_len=MAX_SEQ_LEN,
-        slice_len_notes=NUM_SLICE_NOTES,
+        max_seq_len=max_seq_len,
+        slice_len_notes=slice_len_notes,
         batch_size=SEQS_BATCH_SIZE,
         per_file_embeddings=per_file_embeddings,
         embedding_hook=get_clamp3_embedding,
@@ -183,6 +189,11 @@ def main():
         help="Compile forward pass",
     )
     parser.add_argument(
+        "--m3_is_encoder_checkpoint",
+        action="store_true",
+        help="Checkpoint is for entire clamp model.",
+    )
+    parser.add_argument(
         "--mert_pianoteq_exec_path",
         type=str,
         required=False,
@@ -212,6 +223,7 @@ def main():
             midi_dataset_load_path=args.dataset_load_path,
             embedding_dataset_save_path=args.dataset_save_path,
             checkpoint_path=args.model_cp_path,
+            is_encoder_checkpoint=args.m3_is_encoder_checkpoint,
             per_file_embeddings=args.compute_per_file_embeddings,
         )
     elif args.model == "mert":
