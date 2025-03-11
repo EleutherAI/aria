@@ -579,7 +579,7 @@ class CLaMP3Model(PreTrainedModel):
             symbolic_features = self.avg_pooling(
                 symbolic_features, symbolic_masks
             )
-            symbolic_features = self.symbolic_proj(symbolic_features)
+            # symbolic_features = self.symbolic_proj(symbolic_features)
 
         return symbolic_features
 

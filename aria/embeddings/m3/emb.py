@@ -1,7 +1,7 @@
 import os
 import torch
 import mido
-from transformers import BertConfig
+from transformers import BertConfig, GPT2Config
 
 from aria.embeddings.m3.config import (
     AUDIO_HIDDEN_SIZE,
@@ -12,11 +12,11 @@ from aria.embeddings.m3.config import (
     PATCH_LENGTH,
     PATCH_SIZE,
     CLAMP3_HIDDEN_SIZE,
-    CLAMP3_LOAD_M3,
     TEXT_MODEL_NAME,
+    TOKEN_NUM_LAYERS,
 )
 
-from aria.embeddings.m3.utils import CLaMP3Model, M3Patchilizer
+from aria.embeddings.m3.utils import CLaMP3Model, M3Patchilizer, M3Model
 
 
 def msg_to_str(msg):
@@ -63,12 +63,8 @@ def load_midi(
     return "\n".join(msg_list)
 
 
-def load_clamp3_model(checkpoint_path: str):
-    """
-    Loads the CLaMP3 model along with its configuration and M3Patchilizer.
-    The model weights are loaded from the checkpoint specified in CLAMP3_WEIGHTS_PATH.
-    """
-    # Build the configurations for audio and symbolic (M3) parts.
+def load_clamp3_model(checkpoint_path: str, m3_only: bool = False):
+    # Create audio and symbolic configurations.
     audio_config = BertConfig(
         vocab_size=1,
         hidden_size=AUDIO_HIDDEN_SIZE,
@@ -85,29 +81,39 @@ def load_clamp3_model(checkpoint_path: str):
         intermediate_size=M3_HIDDEN_SIZE * 4,
         max_position_embeddings=PATCH_LENGTH,
     )
+    decoder_config = GPT2Config(
+        vocab_size=128,
+        n_positions=PATCH_SIZE,
+        n_embd=M3_HIDDEN_SIZE,
+        n_layer=TOKEN_NUM_LAYERS,
+        n_head=M3_HIDDEN_SIZE // 64,
+        n_inner=M3_HIDDEN_SIZE * 4,
+    )
 
-    # Instantiate the CLaMP3 model.
     model = CLaMP3Model(
         audio_config=audio_config,
         symbolic_config=symbolic_config,
         text_model_name=TEXT_MODEL_NAME,
         hidden_size=CLAMP3_HIDDEN_SIZE,
-        load_m3=CLAMP3_LOAD_M3,
+        load_m3=True,
     )
     model = model.to("cuda")
     model.eval()
 
-    # Determine checkpoint path.
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    # Load checkpoint weights.
     checkpoint = torch.load(
         checkpoint_path, map_location="cuda", weights_only=True
     )
-    model.load_state_dict(checkpoint["model"])
 
-    # Instantiate the patchilizer from utils.
+    if m3_only is False:
+        model.load_state_dict(checkpoint["model"])
+    else:
+        temp_m3_model = M3Model(symbolic_config, decoder_config)
+        temp_m3_model.load_state_dict(checkpoint["model"])
+        model.symbolic_model.load_state_dict(temp_m3_model.encoder.state_dict())
+
     patchilizer = M3Patchilizer()
 
     return model, patchilizer
@@ -115,24 +121,16 @@ def load_clamp3_model(checkpoint_path: str):
 
 def get_midi_embedding(
     mid: mido.MidiFile,
-    model: torch.nn.Module,
+    model: CLaMP3Model,
     patchilizer: M3Patchilizer,
     get_global=True,
 ):
     device = "cuda"
-    # Step 1: Convert MIDI to an MTF-format string.
     mtf_str = load_midi(mid=mid, m3_compatible=True)
-
-    # Step 3: Encode the MTF string to patches.
-    # The patchilizer returns a list of patches (each patch is a list of token IDs).
     patches = patchilizer.encode(mtf_str, add_special_patches=True)
 
-    # Convert the list of patches to a tensor.
-    # Each patch is of length PATCH_SIZE; we assume tokens are integers.
-    # The resulting tensor shape will be [num_patches, PATCH_SIZE].
     token_tensor = torch.tensor(patches, dtype=torch.long).to(device)
 
-    # Step 4: Create segments of fixed length PATCH_LENGTH.
     num_tokens = token_tensor.size(0)
     segments = []
     seg_weights = []
@@ -141,12 +139,11 @@ def get_midi_embedding(
         cur_len = seg.size(0)
         segments.append(seg)
         seg_weights.append(cur_len)
-    # For global feature extraction, ensure the last segment is exactly PATCH_LENGTH tokens
+
     if num_tokens > PATCH_LENGTH:
         segments[-1] = token_tensor[-PATCH_LENGTH:]
         seg_weights[-1] = segments[-1].size(0)
 
-    # Step 5: Process each segment to obtain features.
     processed_feats = []
     for seg in segments:
         cur_len = seg.size(0)
@@ -163,7 +160,7 @@ def get_midi_embedding(
             )
             seg = torch.cat([seg, pad], dim=0)
         seg = seg.unsqueeze(0)  # Add batch dimension.
-        # Create a mask: 1 for valid tokens, 0 for padding.
+
         mask = torch.cat(
             [
                 torch.ones(cur_len, device=device),
@@ -175,14 +172,12 @@ def get_midi_embedding(
             feat = model.get_symbolic_features(
                 symbolic_inputs=seg, symbolic_masks=mask, get_global=get_global
             )
-        # When not getting a global feature, you may wish to trim the output to the valid length.
+
         if not get_global:
             feat = feat[:, : int(mask.sum().item()), :]
         processed_feats.append(feat)
 
-    # Step 6: Combine segment features into a single embedding.
     if not get_global:
-        # Concatenate features along the time dimension.
         embedding = torch.cat(
             [feat.squeeze(0) for feat in processed_feats], dim=0
         )
@@ -197,21 +192,3 @@ def get_midi_embedding(
         embedding = (feats * weights).sum(dim=0) / weights.sum()
 
     return embedding.view(-1)
-
-
-# Example usage:
-if __name__ == "__main__":
-    checkpoint_url = "https://huggingface.co/sander-wood/clamp3/resolve/main/weights_clamp3_saas_h_size_768_t_model_FacebookAI_xlm-roberta-base_t_length_128_a_size_768_a_layers_12_a_length_128_s_size_768_s_layers_12_p_size_64_p_length_512.pth"
-    midi_file_path = "/home/loubb/Dropbox/shared/test/test.mid"
-    model, patchilizer = load_clamp3_model(
-        "/home/loubb/work/clamp3/weights_clamp3_saas_h_size_768_t_model_FacebookAI_xlm-roberta-base_t_length_128_a_size_768_a_layers_12_a_length_128_s_size_768_s_layers_12_p_size_64_p_length_512.pth"
-    )
-    mid = mido.MidiFile(midi_file_path)
-    embedding = get_midi_embedding(
-        mid,
-        model=model,
-        patchilizer=patchilizer,
-        get_global=True,
-    )
-    print(embedding)
-    print(embedding.shape)
