@@ -54,7 +54,7 @@ def main():
     parser.add_argument(
         "--metadata_category",
         type=str,
-        choices=["genre", "music_period", "composer", "form"],
+        choices=["genre", "music_period", "composer", "form", "pianist"],
         required=True,
     )
     parser.add_argument(
