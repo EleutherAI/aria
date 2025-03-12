@@ -24,13 +24,10 @@ def seq_to_audio_path(
     mid = tokenizer.detokenize(seq)
     mid.to_midi().save(mid_path)
 
-    # Step 3: Create a temporary WAV file for output
     audio_temp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     audio_path = audio_temp.name
     audio_temp.close()  # Close so CLI can write to it
 
-    # Step 4: Run CLI command to generate audio using Pianoteq
-    # EXEC_PATH = "/home/loubb/pianoteq/x86-64bit/Pianoteq 8 STAGE"
     preset = "NY Steinway D Classical Recording"
 
     pianoteq_cmd = f"{shlex.quote(pianoteq_exec_path)} --preset {shlex.quote(preset)} --rate 24000 --midi {mid_path} --wav {audio_path}"

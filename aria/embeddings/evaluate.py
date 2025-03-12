@@ -349,18 +349,24 @@ class EvaluationDataset(torch.utils.data.Dataset):
                     continue
 
                 if per_file:
-                    batch_queue.put(result)
-                    if len(result) > batch_size:
+                    assert all(
+                        "abs_load_path" in r["metadata"].keys() for r in result
+                    )
+                    buffer.extend(result)
+                    if len(buffer) > 2 * batch_size:
                         print(
-                            f"WARNING: Generated batch of size {len(result)} (batch_size={batch_size})"
+                            f"WARNING: Generated batch of size {len(buffer)} (batch_size={batch_size})"
                         )
+                    if len(buffer) >= batch_size:
+                        batch_queue.put(buffer)
+                        buffer = []
                 else:
                     buffer.extend(result)
                     while len(buffer) >= batch_size:
                         batch_queue.put(buffer[:batch_size])
                         buffer = buffer[batch_size:]
 
-            if not per_file and buffer:
+            if buffer:
                 batch_queue.put(buffer)
 
         def producer(
@@ -462,14 +468,31 @@ class EvaluationDataset(torch.utils.data.Dataset):
                             for s, e, m in zip(_seqs, _embs, _metadata)
                         ]
                     else:
-                        avg_emb = torch.tensor(_embs).mean(dim=0).tolist()
-                        write_objs = [
-                            {
-                                "seqs": _seqs,
-                                "emb": avg_emb,
-                                "metadata": _metadata[0],
-                            }
-                        ]
+                        # Calculate per-file emb by averaging over abs_load_path embs
+                        groups = {}
+                        for seq, emb, meta in zip(_seqs, _embs, _metadata):
+                            file_path = meta["abs_load_path"]
+                            if file_path not in groups:
+                                groups[file_path] = {
+                                    "seqs": [],
+                                    "embs": [],
+                                    "metadata": meta,
+                                }
+                            groups[file_path]["seqs"].append(seq)
+                            groups[file_path]["embs"].append(emb)
+
+                        write_objs = []
+                        for file_path, data in groups.items():
+                            avg_emb = (
+                                torch.tensor(data["embs"]).mean(dim=0).tolist()
+                            )
+                            write_objs.append(
+                                {
+                                    "seqs": data["seqs"],
+                                    "emb": avg_emb,
+                                    "metadata": data["metadata"],
+                                }
+                            )
 
                     write_executor.submit(write_entries, writer, write_objs)
 
