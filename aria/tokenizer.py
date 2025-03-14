@@ -125,8 +125,14 @@ class InferenceAbsTokenizer(_AbsTokenizer):
                 elif (
                     curr_time_ms > prompt_end_ms and prompt_tok_inserted == True
                 ):
+                    # Res has already been shifted +1 when inserting prompt_tok
                     res.insert(idx + 1, self.prompt_end_tok)
                     break
+
+        if prompt_tok_inserted and self.prompt_end_tok not in res:
+            res.insert(-1, self.prompt_end_tok)
+            assert res[-1] == self.eos_tok
+            assert res[-2] == self.prompt_end_tok
 
         return res
 

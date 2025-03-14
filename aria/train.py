@@ -9,8 +9,6 @@ import accelerate
 from torch import nn as nn
 from torch.utils.data import DataLoader
 
-from torch.utils.flop_counter import FlopCounterMode
-from triton.testing import do_bench
 from accelerate.logging import get_logger
 from safetensors.torch import load_file
 from logging.handlers import RotatingFileHandler
@@ -18,13 +16,11 @@ from tqdm import tqdm
 from typing import List
 
 from aria.config import load_model_config
-from aria.model import ModelConfig, TransformerLM
+from aria.model import ModelConfig, TransformerLM, TransformerLM_CND
 from ariautils.tokenizer import Tokenizer, AbsTokenizer, RelTokenizer
-from aria.tokenizer import InferenceAbsTokenizer
 from aria.datasets import (
     TrainingDataset,
     PretrainingDataset,
-    FinetuningDataset,
 )
 from aria.utils import _load_weight
 
@@ -213,31 +209,18 @@ def get_dataloaders(
     tokenizer: Tokenizer,
     batch_size: int,
     num_workers: int,
+    use_embeddings: bool,
     init_epoch: int | None = None,
     apply_aug: bool = True,
-    finetune: bool = False,
 ):
-    logger = logging.getLogger(__name__)
-    if finetune == False:
-        train_dataset = PretrainingDataset(
-            dir_paths=train_data_dirs,
-            tokenizer=tokenizer,
-        )
-        val_dataset = PretrainingDataset(
-            dir_paths=val_data_dir,
-            tokenizer=tokenizer,
-        )
-    elif finetune == True:
-        train_dataset = FinetuningDataset(
-            dir_paths=train_data_dirs,
-            tokenizer=tokenizer,
-        )
-        val_dataset = FinetuningDataset(
-            dir_paths=val_data_dir,
-            tokenizer=tokenizer,
-        )
-    else:
-        raise ValueError
+    train_dataset = PretrainingDataset(
+        dir_paths=train_data_dirs,
+        tokenizer=tokenizer,
+    )
+    val_dataset = PretrainingDataset(
+        dir_paths=val_data_dir,
+        tokenizer=tokenizer,
+    )
 
     if init_epoch:
         train_dataset.init_epoch(idx=init_epoch)
@@ -262,6 +245,12 @@ def get_dataloaders(
         shuffle=False,
     )
 
+    if use_embeddings is True:
+        _src, _tgt, _mask, _emb = train_dataset[0]
+        _src, _tgt, _mask, __emb = val_dataset[0]
+        assert _emb.numel() != 0, "Embeddings not present in train dataset"
+        assert __emb.numel() != 0, "Embeddings not present in val dataset"
+
     return train_dataloader, val_dataloader
 
 
@@ -271,6 +260,7 @@ def _train(
     model: TransformerLM,
     train_dataloader: DataLoader,
     val_dataloader: DataLoader,
+    use_embeddings: bool,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     steps_per_checkpoint: int | None = None,
@@ -278,34 +268,6 @@ def _train(
     resume_epoch: int | None = None,
     project_dir: str | None = None,
 ):
-    def profile_flops(dataloader: DataLoader):
-        def _bench():
-            for batch in dataloader:
-                src, tgt = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
-                logits = model(src)  # (b_sz, s_len, v_sz)
-                logits = logits.transpose(1, 2)
-                loss = loss_fn(logits, tgt)
-
-                # Backwards step - omit optimizer.step()
-                accelerator.backward(loss)
-                optimizer.zero_grad()
-                break
-
-        logger.info(
-            f"Model has "
-            f"{'{:,}'.format(sum(p.numel() for p in model.parameters() if p.requires_grad))} "
-            "parameters"
-        )
-
-        # logger.info("Profiling FLOP")
-        # flop_counter = FlopCounterMode(display=False)
-        # _bench()
-
-        # with flop_counter:
-        #     _bench()
-        # total_flop = sum(flop_counter.get_flop_counts()["Global"].values())
-        # logger.info(f"Forwards & backwards FLOP: {total_flop / 1e12} TF")
-
     def make_checkpoint(
         _accelerator: accelerate.Accelerator, _epoch: int, _step: int
     ):
@@ -353,8 +315,16 @@ def _train(
 
             with accelerator.accumulate(model):
                 step = __step + _resume_step + 1
-                src, tgt, mask = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
-                logits = model(src)  # (b_sz, s_len, v_sz)
+                src, tgt, mask, emb = (
+                    batch  # (b_sz, s_len), (b_sz, s_len), (b_sz, s_len), (b_sz, d_emb)
+                )
+                if use_embeddings is True:
+                    logits = model(src=src, emb=emb)  # (b_sz, s_len - 1, v_sz)
+                    tgt = tgt[:, :-1]  # (b_sz, s_len - 1)
+                    mask = mask[:, :-1]  # (b_sz, s_len - 1)
+                else:
+                    logits = model(src)  # (b_sz, s_len, v_sz)
+
                 logits = logits.transpose(
                     1, 2
                 )  # Transpose for CrossEntropyLoss
@@ -418,8 +388,16 @@ def _train(
                 leave=False,
             )
         ):
-            src, tgt, mask = batch  # (b_sz, s_len), (b_sz, s_len, v_sz)
-            logits = model(src)  # (b_sz, s_len, v_sz)
+            src, tgt, mask, emb = (
+                batch  # (b_sz, s_len), (b_sz, s_len), (b_sz, s_len), (b_sz, d_emb)
+            )
+            if use_embeddings is True:
+                logits = model(src=src, emb=emb)  # (b_sz, s_len - 1, v_sz)
+                tgt = tgt[:, :-1]  # (b_sz, s_len - 1)
+                mask = mask[:, :-1]  # (b_sz, s_len - 1)
+            else:
+                logits = model(src)  # (b_sz, s_len, v_sz)
+
             logits = logits.transpose(1, 2)  # Transpose for CrossEntropyLoss
             loss = loss_fn(logits, tgt)
 
@@ -451,7 +429,12 @@ def _train(
     PAD_ID = train_dataloader.dataset.tokenizer.pad_id
     logger = get_logger(__name__)  # Accelerate logger
     loss_fn = nn.CrossEntropyLoss(ignore_index=PAD_ID, reduction="none")
-    profile_flops(dataloader=train_dataloader)
+
+    logger.info(
+        f"Model has "
+        f"{'{:,}'.format(sum(p.numel() for p in model.parameters() if p.requires_grad))} "
+        "parameters"
+    )
 
     if accelerator.is_main_process:
         loss_csv = open(os.path.join(project_dir, "loss.csv"), "w")
@@ -504,10 +487,12 @@ def _train(
         epoch_csv.close()
 
 
+# TODO: Add use_embeddings logic to this code path
 def resume_train(
     model_name: str,
     train_data_paths: str,
     val_data_path: str,
+    use_embeddings: bool,
     num_workers: int,
     batch_size: int,
     grad_acc_steps: int,
@@ -533,8 +518,6 @@ def resume_train(
     tokenizer_name = get_tokenizer_name(train_data_paths, val_data_path)
     if tokenizer_name == "abs":
         tokenizer = AbsTokenizer()
-    elif tokenizer_name == "inference_abs":
-        tokenizer = InferenceAbsTokenizer()
     elif tokenizer_name == "rel":
         tokenizer = RelTokenizer()
     else:
@@ -560,6 +543,7 @@ def resume_train(
     logger.info(
         f"Using training config: "
         f"model_name={model_name}, "
+        f"use_embeddings={use_embeddings}, "
         f"epochs={epochs}, "
         f"batch_size={batch_size}, "
         f"grad_acc_steps={grad_acc_steps}, "
@@ -575,7 +559,12 @@ def resume_train(
     # Init model
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
-    model = TransformerLM(model_config)
+
+    if use_embeddings:
+        model = TransformerLM_CND(model_config)
+    else:
+        model = TransformerLM(model_config)
+
     model.compile()
 
     train_dataloader, val_dataloader = get_dataloaders(
@@ -586,6 +575,7 @@ def resume_train(
         batch_size=batch_size,
         num_workers=num_workers,
         apply_aug=True,
+        use_embeddings=use_embeddings,
     )
     optimizer, scheduler = get_optim(
         model,
@@ -624,6 +614,7 @@ def resume_train(
         model=model,
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
+        use_embeddings=use_embeddings,
         optimizer=optimizer,
         scheduler=scheduler,
         steps_per_checkpoint=steps_per_checkpoint,
@@ -637,6 +628,7 @@ def train(
     model_name: str,
     train_data_paths: List[str],
     val_data_path: str,
+    use_embeddings: bool,
     num_workers: int,
     batch_size: int,
     grad_acc_steps: int,
@@ -659,8 +651,6 @@ def train(
     tokenizer_name = get_tokenizer_name(train_data_paths, val_data_path)
     if tokenizer_name == "abs":
         tokenizer = AbsTokenizer()
-    elif tokenizer_name == "inference_abs":
-        tokenizer = InferenceAbsTokenizer()
     elif tokenizer_name == "rel":
         tokenizer = RelTokenizer()
     else:
@@ -678,6 +668,7 @@ def train(
     logger.info(
         f"Using training config: "
         f"model_name={model_name}, "
+        f"use_embeddings={use_embeddings}, "
         f"checkpoint_path={checkpoint_path}, "
         if checkpoint_path
         else ""
@@ -693,7 +684,12 @@ def train(
     # Init model
     model_config = ModelConfig(**load_model_config(model_name))
     model_config.set_vocab_size(tokenizer.vocab_size)
-    model = TransformerLM(model_config)
+
+    if use_embeddings is True:
+        model = TransformerLM_CND(model_config)
+    else:
+        model = TransformerLM(model_config)
+
     model.compile()
     logger.info(f"Loaded model with config: {load_model_config(model_name)}")
     if checkpoint_path:
@@ -714,7 +710,7 @@ def train(
         batch_size=batch_size,
         num_workers=num_workers,
         apply_aug=True,
-        finetune=True if checkpoint_path is not None else False,
+        use_embeddings=use_embeddings,
     )
 
     assert (
@@ -798,6 +794,9 @@ def parse_resume_args():
     argp.add_argument("-train_data", nargs="+", help="path to train dir")
     argp.add_argument("-val_data", help="path to val dir")
     argp.add_argument("-cp_dir", help="checkpoint dir", type=str, required=True)
+    argp.add_argument(
+        "-use_embeddings", help="prepend embeddings", action="store_true"
+    )
     argp.add_argument("-r_step", help="resume step", type=int, required=True)
     argp.add_argument("-r_epoch", help="resume epoch", type=int, required=True)
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
@@ -824,6 +823,9 @@ def parse_train_args():
     argp.add_argument("-val_data", help="path to val dir")
     argp.add_argument(
         "-cp_path", help="path to checkpoint", required=False, default=None
+    )
+    argp.add_argument(
+        "-use_embeddings", help="prepend embeddings", action="store_true"
     )
     argp.add_argument("-epochs", help="train epochs", type=int, required=True)
     argp.add_argument("-bs", help="batch size", type=int, default=32)
@@ -860,6 +862,7 @@ if __name__ == "__main__":
         train(
             model_name=train_args.model,
             train_data_paths=train_args.train_data,
+            use_embeddings=train_args.use_embeddings,
             val_data_path=train_args.val_data,
             num_workers=train_args.workers,
             batch_size=train_args.bs,
@@ -875,6 +878,7 @@ if __name__ == "__main__":
             model_name=resume_args.model,
             train_data_paths=resume_args.train_data,
             val_data_path=resume_args.val_data,
+            use_embeddings=resume_args.use_embeddings,
             num_workers=resume_args.workers,
             batch_size=resume_args.bs,
             grad_acc_steps=resume_args.grad_acc_steps,

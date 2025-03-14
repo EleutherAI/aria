@@ -140,7 +140,7 @@
         "metadata": {
             "functions": {
                 "aria_midi_json": {
-                    "run": true,
+                    "run": false,
                     "args": {}
                 },
                 "composer_filename": {
@@ -174,39 +174,6 @@
                 "form": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"],
                 "composer": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"]
             }
-        },
-        "finetuning": {
-            "guidance_prob": 0.5,
-            "min_noisy_interval_ms": 5000,
-            "max_noisy_interval_ms": 60000,
-            "min_clean_interval_ms": 60000,
-            "max_clean_interval_ms": 200000,
-            "noising": {
-                "activation_prob": 0.5,
-                "remove_notes": {
-                    "activation_prob": 0.25,
-                    "min_ratio": 0.0,
-                    "max_ratio": 0.15
-                },
-                "adjust_velocity": {
-                    "activation_prob": 0.25,
-                    "min_adjust": 1,
-                    "max_adjust": 20
-                },
-                "adjust_onsets": {
-                    "activation_prob": 0.25,
-                    "min_adjust_s": 0.005,
-                    "max_adjust_s": 0.05,
-                    "max_ratio": 0.0,
-                    "min_ratio": 0.2
-                },
-                "quantize_onsets": {
-                    "activation_prob": 0.05,
-                    "min_quant_s": 0.05,
-                    "max_quant_s": 0.1,
-                    "max_vel_delta": 30
-                }
-            }
         }
     },
     "tokenizer": {
@@ -219,5 +186,4 @@
 
         }
     }
-
 }

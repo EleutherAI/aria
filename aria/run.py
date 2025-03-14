@@ -2,7 +2,7 @@
 
 import argparse
 import os
-import re
+import json
 import sys
 
 
@@ -72,6 +72,7 @@ def _parse_sample_args():
     return argp.parse_args(sys.argv[2:])
 
 
+# TODO: This is all broken due to tokenizer / embedding change -- need to fix
 def sample(args):
     """Entrypoint for sampling"""
 
@@ -151,6 +152,8 @@ def sample(args):
         guidance_end_ms=args.guidance_end_ms,
         guidance_midi_dict=guidance_midi_dict,
     )
+    # prompt_seq = prompt_seq[:-1]
+    print(prompt_seq)
 
     if len(prompt_seq) + args.l > model_config.max_seq_len:
         print(
@@ -158,13 +161,14 @@ def sample(args):
         )
     prompts = [prompt_seq for _ in range(num_variations)]
 
-    samples_dir = os.path.join(os.path.dirname(__file__), "..", "samples")
+    samples_dir = "/home/loubb/Dropbox/shared"
     if os.path.isdir(samples_dir) is False:
         os.mkdir(samples_dir)
     if guidance_seq:
         tokenizer.detokenize(guidance_seq).to_midi().save(
             os.path.join(samples_dir, f"guidance.mid")
         )
+
     if args.cfg is not None and guidance_seq is not None:
         results = sample_batch_cfg(
             model=model,
@@ -257,6 +261,7 @@ def _parse_pretrain_dataset_args():
         help="start each with a new entry",
         action="store_true",
     )
+    argp.add_argument("-embedding_dataset_path", required=False)
 
     return argp.parse_args(sys.argv[2:])
 
@@ -270,6 +275,16 @@ def build_pretraining_dataset(args):
     elif args.tokenizer_name == "rel":
         tokenizer = RelTokenizer()
 
+    if args.embedding_dataset_path is not None:
+        with open(args.embedding_dataset_path, "r") as f:
+            file_embeddings = {
+                data["metadata"]["abs_load_path"]: data["emb"]
+                for data in map(json.loads, f)
+            }
+
+    else:
+        file_embeddings = None
+
     PretrainingDataset.build(
         tokenizer=tokenizer,
         save_dir=args.save_dir,
@@ -277,33 +292,7 @@ def build_pretraining_dataset(args):
         num_epochs=args.e,
         midi_dataset_path=args.load_path,
         separate_sequences=args.sep_sequences,
-    )
-
-
-def _parse_finetune_dataset_args():
-    argp = argparse.ArgumentParser(prog="aria finetune-dataset")
-    argp.add_argument(
-        "-midi_dataset_path",
-        help="path to midi_dict dataset",
-    )
-    argp.add_argument("-save_dir", help="path to save dataset")
-    argp.add_argument("-l", help="max sequence length", type=int, default=4096)
-    argp.add_argument("-e", help="num epochs", type=int, default=1)
-
-    return argp.parse_args(sys.argv[2:])
-
-
-def build_finetune_dataset(args):
-    from aria.tokenizer import InferenceAbsTokenizer
-    from aria.datasets import FinetuningDataset
-
-    tokenizer = InferenceAbsTokenizer()
-    FinetuningDataset.build(
-        tokenizer=tokenizer,
-        save_dir=args.save_dir,
-        max_seq_len=args.l,
-        num_epochs=args.e,
-        midi_dataset_path=args.midi_dataset_path,
+        file_embeddings=file_embeddings,
     )
 
 
@@ -317,7 +306,6 @@ def main():
             "sample",
             "midi-dataset",
             "pretrain-dataset",
-            "finetune-dataset",
         ),
     )
 
@@ -335,8 +323,6 @@ def main():
         build_midi_dataset(args=_parse_midi_dataset_args())
     elif args.command == "pretrain-dataset":
         build_pretraining_dataset(args=_parse_pretrain_dataset_args())
-    elif args.command == "finetune-dataset":
-        build_finetune_dataset(args=_parse_finetune_dataset_args())
     else:
         print("Unrecognized command")
         parser.print_help()

@@ -79,8 +79,11 @@ def write_entries(writer, entries):
         writer.write(entry)
 
 
-def chunk_and_pad(lst: list, n: int):
-    return [lst[i : i + n] for i in range(0, len(lst), n)]
+def get_chunks(note_msgs: list, chunk_len: int):
+    return [
+        note_msgs[i : i + chunk_len]
+        for i in range(0, len(note_msgs), chunk_len)
+    ]
 
 
 def process_entry(
@@ -92,8 +95,8 @@ def process_entry(
     midi_dict = MidiDict.from_msg_dict(entry)
 
     outputs = []
-    for slice_note_msgs in chunk_and_pad(
-        lst=midi_dict.note_msgs, n=slice_len_notes
+    for slice_note_msgs in get_chunks(
+        note_msgs=midi_dict.note_msgs, chunk_len=slice_len_notes
     ):
         if len(slice_note_msgs) < 20:
             break
