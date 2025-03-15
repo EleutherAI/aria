@@ -701,12 +701,13 @@ def train(
     if checkpoint_path:
         try:
             model.load_state_dict(_load_weight(checkpoint_path))
-        except Exception as e:
-            raise Exception(
-                f"Failed to load checkpoint: {e}\n"
-                "This could be due to a mismatch between the tokenizer used "
-                "to build the pre-training and fine-tuning datasets"
+        except RuntimeError as e:
+            print(e)
+            logger.info(
+                f"Failed to load {model_name} into {model_name}, attempting with strict=False"
             )
+            model.load_state_dict(_load_weight(checkpoint_path), strict=False)
+
         logger.info(f"Loaded finetune checkpoint located at: {checkpoint_path}")
 
     train_dataloader, val_dataloader = get_dataloaders(
