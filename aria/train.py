@@ -3,6 +3,7 @@ import sys
 import csv
 import argparse
 import logging
+import random
 import torch
 import accelerate
 
@@ -318,7 +319,10 @@ def _train(
                 src, tgt, mask, emb = (
                     batch  # (b_sz, s_len), (b_sz, s_len), (b_sz, s_len), (b_sz, d_emb)
                 )
-                if use_embeddings is True:
+
+                use_embeddings_cond = use_embeddings and (random.random() > 0.5)
+
+                if use_embeddings_cond is True:
                     logits = model(src=src, emb=emb)  # (b_sz, s_len - 1, v_sz)
                     tgt = tgt[:, :-1]  # (b_sz, s_len - 1)
                     mask = mask[:, :-1]  # (b_sz, s_len - 1)
@@ -391,7 +395,9 @@ def _train(
             src, tgt, mask, emb = (
                 batch  # (b_sz, s_len), (b_sz, s_len), (b_sz, s_len), (b_sz, d_emb)
             )
-            if use_embeddings is True:
+            use_embeddings_cond = use_embeddings and (random.random() > 0.5)
+
+            if use_embeddings_cond is True:
                 logits = model(src=src, emb=emb)  # (b_sz, s_len - 1, v_sz)
                 tgt = tgt[:, :-1]  # (b_sz, s_len - 1)
                 mask = mask[:, :-1]  # (b_sz, s_len - 1)
