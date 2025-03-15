@@ -716,7 +716,7 @@ def train(
         tokenizer=tokenizer,
         batch_size=batch_size,
         num_workers=num_workers,
-        apply_aug=True,
+        apply_aug=False,
         use_embeddings=use_embeddings,
     )
 
@@ -755,6 +755,7 @@ def train(
         model=model,
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
+        use_embeddings=use_embeddings,
         optimizer=optimizer,
         scheduler=scheduler,
         steps_per_checkpoint=steps_per_checkpoint,
