@@ -310,8 +310,18 @@ class TransformerLM_CND(nn.Module):
 
             return logits[:, 1:, :]
         else:
-            hidden = self.model(src, emb)
+            # Needed for torch dpp error
+            dummy_input = torch.zeros(
+                src.size(0),
+                self.embedding_adapter.in_features,
+                device=src.device,
+            )
+            dummy_output = self.embedding_adapter(dummy_input)
+            dummy_loss = dummy_output.sum() * 0.0
+
+            hidden = self.model(src, None)
             logits = self.lm_head(hidden)
+            logits = logits + dummy_loss
 
             return logits
 
