@@ -62,6 +62,8 @@ def _parse_sample_args():
 def _get_embedding(
     embedding_checkpoint_path: str,
     midi_path: str,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ):
     import torch
 
@@ -92,6 +94,22 @@ def _get_embedding(
     model_config.grad_checkpoint = False
     model = TransformerEMB(model_config).cuda().eval()
     model.load_state_dict(model_state)
+
+    midi_dict = MidiDict.from_midi(midi_path)
+    midi_dict.note_msgs = [
+        msg
+        for msg in midi_dict.note_msgs
+        if (
+            midi_dict.tick_to_ms(msg["tick"]) >= start_ms
+            if start_ms is not None
+            else True
+        )
+        and (
+            midi_dict.tick_to_ms(msg["tick"]) <= end_ms
+            if end_ms is not None
+            else True
+        )
+    ]
 
     seqs = process_entry(
         entry=MidiDict.from_midi(midi_path),
