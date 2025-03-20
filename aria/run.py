@@ -8,9 +8,18 @@ import sys
 
 def _parse_sample_args():
     argp = argparse.ArgumentParser(prog="aria sample")
-    argp.add_argument("-m", help="name of model config file")
-    argp.add_argument("-c", help="path to model checkpoint")
-    argp.add_argument("-p", help="path to midi file")
+    argp.add_argument(
+        "-checkpoint_path", help="path to model used for decoding"
+    )
+    argp.add_argument("-prompt_midi_path", help="path to midi file")
+    argp.add_argument(
+        "-embedding_checkpoint_path",
+        required=False,
+        help="path to model checkpoint used for embeddings",
+    )
+    argp.add_argument(
+        "-embedding_midi_path", required=False, help="path to midi file"
+    )
     argp.add_argument(
         "-temp",
         help="sampling temperature value",
@@ -32,13 +41,6 @@ def _parse_sample_args():
         required=False,
     )
     argp.add_argument(
-        "-metadata",
-        nargs=2,
-        metavar=("KEY", "VALUE"),
-        action="append",
-        help="manually add metadata key-value pair when sampling",
-    )
-    argp.add_argument(
         "-var",
         help="number of variations",
         type=int,
@@ -52,67 +54,104 @@ def _parse_sample_args():
     )
     argp.add_argument("-e", action="store_true", help="enable force end")
     argp.add_argument("-l", type=int, help="generation length", default=1024)
-    argp.add_argument(
-        "-guidance_path", type=str, help="path to guidance MIDI", required=False
-    )
-    argp.add_argument(
-        "-guidance_start_ms",
-        help="guidance interval start (ms)",
-        type=int,
-        required=False,
-    )
-    argp.add_argument(
-        "-guidance_end_ms",
-        help="guidance interval end (ms)",
-        type=int,
-        required=False,
-    )
     argp.add_argument("-compile", action="store_true", help="compile cudagraph")
 
     return argp.parse_args(sys.argv[2:])
 
 
-# TODO: This is all broken due to tokenizer / embedding change -- need to fix
+def _get_embedding(
+    embedding_checkpoint_path: str,
+    midi_path: str,
+):
+    import torch
+
+    from aria.model import TransformerEMB
+    from aria.model import ModelConfig
+    from aria.config import load_model_config
+    from aria.utils import _load_weight
+    from aria.embeddings.evaluate import (
+        get_aria_contrastive_embedding,
+        process_entry,
+    )
+
+    from ariautils.midi import MidiDict
+    from ariautils.tokenizer import AbsTokenizer
+
+    SLICE_NUM_NOTES = 300
+    SLICE_MAX_SEQ_LEN = 1024
+
+    tokenizer = AbsTokenizer()
+
+    model_state = _load_weight(embedding_checkpoint_path, "cuda")
+    model_state = {
+        k.replace("_orig_mod.", ""): v for k, v in model_state.items()
+    }
+
+    model_config = ModelConfig(**load_model_config("medium-emb"))
+    model_config.set_vocab_size(tokenizer.vocab_size)
+    model_config.grad_checkpoint = False
+    model = TransformerEMB(model_config).cuda().eval()
+    model.load_state_dict(model_state)
+
+    seqs = process_entry(
+        entry=MidiDict.from_midi(midi_path),
+        slice_len_notes=SLICE_NUM_NOTES,
+        max_seq_len=SLICE_MAX_SEQ_LEN,
+        tokenizer=tokenizer,
+    )
+
+    def model_forward(model, idxs):
+        return model(idxs)
+
+    embeddings = get_aria_contrastive_embedding(
+        seqs=[s["seq"] for s in seqs],
+        hook_model=model,
+        hook_max_seq_len=SLICE_MAX_SEQ_LEN,
+        hook_tokenizer=tokenizer,
+        hook_model_forward=model_forward,
+    )
+    embedding = torch.tensor(embeddings, device="cuda").mean(0).tolist()
+
+    return embedding
+
+
 def sample(args):
     """Entrypoint for sampling"""
 
     from torch.cuda import is_available as cuda_is_available
     from aria.inference import TransformerLM
     from aria.model import ModelConfig
-    from aria.config import load_model_config, load_config
-    from aria.tokenizer import InferenceAbsTokenizer
-    from aria.sample import (
-        sample_batch_cfg,
-        sample_batch,
-        get_inference_prompt,
-    )
-    from ariautils.midi import MidiDict
+    from aria.config import load_model_config
+    from aria.sample import sample_batch, sample_batch_cfg, get_inference_prompt
     from aria.utils import _load_weight
+
+    from ariautils.midi import MidiDict
+    from ariautils.tokenizer import AbsTokenizer
 
     if not cuda_is_available():
         raise Exception("CUDA device is not available.")
 
-    model_state = _load_weight(args.c, "cuda")
+    num_variations = args.var
+    truncate_len = args.trunc
+    force_end = args.e
+
+    tokenizer = AbsTokenizer()
+
+    if args.embedding_checkpoint_path and args.embedding_midi_path:
+        print(f"Using embedding from {args.embedding_midi_path}")
+        embedding = _get_embedding(
+            embedding_checkpoint_path=args.embedding_checkpoint_path,
+            midi_path=args.embedding_midi_path,
+        )
+    else:
+        embedding = None
+
+    model_state = _load_weight(args.checkpoint_path, "cuda")
     model_state = {
         k.replace("_orig_mod.", ""): v for k, v in model_state.items()
     }
 
-    manual_metadata = {k: v for k, v in args.metadata} if args.metadata else {}
-    valid_metadata = load_config()["data"]["metadata"]["manual"]
-    for k, v in manual_metadata.copy().items():
-        assert k in valid_metadata.keys(), f"{manual_metadata} is invalid"
-        if v not in valid_metadata[k]:
-            print(f"Ignoring invalid manual metadata: {k}")
-            print(f"Please choose from {valid_metadata[k]}")
-            del manual_metadata[k]
-
-    num_variations = args.var
-    truncate_len = args.trunc
-    force_end = args.e
-    model_name = args.m
-
-    tokenizer = InferenceAbsTokenizer()
-    model_config = ModelConfig(**load_model_config(model_name))
+    model_config = ModelConfig(**load_model_config("medium-emb"))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model_config.grad_checkpoint = False
     model = TransformerLM(model_config).cuda()
@@ -120,39 +159,21 @@ def sample(args):
     try:
         model.load_state_dict(model_state)
     except Exception as e:
-        print(
-            "Failed to load model_state. This is likely due to an incompatibility "
-            "between the checkpoint file (-c) and model name/config (-m)."
-        )
-        raise e
+        print("Failed to load model_state - loading with strict=False")
+        model.load_state_dict(model_state, strict=False)
 
     assert args.l > 0, "Generation length must be positive."
     max_new_tokens = args.l
 
     # Load and format prompts and metadata
-    midi_dict = MidiDict.from_midi(mid_path=args.p)
-    if args.guidance_path:
-        guidance_midi_dict = MidiDict.from_midi(mid_path=args.guidance_path)
-    else:
-        guidance_midi_dict = None
+    midi_dict = MidiDict.from_midi(mid_path=args.prompt_midi_path)
 
-    for k, v in manual_metadata.items():
-        midi_dict.metadata[k] = v
-
-    print(f"Extracted metadata: {midi_dict.metadata}")
-    print(
-        f"Instruments: {set([MidiDict.get_program_to_instrument()[msg['data']] for msg in midi_dict.instrument_msgs])}"
-    )
-
-    prompt_seq, guidance_seq = get_inference_prompt(
+    prompt_seq = get_inference_prompt(
         tokenizer=tokenizer,
         midi_dict=midi_dict,
-        truncate_len=truncate_len,
-        guidance_start_ms=args.guidance_start_ms,
-        guidance_end_ms=args.guidance_end_ms,
-        guidance_midi_dict=guidance_midi_dict,
+        prompt_len_ms=truncate_len * 1e3,
     )
-    # prompt_seq = prompt_seq[:-1]
+
     print(prompt_seq)
 
     if len(prompt_seq) + args.l > model_config.max_seq_len:
@@ -164,22 +185,19 @@ def sample(args):
     samples_dir = "/home/loubb/Dropbox/shared"
     if os.path.isdir(samples_dir) is False:
         os.mkdir(samples_dir)
-    if guidance_seq:
-        tokenizer.detokenize(guidance_seq).to_midi().save(
-            os.path.join(samples_dir, f"guidance.mid")
-        )
 
-    if args.cfg is not None and guidance_seq is not None:
+    if args.cfg and embedding is not None:
         results = sample_batch_cfg(
             model=model,
             tokenizer=tokenizer,
             prompts=prompts,
             max_new_tokens=max_new_tokens,
-            cfg_gamma=args.cfg,
             force_end=force_end,
             temperature=args.temp,
             top_p=args.top_p,
+            cfg_gamma=args.cfg,
             compile=args.compile,
+            embedding=embedding,
         )
     else:
         results = sample_batch(
@@ -191,6 +209,7 @@ def sample(args):
             temperature=args.temp,
             top_p=args.top_p,
             compile=args.compile,
+            embedding=embedding,
         )
 
     for idx, tokenized_seq in enumerate(results):

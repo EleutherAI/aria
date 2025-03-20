@@ -87,12 +87,15 @@ def get_chunks(note_msgs: list, chunk_len: int):
 
 
 def process_entry(
-    entry,
+    entry: MidiDict | dict,
     slice_len_notes: int,
     max_seq_len: int,
     tokenizer: AbsTokenizer,
 ):
-    midi_dict = MidiDict.from_msg_dict(entry)
+    if isinstance(entry, dict):
+        midi_dict = MidiDict.from_msg_dict(entry)
+    else:
+        midi_dict = entry
 
     outputs = []
     for slice_note_msgs in get_chunks(
