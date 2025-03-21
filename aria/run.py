@@ -112,7 +112,7 @@ def _get_embedding(
     ]
 
     seqs = process_entry(
-        entry=MidiDict.from_midi(midi_path),
+        entry=midi_dict,
         slice_len_notes=SLICE_NUM_NOTES,
         max_seq_len=SLICE_MAX_SEQ_LEN,
         tokenizer=tokenizer,
