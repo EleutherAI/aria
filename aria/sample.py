@@ -1,6 +1,5 @@
 """Contains generation/sampling code"""
 
-import copy
 import torch
 import torch._dynamo.config
 import torch._inductor.config
@@ -9,7 +8,6 @@ from typing import List
 from tqdm import tqdm
 
 from aria.inference import TransformerLM
-from aria.tokenizer import InferenceAbsTokenizer
 from ariautils.tokenizer import Tokenizer, AbsTokenizer
 from ariautils.midi import MidiDict
 
@@ -18,15 +16,11 @@ torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True
 
 
-def get_cfg_prompt(prompts: list, pad_tok: str, guidance_end_tok: str):
+def get_cfg_prompt(prompts: list):
     cfg_prompts = []
     for prompt in prompts:
-        prompt_no_guidance = prompt[prompt.index(guidance_end_tok) + 1 :]
-        prompt_no_guidance = [pad_tok] * (
-            len(prompt) - len(prompt_no_guidance)
-        ) + prompt_no_guidance
         cfg_prompts.append(prompt)
-        cfg_prompts.append(prompt_no_guidance)
+        cfg_prompts.append(prompt)
 
     return cfg_prompts
 
@@ -38,6 +32,8 @@ def decode_one(
     input_pos: torch.Tensor,
     pad_idxs: torch.Tensor | None = None,
 ):
+    assert input_pos.shape[-1] == 1
+
     logits = model.forward(
         idxs=idxs,
         input_pos=input_pos,
@@ -93,7 +89,6 @@ def update_seq_ids_(
     seq[:, idx] = next_token_ids
 
 
-# TODO: Not working
 @torch.autocast(
     "cuda",
     dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
@@ -105,21 +100,30 @@ def sample_batch(
     prompts: List[list],
     max_new_tokens: int,
     force_end=False,
-    temperature: float = 0.95,
-    top_p: float = 0.95,
+    temp: float = 0.95,
+    embedding: list[float] | None = None,
+    top_p: float | None = None,
+    min_p: float | None = None,
     compile: bool = False,
 ):
+    assert top_p is not None or min_p is not None
+    if top_p is not None:
+        assert 0.5 <= top_p <= 1.0
+    if min_p is not None:
+        assert 0.0 <= min_p <= 1.0
+    if temp is not None:
+        assert 0.0 <= temp <= 2.0
     if force_end:
         assert max_new_tokens > 130, "prompt too long to use force_end=True"
 
-    _prompt_len = len(prompts[0])
-    _num_prompts = len(prompts)
-    assert all([len(p) == _prompt_len for p in prompts])
+    prompt_len = len(prompts[0])
+    num_prompts = len(prompts)
+    assert all([len(p) == prompt_len for p in prompts])
 
     model.eval()
-    dim_tok_inserted = [False for _ in range(_num_prompts)]
-    eos_tok_seen = [False for _ in range(_num_prompts)]
-    total_len = _prompt_len + max_new_tokens
+    dim_tok_inserted = [False for _ in range(num_prompts)]
+    eos_tok_seen = [False for _ in range(num_prompts)]
+    total_len = prompt_len + max_new_tokens
     seq = torch.stack(
         [
             torch.tensor(
@@ -138,48 +142,59 @@ def sample_batch(
         )
 
     model.setup_cache(
-        batch_size=_num_prompts,
+        batch_size=num_prompts,
         max_seq_len=total_len,
         dtype=(
             torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         ),
     )
 
+    if embedding:
+        condition_embedding = torch.tensor(
+            [embedding for _ in range(num_prompts)], device=seq.device
+        )
+        model.fill_condition_kv(cond_emb=condition_embedding)
+        emb_offset = 1
+    else:
+        emb_offset = 0
+
     print(
-        f"Using hyperparams: temp={temperature}, top_p={top_p}, gen_len={max_new_tokens}"
+        f"Using hyperparams: temp={temp}, top_p={top_p}, min_p={min_p}, gen_len={max_new_tokens}"
     )
 
     for idx in (
         pbar := tqdm(
-            range(_prompt_len, total_len),
-            total=total_len - _prompt_len,
+            range(prompt_len, total_len),
+            total=total_len - prompt_len,
             leave=False,
         )
     ):
         with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
-            if idx == _prompt_len:
+            if idx == prompt_len:
                 logits = prefill(
                     model,
                     idxs=seq[:, :idx],
-                    input_pos=torch.arange(0, idx, device=seq.device),
+                    input_pos=torch.arange(
+                        emb_offset, idx + emb_offset, device=seq.device
+                    ),
                 )
             else:
                 logits = decode_one(
                     model,
                     idxs=seq[:, idx - 1 : idx],
                     input_pos=torch.tensor(
-                        [idx - 1], device=seq.device, dtype=torch.int
+                        [(idx + emb_offset) - 1],
+                        device=seq.device,
+                        dtype=torch.int,
                     ),
                 )
 
-        if tokenizer.name == "inference_abs":
-            logits[:, tokenizer.tok_to_id[tokenizer.prompt_start_tok]] = float(
-                "-inf"
-            )
-
-        if temperature > 0.0:
-            probs = torch.softmax(logits / temperature, dim=-1)
-            next_token_ids = sample_top_p(probs, top_p).flatten()
+        if temp > 0.0:
+            probs = torch.softmax(logits / temp, dim=-1)
+            if min_p is not None:
+                next_token_ids = sample_min_p(probs, min_p).flatten()
+            else:
+                next_token_ids = sample_top_p(probs, top_p).flatten()
         else:
             next_token_ids = torch.argmax(logits, dim=-1).flatten()
 
@@ -210,6 +225,7 @@ def sample_batch(
     return decoded_results
 
 
+# Not tested but I think this works
 @torch.autocast(
     "cuda",
     dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
@@ -217,42 +233,46 @@ def sample_batch(
 @torch.inference_mode()
 def sample_batch_cfg(
     model: TransformerLM,
-    tokenizer: InferenceAbsTokenizer,
+    tokenizer: AbsTokenizer,
     prompts: List[list],
     max_new_tokens: int,
     cfg_gamma: float,
+    embedding: list[float],
     force_end=False,
-    temperature: float = 0.95,
-    top_p: float = 0.95,
+    temp: float = 0.95,
+    top_p: float | None = None,
+    min_p: float | None = None,
     compile: bool = False,
 ):
-    assert 0.0 <= cfg_gamma <= 2.0
-    assert 0.0 <= temperature <= 2.0
-    assert 0.5 <= top_p <= 1.0
-    assert tokenizer.name == "inference_abs"
+    assert 0.0 <= cfg_gamma <= 15.0
+    assert top_p is not None or min_p is not None
+    if top_p is not None:
+        assert 0.5 <= top_p <= 1.0
+    if temp is not None:
+        assert 0.0 <= temp <= 2.0
     if force_end:
         assert max_new_tokens > 130, "prompt too long to use force_end=True"
 
-    prompts = get_cfg_prompt(
-        prompts, tokenizer.pad_tok, tokenizer.guidance_end_tok
-    )
+    prompts = get_cfg_prompt(prompts)
 
-    _prompt_len = len(prompts[0])
-    _num_prompts = len(prompts)
-    assert all([len(p) == _prompt_len for p in prompts])
+    prompt_len = len(prompts[0])
+    num_prompts = len(prompts)
+    assert all([len(p) == prompt_len for p in prompts])
 
     model.eval()
-    total_len = _prompt_len + max_new_tokens
+    total_context_len = prompt_len + max_new_tokens
     seq = torch.stack(
         [
             torch.tensor(
-                tokenizer.encode(p + [tokenizer.pad_tok] * (total_len - len(p)))
+                tokenizer.encode(
+                    p + [tokenizer.pad_tok] * (total_context_len - len(p))
+                )
             )
             for p in prompts
         ]
     ).cuda()
-    dim_tok_inserted = [False for _ in range(_num_prompts)]
-    eos_tok_seen = [False for _ in range(_num_prompts)]
+    dim_tok_inserted = [False for _ in range(num_prompts)]
+    eos_tok_seen = [False for _ in range(num_prompts)]
 
     if compile is True:
         global decode_one
@@ -263,51 +283,70 @@ def sample_batch_cfg(
         )
 
     model.setup_cache(
-        batch_size=_num_prompts,
-        max_seq_len=total_len,
+        batch_size=num_prompts,
+        max_seq_len=total_context_len,
         dtype=(
             torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         ),
     )
 
+    condition_embedding = torch.tensor(
+        [embedding for _ in range(num_prompts)], device=seq.device
+    )
+    model.fill_condition_kv(cond_emb=condition_embedding)
+    embedding_offset = 1
+    pad_idxs = torch.zeros_like(seq, dtype=torch.bool)
+    pad_idxs[1::2, 0] = True
+
     print(
-        f"Using hyperparams: temp={temperature}, top_p={top_p}, gamma={cfg_gamma}, gen_len={max_new_tokens}"
+        f"Using hyperparams: temp={temp}, top_p={top_p}, min_p={min_p}, gamma={cfg_gamma}, gen_len={max_new_tokens}"
     )
 
+    CFG_WARM_UP_STEPS = 250
+    curr_step = 0
     for idx in (
         pbar := tqdm(
-            range(_prompt_len, total_len),
-            total=total_len - _prompt_len,
+            range(prompt_len, total_context_len),
+            total=total_context_len - prompt_len,
             leave=False,
         )
     ):
         with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
-            if idx == _prompt_len:
+            if idx == prompt_len:
                 logits = prefill(
                     model,
                     idxs=seq[:, :idx],
-                    input_pos=torch.arange(0, idx, device=seq.device),
-                    pad_idxs=(seq == tokenizer.pad_id),
+                    input_pos=torch.arange(
+                        embedding_offset,
+                        idx + embedding_offset,
+                        device=seq.device,
+                    ),
+                    pad_idxs=pad_idxs,
                 )
             else:
                 logits = decode_one(
                     model,
                     idxs=seq[:, idx - 1 : idx],
                     input_pos=torch.tensor(
-                        [idx - 1], device=seq.device, dtype=torch.int
+                        [(idx + embedding_offset) - 1],
+                        device=seq.device,
+                        dtype=torch.int,
                     ),
-                    pad_idxs=(seq == tokenizer.pad_id),
+                    pad_idxs=pad_idxs,
                 )
 
-        logits_cfg = cfg_gamma * logits[::2] + (1 - cfg_gamma) * logits[1::2]
-        logits_cfg[:, tokenizer.tok_to_id[tokenizer.prompt_start_tok]] = float(
-            "-inf"
-        )
+        curr_step += 1
+        _cfg_gamma = min(cfg_gamma, (curr_step / CFG_WARM_UP_STEPS) * cfg_gamma)
+
+        logits_cfg = _cfg_gamma * logits[::2] + (1 - _cfg_gamma) * logits[1::2]
         logits_cfg[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
 
-        if temperature > 0.0:
-            probs = torch.softmax(logits_cfg / temperature, dim=-1)
-            next_token_ids = sample_top_p(probs, top_p).flatten()
+        if temp > 0.0:
+            probs = torch.softmax(logits_cfg / temp, dim=-1)
+            if min_p is not None:
+                next_token_ids = sample_min_p(probs, min_p).flatten()
+            else:
+                next_token_ids = sample_top_p(probs, top_p).flatten()
         else:
             next_token_ids = torch.argmax(logits_cfg, dim=-1).flatten()
 
@@ -318,7 +357,7 @@ def sample_batch_cfg(
             next_token_ids=next_token_ids,
             dim_tok_inserted=dim_tok_inserted,
             eos_tok_seen=eos_tok_seen,
-            max_len=total_len,
+            max_len=total_context_len,
             force_end=force_end,
             tokenizer=tokenizer,
         )
@@ -339,67 +378,49 @@ def sample_batch_cfg(
     return decoded_results
 
 
+def sample_min_p(probs, p_base):
+    """See - https://arxiv.org/pdf/2407.01082"""
+    p_max, _ = torch.max(probs, dim=-1, keepdim=True)
+    p_scaled = p_base * p_max
+    mask = probs >= p_scaled
+
+    masked_probs = probs.clone()
+    masked_probs[~mask] = 0.0
+    masked_probs.div_(masked_probs.sum(dim=-1, keepdim=True))
+    next_token = torch.multinomial(masked_probs, num_samples=1)
+
+    return next_token
+
+
 def sample_top_p(probs, p):
     probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
     probs_sum = torch.cumsum(probs_sort, dim=-1)
     mask = probs_sum - probs_sort > p
     probs_sort[mask] = 0.0
+
     probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))
     next_token = torch.multinomial(probs_sort, num_samples=1)
     next_token = torch.gather(probs_idx, -1, next_token)
+
     return next_token
 
 
 def get_inference_prompt(
-    tokenizer: InferenceAbsTokenizer,
-    midi_dict: MidiDict,
-    truncate_len: int,
-    guidance_start_ms: int,
-    guidance_end_ms: int,
-    guidance_midi_dict: MidiDict | None = None,
+    midi_dict: MidiDict, tokenizer: AbsTokenizer, prompt_len_ms: int
 ):
-    assert tokenizer.name == "inference_abs"
+    midi_dict.note_msgs = [
+        msg
+        for msg in midi_dict.note_msgs
+        if midi_dict.tick_to_ms(msg["data"]["start"]) <= prompt_len_ms
+    ]
 
-    if guidance_midi_dict is not None:
-        assert guidance_start_ms is not None and guidance_start_ms >= 0
-        assert guidance_end_ms is not None and guidance_end_ms >= 0
-        assert (
-            tokenizer._config["guidance"]["min_ms"]
-            <= guidance_end_ms - guidance_start_ms
-            <= tokenizer._config["guidance"]["max_ms"]
-        )
+    if len(midi_dict.note_msgs) == 0:
+        return [("prefix", "instrument", "piano"), tokenizer.bos_tok]
 
-    prompt_seq = tokenizer.tokenize(
-        midi_dict=midi_dict,
-        prompt_intervals_ms=(
-            [[0, truncate_len * 1e3]] if truncate_len > 0 else []
-        ),
-        guidance_midi_dict=guidance_midi_dict,
-        guidance_start_ms=guidance_start_ms,
-        guidance_end_ms=guidance_end_ms,
-    )
+    seq = tokenizer.tokenize(midi_dict=midi_dict)
+    if tokenizer.dim_tok in seq:
+        seq.remove(tokenizer.dim_tok)
+    if tokenizer.eos_tok in seq:
+        seq.remove(tokenizer.eos_tok)
 
-    if tokenizer.prompt_end_tok in prompt_seq:
-        prompt_seq = prompt_seq[
-            : prompt_seq.index(tokenizer.prompt_end_tok) + 1
-        ]
-    else:
-        print("No notes found in prompt region")
-        prompt_seq = prompt_seq[: prompt_seq.index(tokenizer.bos_tok) + 1]
-
-    if tokenizer.dim_tok in prompt_seq:
-        prompt_seq.remove(tokenizer.dim_tok)
-
-    if (
-        guidance_midi_dict is not None
-        and tokenizer.guidance_start_tok in prompt_seq
-    ):
-        guidance_seq = copy.deepcopy(prompt_seq)
-        guidance_seq = guidance_seq[
-            : guidance_seq.index(tokenizer.guidance_end_tok)
-        ]
-        guidance_seq[0] = ("prefix", "instrument", "piano")
-    else:
-        guidance_seq = None
-
-    return prompt_seq, guidance_seq
+    return seq

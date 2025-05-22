@@ -10,32 +10,39 @@ import threading
 import queue
 import torch
 import mido
-import torch._dynamo.config
 import torch._inductor.config
 
 from torch.cuda import is_available as cuda_is_available
 from contextlib import ExitStack
 
 from ariautils.midi import MidiDict, midi_to_dict
-from aria.tokenizer import InferenceAbsTokenizer
+from ariautils.tokenizer import AbsTokenizer
 from aria.utils import _load_weight
 from aria.inference import TransformerLM
 from aria.model import ModelConfig
 from aria.config import load_model_config
-from aria.sample import prefill, decode_one, sample_top_p
+from aria.sample import prefill, decode_one, sample_min_p
 
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True
-# torch.set_float32_matmul_precision("high")
 
 DTYPE = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 MAX_SEQ_LEN = 8192
 PREFILL_COMPILE_SEQ_LEN = 1024
 
+# HARDWARE: Decoded logits are masked for durations < MIN_NOTE_LEN_MS
+# HARDWARE: Sends early off-msg if pitch is on MIN_NOTE_DELTA_MS before on-msg
+# HARDWARE: All messages are sent HARDWARE_LATENCY_MS early
+MIN_NOTE_DELTA_MS = 50
+MIN_NOTE_LEN_MS = 50
+HARDWARE_LATENCY_MS = 0
+
 # TODO:
-# - Add CFG support
+# - Add CFG support (eek)
 # - Add looping functionality
+# - Add ending functionality
+
 
 file_handler = logging.FileHandler("./demo.log", mode="w")
 file_handler.setLevel(logging.DEBUG)
@@ -204,8 +211,8 @@ def load_model(
 
     init_start_time_s = time.time()
 
-    tokenizer = InferenceAbsTokenizer()
-    model_config = ModelConfig(**load_model_config("medium"))
+    tokenizer = AbsTokenizer()
+    model_config = ModelConfig(**load_model_config("medium-emb"))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model_config.grad_checkpoint = False
     model = TransformerLM(model_config).cuda()
@@ -215,7 +222,11 @@ def load_model(
     model_state = {
         k.replace("_orig_mod.", ""): v for k, v in model_state.items()
     }
-    model.load_state_dict(model_state)
+    try:
+        model.load_state_dict(model_state)
+    except Exception:
+        logger.info("Failed to load model, attempting with strict=False...")
+        model.load_state_dict(model_state, strict=False)
 
     logger.info(
         f"Finished initializing model - took {time.time() - init_start_time_s:.4f} seconds"
@@ -230,7 +241,7 @@ def recalculate_dur_tokens(
     model: TransformerLM,
     priming_seq: list,
     enc_seq: torch.Tensor,
-    tokenizer: InferenceAbsTokenizer,
+    tokenizer: AbsTokenizer,
     start_idx: int,
 ):
     logger = get_logger("GENERATE")
@@ -293,6 +304,7 @@ def recalculate_dur_tokens(
             enc_seq[:, idx] = next_token_ids
             priming_seq[idx] = predicted_tok
 
+    # TODO: There is a bug here if no-notes are active when the signal is pressed
     last_tok_id = enc_seq[0, idx]
     last_tok = tokenizer.id_to_tok[last_tok_id.item()]
 
@@ -315,16 +327,16 @@ def decode_first_tokens(
     first_token_logits: torch.Tensor,
     enc_seq: torch.Tensor,
     priming_seq: list,
-    tokenizer: InferenceAbsTokenizer,
+    tokenizer: AbsTokenizer,
     generated_tokens_queue: queue.Queue,
     first_on_msg_epoch_ms: int,
 ):
     logger = get_logger("GENERATE")
 
     BEAM_WIDTH = 5
-    BUFFER_MS = 100
+    BUFFER_MS = 100 + HARDWARE_LATENCY_MS
     TIME_TOK_ID = tokenizer.tok_to_id[tokenizer.time_tok]
-    TIME_TOK_WEIGHTING = -3
+    TIME_TOK_WEIGHTING = -6
 
     logits = first_token_logits
     time_since_first_onset_ms = get_epoch_time_ms() - first_on_msg_epoch_ms
@@ -356,7 +368,6 @@ def decode_first_tokens(
 
     logits[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
     logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
-    logits[:, tokenizer.tok_to_id[tokenizer.prompt_start_tok]] = float("-inf")
 
     log_probs = torch.log_softmax(logits, dim=-1)
     top_log_probs, top_ids = torch.topk(log_probs, k=BEAM_WIDTH, dim=-1)
@@ -452,16 +463,16 @@ def decode_first_tokens(
 def decode_tokens(
     model: TransformerLM,
     enc_seq: torch.Tensor,
-    tokenizer: InferenceAbsTokenizer,
+    tokenizer: AbsTokenizer,
     control_sentinel: threading.Event,
     generated_tokens_queue: queue.Queue,
     idx: int,
     temperature: float,
-    top_p: float,
+    min_p: float,
 ):
     logger = get_logger("GENERATE")
     logger.info(
-        f"Using sampling parameters: temperature={temperature}, top_p={top_p}"
+        f"Using sampling parameters: temperature={temperature}, min_p={min_p}"
     )
 
     while (not control_sentinel.is_set()) and idx < MAX_SEQ_LEN:
@@ -487,19 +498,18 @@ def decode_tokens(
 
         logits[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
         logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
-        logits[:, tokenizer.tok_to_id[tokenizer.prompt_start_tok]] = float(
-            "-inf"
-        )
+        for dur_ms in range(0, MIN_NOTE_LEN_MS, 10):
+            logits[:, tokenizer.tok_to_id[("dur", dur_ms)]] = float("-inf")
 
         if temperature > 0.0:
             probs = torch.softmax(logits / temperature, dim=-1)
-            next_token_ids = sample_top_p(probs, top_p).flatten()
+            next_token_ids = sample_min_p(probs, min_p).flatten()
         else:
             next_token_ids = torch.argmax(logits, dim=-1).flatten()
 
         enc_seq[:, idx] = next_token_ids
         next_token = tokenizer.id_to_tok[next_token_ids[0].item()]
-        logger.info(
+        logger.debug(
             f"({(time.time() - decode_one_start_time_s)*1000:.2f}ms) {idx}: {next_token}"
         )
 
@@ -513,22 +523,19 @@ def decode_tokens(
     generated_tokens_queue.put(None)
 
 
-# TODO: Support CFG, guidance, and metadata tags
-# TODO: Context length switching
-# TODO: BUG: I'm still not 100% sure that the KV is being calculated correctly
 # TODO: BUG: Potentially a bug with dim_toks ect... being removed during kv-preprocessing
 @torch.autocast("cuda", dtype=DTYPE)
 @torch.inference_mode()
 def generate_tokens(
     priming_seq: list,
-    tokenizer: InferenceAbsTokenizer,
+    tokenizer: AbsTokenizer,
     model: TransformerLM,
     control_sentinel: threading.Event,
     generated_tokens_queue: queue.Queue,
     num_preceding_active_pitches: int,
     first_on_msg_epoch_ms: int,
-    temperature: float = 0.95,
-    top_p: float = 0.95,
+    temperature: float = 0.97,
+    min_p: float = 0.03,
 ):
     logger = get_logger("GENERATE")
 
@@ -612,14 +619,14 @@ def generate_tokens(
         generated_tokens_queue=generated_tokens_queue,
         idx=idx,
         temperature=temperature,
-        top_p=top_p,
+        min_p=min_p,
     )
 
 
 def decode_tokens_to_midi(
     generated_tokens_queue: queue.Queue,
     midi_messages_queue: queue.Queue,
-    tokenizer: InferenceAbsTokenizer,
+    tokenizer: AbsTokenizer,
     first_on_msg_epoch_ms: int,
     priming_seq_last_onset_ms: int,
 ):
@@ -657,7 +664,7 @@ def decode_tokens_to_midi(
             note_buffer.pop(0)
 
         assert len(note_buffer) == 3
-        logger.info(f"Decoded note: {note_buffer}")
+        logger.debug(f"Decoded note: {note_buffer}")
         note_tok, onset_tok, dur_tok = note_buffer
         _, pitch, vel = note_tok
         _, onset = onset_tok
@@ -683,7 +690,7 @@ def decode_tokens_to_midi(
         midi_messages_queue.put(off_msg)
         logger.debug(f"Put message: {on_msg}")
         logger.debug(f"Put message: {off_msg}")
-        logger.info(f"Ahead by {onset_epoch_ms - get_epoch_time_ms()}ms")
+        logger.debug(f"Ahead by {onset_epoch_ms - get_epoch_time_ms()}ms")
 
         note_buffer = []
 
@@ -699,7 +706,12 @@ def stream_midi(
     logger.info(
         f"Sending generated messages on MIDI port: '{midi_output_port}'"
     )
+    logger.info(
+        f"Applying hardware latency adjustment: {HARDWARE_LATENCY_MS}ms"
+    )
+
     last_pitch_uuid = {}
+    pitch_active = {}
     midi_messages = []
 
     with mido.open_output(midi_output_port) as midi_out:
@@ -725,10 +737,37 @@ def stream_midi(
             )
 
             while midi_messages:
-                curr_epoch_time_ms = get_epoch_time_ms()
+                latency_adjusted_epoch_time_ms = (
+                    get_epoch_time_ms() + HARDWARE_LATENCY_MS
+                )
                 msg = midi_messages[0]
 
-                if 0 < curr_epoch_time_ms - msg["epoch_time_ms"] <= 50:
+                if (
+                    (msg["vel"] != 0)
+                    and (
+                        msg["epoch_time_ms"] - latency_adjusted_epoch_time_ms
+                        <= MIN_NOTE_DELTA_MS
+                    )
+                    and pitch_active.get(msg["pitch"], False)
+                ):
+                    midi_out.send(
+                        mido.Message(
+                            "note_on",
+                            note=msg["pitch"],
+                            velocity=0,
+                            channel=0,
+                            time=0,
+                        )
+                    )
+                    pitch_active[msg["pitch"]] = False
+                    logger.info(f"Sent early off for {msg}")
+
+                if (
+                    0
+                    < latency_adjusted_epoch_time_ms - msg["epoch_time_ms"]
+                    <= 50
+                ):
+
                     mido_msg = mido.Message(
                         "note_on",
                         note=msg["pitch"],
@@ -755,18 +794,23 @@ def stream_midi(
 
                         midi_out.send(mido_msg)
                         msgs.append(mido_msg_with_time)
-                        logger.info(mido_msg_with_time)
-                        logger.info(f"Sent message: {msg}")
+                        pitch_active[msg["pitch"]] = msg["vel"] != 0
+
+                        logger.info(
+                            f"[{get_epoch_time_ms() - msg["epoch_time_ms"]}ms] Sent message: {msg}"
+                        )
                     else:
                         logger.info(
                             f"Skipping note_off message due to uuid mismatch: {msg}"
                         )
                     midi_messages.pop(0)
 
-                elif curr_epoch_time_ms - msg["epoch_time_ms"] > 100:
+                elif (
+                    latency_adjusted_epoch_time_ms - msg["epoch_time_ms"] > 100
+                ):
                     # Message occurs too far in the past
                     logger.info(
-                        f"Skipping message occurring too far ({curr_epoch_time_ms - msg["epoch_time_ms"]}ms) in the past: {msg}"
+                        f"Skipping message occurring too far ({latency_adjusted_epoch_time_ms - msg["epoch_time_ms"]}ms) in the past: {msg}"
                     )
                     midi_messages.pop(0)
                 else:
@@ -803,30 +847,18 @@ def stream_midi(
 
 def stream_msgs(
     model: TransformerLM,
-    tokenizer: InferenceAbsTokenizer,
+    tokenizer: AbsTokenizer,
     msgs: list[mido.Message],
     midi_output_port: str,
     first_on_msg_epoch_ms: int,
     control_sentinel: threading.Event,
     temperature: float,
-    top_p: float,
+    min_p: float,
     num_preceding_active_pitches: int,
-    guidance_midi_dict: MidiDict | None = None,
-    guidance_start_ms: int | None = None,
-    guidance_end_ms: int | None = None,
 ):
     midi = convert_msgs_to_midi(msgs=msgs)
     midi_dict = MidiDict(**midi_to_dict(midi))
-    priming_seq = tokenizer.tokenize(
-        midi_dict=midi_dict,
-        # prompt_intervals_ms=[
-        #     (0, (get_epoch_time_ms() - 3000) - first_on_msg_epoch_ms)
-        # ],
-        prompt_intervals_ms=[],
-        guidance_midi_dict=guidance_midi_dict,
-        guidance_start_ms=guidance_start_ms,
-        guidance_end_ms=guidance_end_ms,
-    )
+    priming_seq = tokenizer.tokenize(midi_dict=midi_dict)
     priming_seq = priming_seq[: priming_seq.index(tokenizer.eos_tok)]
 
     if tokenizer.dim_tok in priming_seq:
@@ -844,7 +876,7 @@ def stream_msgs(
             "control_sentinel": control_sentinel,
             "generated_tokens_queue": generated_tokens_queue,
             "temperature": temperature,
-            "top_p": top_p,
+            "min_p": min_p,
             "num_preceding_active_pitches": num_preceding_active_pitches,
             "first_on_msg_epoch_ms": first_on_msg_epoch_ms,
         },
@@ -860,8 +892,7 @@ def stream_msgs(
             "tokenizer": tokenizer,
             "first_on_msg_epoch_ms": first_on_msg_epoch_ms,
             "priming_seq_last_onset_ms": tokenizer.calc_length_ms(
-                priming_seq[priming_seq.index(tokenizer.bos_tok) :],
-                onset=True,
+                priming_seq, onset=True
             ),
         },
         daemon=True,
@@ -872,10 +903,7 @@ def stream_msgs(
         midi_messages_queue=midi_messages_queue,
         msgs=msgs,
         prev_msg_epoch_time_ms=first_on_msg_epoch_ms
-        + tokenizer.calc_length_ms(
-            priming_seq[priming_seq.index(tokenizer.bos_tok) :],
-            onset=False,
-        ),
+        + tokenizer.calc_length_ms(priming_seq, onset=False),
         midi_output_port=midi_output_port,
         control_sentinel=control_sentinel,
     )
@@ -1028,8 +1056,22 @@ def play_midi_file(midi_port: str, midi_path: str):
     logger = get_logger("FILE")
     logger.info(f"Playing file at {midi_path} on MIDI port '{midi_port}'")
     time.sleep(1)
+    active_pitches = []
     with mido.open_output(midi_port) as output_port:
         for msg in mido.MidiFile(midi_path).play():
+            if msg.type == "note_on" and msg.velocity > 0:
+                if msg.note in active_pitches:
+                    _off_msg = copy.deepcopy(msg)
+                    _off_msg.velocity = 0
+                    output_port.send(_off_msg)
+                else:
+                    active_pitches.append(msg.note)
+            elif msg.type == "note_off" or (
+                msg.type == "note_on" and msg.velocity == 0
+            ):
+                if msg.note in active_pitches:
+                    active_pitches.remove(msg.note)
+
             logger.debug(f"{msg}")
             output_port.send(msg)
 
@@ -1071,11 +1113,11 @@ def parse_args():
         default=0.95,
     )
     argp.add_argument(
-        "-top_p",
-        help="sampling top_p value",
+        "-min_p",
+        help="sampling min_p value",
         type=float,
         required=False,
-        default=0.95,
+        default=0.03,
     )
     argp.add_argument(
         "-cfg",
@@ -1091,21 +1133,6 @@ def parse_args():
         help="manually add metadata key-value pair when sampling",
     )
     argp.add_argument(
-        "-guidance_path", type=str, help="path to guidance MIDI", required=False
-    )
-    argp.add_argument(
-        "-guidance_start_ms",
-        help="guidance interval start (ms)",
-        type=int,
-        required=False,
-    )
-    argp.add_argument(
-        "-guidance_end_ms",
-        help="guidance interval end (ms)",
-        type=int,
-        required=False,
-    )
-    argp.add_argument(
         "-save_path",
         type=str,
         required=False,
@@ -1118,28 +1145,9 @@ def parse_args():
 def main():
     args = parse_args()
     logger = get_logger()
-    tokenizer = InferenceAbsTokenizer()
+    tokenizer = AbsTokenizer()
     model = load_model(checkpoint_path=args.cp)
     model = compile_model(model=model, max_seq_len=MAX_SEQ_LEN)
-
-    if args.guidance_path:
-        assert (
-            args.guidance_start_ms is not None and args.guidance_start_ms >= 0
-        )
-        assert args.guidance_end_ms is not None and args.guidance_end_ms >= 0
-        assert (
-            tokenizer._config["guidance"]["min_ms"]
-            <= args.guidance_end_ms - args.guidance_start_ms
-            <= tokenizer._config["guidance"]["max_ms"]
-        )
-        guidance_midi_dict = MidiDict.from_midi(args.guidance_path)
-
-        logger.info(
-            f"Using guidance from {args.guidance_path} in interval {[args.guidance_start_ms, args.guidance_end_ms]}"
-        )
-
-    else:
-        guidance_midi_dict = None
 
     assert (args.midi_path and os.path.isfile(args.midi_path)) or args.midi_in
     if args.midi_path:
@@ -1177,11 +1185,8 @@ def main():
         first_on_msg_epoch_ms=first_on_msg_epoch_ms,
         control_sentinel=control_sentinel,
         temperature=args.temp,
-        top_p=args.top_p,
+        min_p=args.min_p,
         num_preceding_active_pitches=num_active_pitches,
-        guidance_midi_dict=guidance_midi_dict,
-        guidance_start_ms=args.guidance_start_ms,
-        guidance_end_ms=args.guidance_end_ms,
     )
     keypress_thread.join()
 
@@ -1191,5 +1196,6 @@ def main():
         midi.save(args.save_path)
 
 
+# TODO: Note this is all broken due to tokenizer changes -- fix
 if __name__ == "__main__":
     main()

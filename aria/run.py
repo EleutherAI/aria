@@ -18,7 +18,10 @@ def _parse_sample_args():
         help="path to model checkpoint used for embeddings",
     )
     argp.add_argument(
-        "-embedding_midi_path", required=False, help="path to midi file"
+        "-embedding_midi_paths",
+        nargs="+",
+        required=False,
+        help="path(s) to midi file(s) used for embeddings",
     )
     argp.add_argument(
         "-temp",
@@ -32,7 +35,12 @@ def _parse_sample_args():
         help="sampling top_p value",
         type=float,
         required=False,
-        default=0.95,
+    )
+    argp.add_argument(
+        "-min_p",
+        help="sampling min_p value",
+        type=float,
+        required=False,
     )
     argp.add_argument(
         "-cfg",
@@ -61,7 +69,7 @@ def _parse_sample_args():
 
 def _get_embedding(
     embedding_checkpoint_path: str,
-    midi_path: str,
+    midi_paths: list[str],
     start_ms: int | None = None,
     end_ms: int | None = None,
 ):
@@ -95,28 +103,32 @@ def _get_embedding(
     model = TransformerEMB(model_config).cuda().eval()
     model.load_state_dict(model_state)
 
-    midi_dict = MidiDict.from_midi(midi_path)
-    midi_dict.note_msgs = [
-        msg
-        for msg in midi_dict.note_msgs
-        if (
-            midi_dict.tick_to_ms(msg["tick"]) >= start_ms
-            if start_ms is not None
-            else True
-        )
-        and (
-            midi_dict.tick_to_ms(msg["tick"]) <= end_ms
-            if end_ms is not None
-            else True
-        )
-    ]
+    seqs = []
+    for midi_path in midi_paths:
+        midi_dict = MidiDict.from_midi(midi_path)
+        midi_dict.note_msgs = [
+            msg
+            for msg in midi_dict.note_msgs
+            if (
+                midi_dict.tick_to_ms(msg["tick"]) >= start_ms
+                if start_ms is not None
+                else True
+            )
+            and (
+                midi_dict.tick_to_ms(msg["tick"]) <= end_ms
+                if end_ms is not None
+                else True
+            )
+        ]
 
-    seqs = process_entry(
-        entry=midi_dict,
-        slice_len_notes=SLICE_NUM_NOTES,
-        max_seq_len=SLICE_MAX_SEQ_LEN,
-        tokenizer=tokenizer,
-    )
+        seqs.extend(
+            process_entry(
+                entry=midi_dict,
+                slice_len_notes=SLICE_NUM_NOTES,
+                max_seq_len=SLICE_MAX_SEQ_LEN,
+                tokenizer=tokenizer,
+            )
+        )
 
     def model_forward(model, idxs):
         return model(idxs)
@@ -155,11 +167,13 @@ def sample(args):
 
     tokenizer = AbsTokenizer()
 
-    if args.embedding_checkpoint_path and args.embedding_midi_path:
-        print(f"Using embedding from {args.embedding_midi_path}")
+    if args.embedding_checkpoint_path and args.embedding_midi_paths:
+        print(f"Using embedding from {args.embedding_midi_paths}")
         embedding = _get_embedding(
             embedding_checkpoint_path=args.embedding_checkpoint_path,
-            midi_path=args.embedding_midi_path,
+            midi_paths=args.embedding_midi_paths,
+            start_ms=args.trunc * 1e3,
+            end_ms=None,
         )
     else:
         embedding = None
@@ -211,8 +225,9 @@ def sample(args):
             prompts=prompts,
             max_new_tokens=max_new_tokens,
             force_end=force_end,
-            temperature=args.temp,
+            temp=args.temp,
             top_p=args.top_p,
+            min_p=args.min_p,
             cfg_gamma=args.cfg,
             compile=args.compile,
             embedding=embedding,
@@ -224,8 +239,9 @@ def sample(args):
             prompts=prompts,
             max_new_tokens=max_new_tokens,
             force_end=force_end,
-            temperature=args.temp,
+            temp=args.temp,
             top_p=args.top_p,
+            min_p=args.min_p,
             compile=args.compile,
             embedding=embedding,
         )
