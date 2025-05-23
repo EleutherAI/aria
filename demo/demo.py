@@ -40,8 +40,6 @@ HARDWARE_LATENCY_MS = 0
 
 # TODO:
 # - Add CFG support (eek)
-# - Add looping functionality
-# - Add ending functionality
 
 
 file_handler = logging.FileHandler("./demo.log", mode="w")
@@ -110,7 +108,6 @@ def _compile_prefill(
     compiled_prefill(
         model, enc_seq=torch.ones(1, 8192, device="cuda", dtype=torch.int)
     )
-    print
     logger.info(
         f"Finished compiling - took {time.time() - start_compile_time_s:.4f} seconds"
     )
@@ -497,7 +494,7 @@ def decode_tokens(
             )
 
         logits[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
-        logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
+        # logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
         for dur_ms in range(0, MIN_NOTE_LEN_MS, 10):
             logits[:, tokenizer.tok_to_id[("dur", dur_ms)]] = float("-inf")
 
@@ -513,8 +510,13 @@ def decode_tokens(
             f"({(time.time() - decode_one_start_time_s)*1000:.2f}ms) {idx}: {next_token}"
         )
 
-        generated_tokens_queue.put(next_token)
-        idx += 1
+        if next_token == tokenizer.eos_tok:
+            logger.info("EOS token produced, exiting...")
+            generated_tokens_queue.put(next_token)
+            return
+        else:
+            generated_tokens_queue.put(next_token)
+            idx += 1
 
     while not control_sentinel.is_set():
         time.sleep(0.1)
@@ -523,7 +525,6 @@ def decode_tokens(
     generated_tokens_queue.put(None)
 
 
-# TODO: BUG: Potentially a bug with dim_toks ect... being removed during kv-preprocessing
 @torch.autocast("cuda", dtype=DTYPE)
 @torch.inference_mode()
 def generate_tokens(
@@ -541,7 +542,7 @@ def generate_tokens(
 
     generate_start_s = time.time()
     priming_seq_len = len(priming_seq)
-    start_idx = max(2, priming_seq_len - 4 * num_preceding_active_pitches)
+    start_idx = max(2, priming_seq_len - 4 * num_preceding_active_pitches - 1)
     enc_seq = torch.tensor(
         [
             tokenizer.encode(
@@ -647,14 +648,26 @@ def decode_tokens_to_midi(
     while True:
         while True:
             tok = generated_tokens_queue.get()
-            if tok is None:
-                # This is triggered iff control sentinel is set a second time
-                logger.info("Seen exit signal")
-                midi_messages_queue.put(None)
+            if tok is tokenizer.eos_tok:
+                _uuid = uuid.uuid4()
+                end_msg = {
+                    "pitch": -1,
+                    "vel": -1,
+                    "epoch_time_ms": offset_epoch_ms + 250,  # Last note offset
+                    "uuid": _uuid,
+                }  # pitch=-1 denotes end_msg
+                midi_messages_queue.put(end_msg)
+                logger.info(f"Seen exit signal: EOS token")
+                logger.debug(f"Put message: {end_msg}")
+                return
+
+            elif tok is None:
+                logger.info(f"Seen exit signal")
                 return
 
             logger.debug(f"Seen token: {tok}")
             note_buffer.append(tok)
+
             if isinstance(tok, tuple) and tok[0] == "dur":
                 break
 
@@ -701,6 +714,7 @@ def stream_midi(
     prev_msg_epoch_time_ms: float,
     midi_output_port: str,
     control_sentinel: threading.Event,
+    midi_stream_channel: int,
 ):
     logger = get_logger("STREAM")
     logger.info(
@@ -743,7 +757,7 @@ def stream_midi(
                 msg = midi_messages[0]
 
                 if (
-                    (msg["vel"] != 0)
+                    (msg["vel"] > 0)
                     and (
                         msg["epoch_time_ms"] - latency_adjusted_epoch_time_ms
                         <= MIN_NOTE_DELTA_MS
@@ -767,6 +781,9 @@ def stream_midi(
                     < latency_adjusted_epoch_time_ms - msg["epoch_time_ms"]
                     <= 50
                 ):
+                    if msg["pitch"] == -1:  # End msg
+                        control_sentinel.set()
+                        break
 
                     mido_msg = mido.Message(
                         "note_on",
@@ -787,6 +804,7 @@ def stream_midi(
 
                     if should_send is True:
                         mido_msg_with_time = copy.deepcopy(mido_msg)
+                        mido_msg_with_time.channel = midi_stream_channel
                         mido_msg_with_time.time = max(
                             0, msg["epoch_time_ms"] - prev_msg_epoch_time_ms
                         )
@@ -821,6 +839,8 @@ def stream_midi(
 
         logger.info("Processing remaining note_off messages")
 
+        logger.debug(midi_messages)
+
         remaining_note_off_messages = [
             msg
             for msg in midi_messages
@@ -834,7 +854,7 @@ def stream_midi(
                 "note_on",
                 note=msg["pitch"],
                 velocity=0,
-                channel=0,
+                channel=midi_stream_channel,
                 time=msg["epoch_time_ms"] - prev_msg_epoch_time_ms,
             )
             prev_msg_epoch_time_ms = msg["epoch_time_ms"]
@@ -855,6 +875,8 @@ def stream_msgs(
     temperature: float,
     min_p: float,
     num_preceding_active_pitches: int,
+    midi_stream_channel: int,
+    is_ending: bool = False,
 ):
     midi = convert_msgs_to_midi(msgs=msgs)
     midi_dict = MidiDict(**midi_to_dict(midi))
@@ -863,6 +885,8 @@ def stream_msgs(
 
     if tokenizer.dim_tok in priming_seq:
         priming_seq.remove(tokenizer.dim_tok)
+    if is_ending is True:
+        priming_seq.append(tokenizer.dim_tok)
 
     generated_tokens_queue = queue.Queue()
     midi_messages_queue = queue.Queue()
@@ -906,6 +930,7 @@ def stream_msgs(
         + tokenizer.calc_length_ms(priming_seq, onset=False),
         midi_output_port=midi_output_port,
         control_sentinel=control_sentinel,
+        midi_stream_channel=midi_stream_channel,
     )
 
     generate_tokens_thread.join()
@@ -915,15 +940,26 @@ def stream_msgs(
 
 
 def convert_msgs_to_midi(msgs: list[mido.Message]):
-    track = mido.MidiTrack()
-    track.append(mido.MetaMessage("set_tempo", tempo=500000, time=0))
-    track.append(mido.Message("program_change", program=0, channel=0, time=0))
-    for msg in msgs:
-        track.append(msg)
+    logger = get_logger("convert")
 
-    mid = mido.MidiFile(type=0)
+    channel_to_track = {
+        chan: mido.MidiTrack()
+        for chan in list(set([msg.channel for msg in msgs]))
+    }
+
+    for msg in msgs:
+        channel_to_track[msg.channel].append(msg)
+
+    mid = mido.MidiFile(type=1)
     mid.ticks_per_beat = 500
-    mid.tracks.append(track)
+
+    for channel, track in channel_to_track.items():
+        track.insert(0, mido.MetaMessage("set_tempo", tempo=500000, time=0))
+        track.insert(
+            0,
+            mido.Message("program_change", program=0, channel=channel, time=0),
+        )
+        mid.tracks.append(track)
 
     return mid
 
@@ -931,14 +967,16 @@ def convert_msgs_to_midi(msgs: list[mido.Message]):
 def capture_midi_input(
     midi_input_port: str,
     control_sentinel: threading.Event,
+    midi_capture_channel: int,
     midi_control_signal: int | None = None,
     midi_through_port: str | None = None,
+    first_msg_epoch_time_ms: int | None = None,
 ):
     logger = get_logger("CAPTURE")
     received_messages = []
     active_pitches = set()
     first_on_msg_epoch_ms = None
-    prev_msg_epoch_time_ms = None
+    prev_msg_epoch_time_ms = first_msg_epoch_time_ms  #
 
     logger.info(f"Listening on MIDI port: '{midi_input_port}'")
     logger.info(f"Using MIDI control signal: {midi_control_signal}")
@@ -967,7 +1005,7 @@ def capture_midi_input(
 
             prev_msg_epoch_time_ms = get_epoch_time_ms()
             msg.time = msg_time_ms
-            msg.channel = 0
+            msg.channel = midi_capture_channel
             logger.info(f"Received message: [{msg}]")
 
             if msg.is_meta is True or msg.type == "program_change":
@@ -1007,7 +1045,7 @@ def capture_midi_input(
                 type="note_on",
                 note=pitch,
                 velocity=0,
-                channel=0,
+                channel=midi_capture_channel,
                 time=get_epoch_time_ms() - prev_msg_epoch_time_ms,
             )
             received_messages.append(msg)
@@ -1020,7 +1058,7 @@ def capture_midi_input(
                 type="note_on",
                 note=pitch,
                 velocity=0,
-                channel=0,
+                channel=midi_capture_channel,
                 time=0,
             )
             received_messages.append(msg)
@@ -1031,19 +1069,20 @@ def capture_midi_input(
             type="control_change",
             control=64,
             value=0,
-            channel=0,
+            channel=midi_capture_channel,
             time=0,
         )
         received_messages.append(msg)
         if midi_through is not None:
             midi_through.send(msg)
 
+        # TODO: Need to figure out what the hell this does - is it needed?
         # Workaround for the way that file-playback is implemented - delete
         msg = mido.Message(
             type="control_change",
             control=midi_control_signal,
             value=0,
-            channel=0,
+            channel=midi_capture_channel,
             time=0,
         )
         if midi_through is not None:
@@ -1076,13 +1115,47 @@ def play_midi_file(midi_port: str, midi_path: str):
             output_port.send(msg)
 
 
-def listen_for_control_signal_keypress(control_sentinel: threading.Event):
+def listen_for_keypress_control_signal(
+    control_sentinel: threading.Event,
+    end_sentinel: threading.Event,
+):
     logger = get_logger("KEYBOARD")
-    for _ in range(2):
+    while True:
         time.sleep(1)
-        input()
-        logger.info("Keypress seen")
+        _input = input()
+        logger.info(f'Keypress seen "{_input}"')
         control_sentinel.set()
+
+        if _input == "e":
+            end_sentinel.set()
+
+
+# TODO: Not tested
+def listen_for_midi_control_signal(
+    midi_input_port: str,
+    control_sentinel: threading.Event,
+    end_sentinel: threading.Event,
+    midi_control_signal: int | None = None,
+    midi_end_signal: int | None = None,
+):
+    with mido.open_input(midi_input_port) as midi_input:
+        while True:
+            msg = midi_input.receive(block=False)
+            if msg is None:
+                time.sleep(0.01)
+            elif (
+                msg.type == "control_change"
+                and msg.control == midi_control_signal
+                and msg.value > 0
+            ):
+                control_sentinel.set()
+            elif (
+                msg.type == "control_change"
+                and msg.control == midi_end_signal
+                and msg.value > 0
+            ):
+                control_sentinel.set()
+                end_sentinel.set()
 
 
 def parse_args():
@@ -1104,6 +1177,11 @@ def parse_args():
         "-midi_control_signal",
         type=int,
         help="MIDI control change message for AI takeover",
+    )
+    argp.add_argument(
+        "-midi_end_signal",
+        type=int,
+        help="MIDI control change message to generate ending",
     )
     argp.add_argument(
         "-temp",
@@ -1142,6 +1220,11 @@ def parse_args():
     return argp.parse_args()
 
 
+# TODO: Test demo on real instrument with real MIDI interface
+# TODO: Possibly a problem with endings being truncated
+# TODO: Need functionality for handing case where we run out of model context
+
+
 def main():
     args = parse_args()
     logger = get_logger()
@@ -1162,21 +1245,69 @@ def main():
         midi_input_port = args.midi_in
 
     control_sentinel = threading.Event()
+    end_sentinel = threading.Event()
     keypress_thread = threading.Thread(
-        target=listen_for_control_signal_keypress,
-        args=[control_sentinel],
+        target=listen_for_keypress_control_signal,
+        args=[control_sentinel, end_sentinel],
+        daemon=True,
+    )
+    midi_control_thread = threading.Thread(
+        target=listen_for_midi_control_signal,
+        kwargs={
+            "midi_input_port": midi_input_port,
+            "control_sentinel": control_sentinel,
+            "end_sentinel": end_sentinel,
+            "midi_control_signal": args.midi_control_signal,
+            "midi_end_signal": args.midi_end_signal,
+        },
         daemon=True,
     )
     keypress_thread.start()
+    midi_control_thread.start()
 
-    msgs, first_on_msg_epoch_ms, num_active_pitches = capture_midi_input(
-        midi_input_port=midi_input_port,
-        control_sentinel=control_sentinel,
-        midi_control_signal=args.midi_control_signal,
-        midi_through_port=args.midi_through,
+    msgs = []
+    captured_msgs, first_on_msg_epoch_ms, num_active_pitches = (
+        capture_midi_input(
+            midi_input_port=midi_input_port,
+            control_sentinel=control_sentinel,
+            midi_control_signal=args.midi_control_signal,
+            midi_through_port=args.midi_through,
+            midi_capture_channel=0,
+        )
     )
 
-    control_sentinel.clear()
+    itt = 0
+    while True:
+        control_sentinel.clear()
+        msgs = stream_msgs(
+            model=model,
+            tokenizer=tokenizer,
+            msgs=msgs + captured_msgs,
+            midi_output_port=args.midi_out,
+            first_on_msg_epoch_ms=first_on_msg_epoch_ms,
+            control_sentinel=control_sentinel,
+            temperature=args.temp,
+            min_p=args.min_p,
+            num_preceding_active_pitches=num_active_pitches,
+            midi_stream_channel=itt,
+            is_ending=False,
+        )
+
+        control_sentinel.clear()
+        if end_sentinel.is_set():
+            break
+        else:
+            itt += 1
+
+        captured_msgs, _, num_active_pitches = capture_midi_input(
+            midi_input_port=midi_input_port,
+            control_sentinel=control_sentinel,
+            midi_control_signal=args.midi_control_signal,
+            midi_through_port=args.midi_through,
+            midi_capture_channel=itt,
+            first_msg_epoch_time_ms=first_on_msg_epoch_ms,
+        )
+
     msgs = stream_msgs(
         model=model,
         tokenizer=tokenizer,
@@ -1184,11 +1315,12 @@ def main():
         midi_output_port=args.midi_out,
         first_on_msg_epoch_ms=first_on_msg_epoch_ms,
         control_sentinel=control_sentinel,
-        temperature=args.temp,
+        temperature=args.temp / 2,
         min_p=args.min_p,
         num_preceding_active_pitches=num_active_pitches,
+        midi_stream_channel=itt,
+        is_ending=True,
     )
-    keypress_thread.join()
 
     if args.save_path:
         logger.info(f"Saving result to {args.save_path}")
@@ -1196,6 +1328,5 @@ def main():
         midi.save(args.save_path)
 
 
-# TODO: Note this is all broken due to tokenizer changes -- fix
 if __name__ == "__main__":
     main()
