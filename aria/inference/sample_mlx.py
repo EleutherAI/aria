@@ -3,6 +3,7 @@
 import torch
 import numpy as np
 import mlx.core as mx
+import mlx.nn as nn
 
 from typing import List
 from tqdm import tqdm
@@ -19,18 +20,12 @@ def decode_one(
 ):
     assert input_pos.shape[-1] == 1
 
-    compiled_forward = mx.compile(model.__call__)
-    logits = compiled_forward(
+    logits = model(
         idxs=idxs,
         input_pos=input_pos,
         offset=input_pos[0],
-        # pad_idxs=pad_idxs,
+        pad_idxs=pad_idxs,
     )[:, -1]
-    # logits = model(
-    #     idxs=idxs,
-    #     input_pos=input_pos,
-    #     pad_idxs=pad_idxs,
-    # )[:, -1]
 
     return logits
 
@@ -116,7 +111,9 @@ def sample_batch(
             for p in prompts
         ]
     )
-    model.setup_cache(batch_size=num_prompts, max_seq_len=total_len)
+    model.setup_cache(
+        batch_size=num_prompts, max_seq_len=total_len, dtype=mx.float32
+    )
     print(
         f"Using hyperparams: temp={temp}, min_p={min_p}, gen_len={max_new_tokens}"
     )
@@ -179,28 +176,13 @@ def sample_batch(
     return decoded_results
 
 
-# TODO: Broken
-# def sample_min_p(probs: mx.array, p_base: float):  # Added type hint
-#     """See - https://arxiv.org/pdf/2407.01082"""
-#     p_max = mx.max(probs, axis=-1, keepdims=True)
-#     p_scaled = p_base * p_max
-#     mask = probs >= p_scaled
-
-#     masked_probs = mx.where(~mask, mx.zeros_like(probs), probs)
-#     sum_masked_probs = mx.sum(masked_probs, axis=-1, keepdims=True)
-#     sum_masked_probs = mx.where(sum_masked_probs == 0, 1e-9, sum_masked_probs)
-#     masked_probs_normalized = masked_probs / sum_masked_probs
-
-#     next_token = mx.random.categorical(masked_probs_normalized, num_samples=1)
-
-#     return next_token
-
-
 def sample_min_p(probs: mx.array, p_base: float):  # Added type hint
     """See - https://arxiv.org/pdf/2407.01082"""
     p_max = mx.max(probs, axis=-1, keepdims=True)
     p_scaled = p_base * p_max
     mask = probs >= p_scaled
+
+    print(mx.sum(mask).item())
 
     masked_probs = mx.where(~mask, mx.zeros_like(probs), probs)
     sum_masked_probs = mx.sum(masked_probs, axis=-1, keepdims=True)
@@ -219,7 +201,6 @@ def sample_min_p(probs: mx.array, p_base: float):  # Added type hint
 
 def sample():
     import os
-    import torch
 
     from aria.model import ModelConfig
     from aria.config import load_model_config
@@ -228,25 +209,26 @@ def sample():
     from ariautils.tokenizer import AbsTokenizer
     from aria.sample import get_inference_prompt
 
-    CHECKPOINT_PATH = "/mnt/ssd1/aria/v2/medium-75-annealed.safetensors"  # Or ".pt" if you're loading a converted PyTorch model
-    PROMPT_MIDI_PATH = (
-        "/home/loubb/Dropbox/shared/demo.mid"  # Example: "my_melody_prompt.mid"
+    CHECKPOINT_PATH = (
+        "/Users/louis/work/aria/models/medium-75-annealed.safetensors"
     )
+    PROMPT_MIDI_PATH = "/Users/louis/Dropbox/shared/audio.mid"
 
-    NUM_VARIATIONS = 2  # Number of samples (e.g., 2 variations)
-    TRUNCATE_LEN_MS = 1000  # Prompt length in milliseconds (e.g., 10 seconds)
-    GEN_LENGTH = 256  # Number of new tokens to generate (args.l)
+    NUM_VARIATIONS = 1  # Number of samples (e.g., 2 variations)
+    TRUNCATE_LEN_MS = 15000  # Prompt length in milliseconds (e.g., 10 seconds)
+    GEN_LENGTH = 1024  # Number of new tokens to generate (args.l)
     FORCE_END = False  # Whether to force sequence end (args.e)
-    TEMPERATURE = 0.98  # Sampling temperature (args.temp)
-    MIN_P = 0.04  # Min-p sampling (args.min_p)
+    TEMPERATURE = 0.95  # Sampling temperature (args.temp)
+    MIN_P = 0.05  # Min-p sampling (args.min_p)
 
-    SAMPLES_DIR = os.path.join(os.getcwd(), "/home/loubb/Dropbox/shared")
+    SAMPLES_DIR = os.path.join(os.getcwd(), "/Users/louis/Dropbox/shared")
 
     tokenizer = AbsTokenizer()
     model_config = ModelConfig(**load_model_config("medium-emb"))
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerLM(model_config)
     model.load_weights(CHECKPOINT_PATH)
+    nn.quantize(model.model, group_size=128, bits=8)
 
     midi_dict = MidiDict.from_midi(mid_path=PROMPT_MIDI_PATH)
     prompt_seq = get_inference_prompt(
