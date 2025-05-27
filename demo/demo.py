@@ -21,15 +21,21 @@ from aria.utils import _load_weight
 from aria.inference import TransformerLM
 from aria.model import ModelConfig
 from aria.config import load_model_config
-from aria.sample import prefill, decode_one, sample_min_p
+from aria.sample import sample_min_p
 
 torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True
 
 DTYPE = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-MAX_SEQ_LEN = 8192
-PREFILL_COMPILE_SEQ_LEN = 1024
+MAX_SEQ_LEN = 2048
+PREFILL_CHUNK_SIZE = 16
+RECALC_DUR_PREFILL_CHUNK_SIZE = 8
+RECALC_DUR_BUFFER_MS = 50
+
+# Decode first
+BEAM_WIDTH = 5
+TIME_TOK_WEIGHTING = -6
 
 # HARDWARE: Decoded logits are masked for durations < MIN_NOTE_LEN_MS
 # HARDWARE: Sends early off-msg if pitch is on MIN_NOTE_DELTA_MS before on-msg
@@ -81,53 +87,90 @@ def get_epoch_time_ms() -> int:
     return round(time.time() * 1000)
 
 
-def compiled_prefill(
+@torch.autocast("cuda", dtype=DTYPE)
+@torch.inference_mode()
+def prefill(
     model: TransformerLM,
-    enc_seq: torch.Tensor,
-):
-    return prefill(
-        model=model,
-        idxs=enc_seq[:, :PREFILL_COMPILE_SEQ_LEN],
-        input_pos=torch.arange(0, PREFILL_COMPILE_SEQ_LEN, device="cuda"),
+    idxs: torch.Tensor,
+    input_pos: torch.Tensor,
+    pad_idxs: torch.Tensor | None = None,
+) -> torch.Tensor:
+    logits = model.forward(
+        idxs=idxs,
+        input_pos=input_pos,
+        pad_idxs=pad_idxs,
     )
+
+    return logits
+
+
+@torch.autocast("cuda", dtype=DTYPE)
+@torch.inference_mode()
+def decode_one(
+    model: TransformerLM,
+    idxs: torch.Tensor,
+    input_pos: torch.Tensor,
+    pad_idxs: torch.Tensor | None = None,
+) -> torch.Tensor:
+    assert input_pos.shape[-1] == 1
+
+    logits = model.forward(
+        idxs=idxs,
+        input_pos=input_pos,
+        pad_idxs=pad_idxs,
+    )[:, -1]
+
+    return logits
 
 
 def _compile_prefill(
     model: TransformerLM,
     logger: logging.Logger,
+    chunk_size: int,
 ):
-    global compiled_prefill
-    compiled_prefill = torch.compile(
-        compiled_prefill,
+    assert chunk_size > 1
+
+    global prefill
+    prefill = torch.compile(
+        prefill,
         mode="reduce-overhead",
         fullgraph=True,
     )
-
     start_compile_time_s = time.time()
-    logger.info(f"Compiling prefill")
-    compiled_prefill(
-        model, enc_seq=torch.ones(1, 8192, device="cuda", dtype=torch.int)
+    logger.info(f"Compiling prefill (chunk_size={chunk_size})")
+    prefill(
+        model,
+        idxs=torch.ones(1, chunk_size, device="cuda", dtype=torch.int),
+        input_pos=torch.arange(0, chunk_size, device="cuda", dtype=torch.int),
     )
     logger.info(
         f"Finished compiling - took {time.time() - start_compile_time_s:.4f} seconds"
     )
 
     for _ in range(5):
-        compiled_prefill(
+        prefill(
             model,
-            enc_seq=torch.ones(1, 8192, device="cuda", dtype=torch.int),
+            idxs=torch.ones(1, chunk_size, device="cuda", dtype=torch.int),
+            input_pos=torch.arange(
+                0, chunk_size, device="cuda", dtype=torch.int
+            ),
         )
 
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
     start_event.record()
-    compiled_prefill(
-        model, enc_seq=torch.ones(1, 8192, device="cuda", dtype=torch.int)
+    prefill(
+        model,
+        idxs=torch.ones(1, chunk_size, device="cuda", dtype=torch.int),
+        input_pos=torch.arange(0, chunk_size, device="cuda", dtype=torch.int),
     )
     end_event.record()
     end_event.synchronize()
     compiled_prefill_ms = start_event.elapsed_time(end_event)
-    logger.info(f"Compiled prefill benchmark: {compiled_prefill_ms:.2f}ms")
+    compiled_prefill_its = 1000 / compiled_prefill_ms
+    logger.info(
+        f"Compiled prefill benchmark: {compiled_prefill_ms:.2f} ms/it ({compiled_prefill_its:.2f} it/s)"
+    )
 
     return model
 
@@ -142,7 +185,7 @@ def _compile_decode_one(model: TransformerLM, logger: logging.Logger):
 
     with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
         start_compile_time_s = time.time()
-        logger.info(f"Compiling forward pass")
+        logger.info(f"Compiling decode_one")
         decode_one(
             model,
             idxs=torch.tensor([[0]], device="cuda", dtype=torch.int),
@@ -174,13 +217,12 @@ def _compile_decode_one(model: TransformerLM, logger: logging.Logger):
         compiled_forward_ms = start_event.elapsed_time(end_event)
         compiled_forward_its = 1000 / compiled_forward_ms
         logger.info(
-            f"Compiled forward pass benchmark: {compiled_forward_ms:.2f} ms/it ({compiled_forward_its:.2f} it/s)"
+            f"Compiled decode_one benchmark: {compiled_forward_ms:.2f} ms/it ({compiled_forward_its:.2f} it/s)"
         )
 
         return model
 
 
-@torch.autocast("cuda", dtype=DTYPE)
 @torch.inference_mode()
 def compile_model(model: TransformerLM, max_seq_len: int):
     logger = get_logger()
@@ -194,7 +236,10 @@ def compile_model(model: TransformerLM, max_seq_len: int):
     )
 
     model = _compile_decode_one(model=model, logger=logger)
-    model = _compile_prefill(model=model, logger=logger)
+    for chunk_size in list({PREFILL_CHUNK_SIZE, RECALC_DUR_PREFILL_CHUNK_SIZE}):
+        model = _compile_prefill(
+            model=model, logger=logger, chunk_size=chunk_size
+        )
 
     return model
 
@@ -232,92 +277,113 @@ def load_model(
     return model
 
 
-@torch.autocast("cuda", dtype=DTYPE)
+def _first_bad_dur_index(
+    tokenizer: AbsTokenizer,
+    priming_seq: list,
+    pred_ids: list,
+    chunk_start: int,
+    last_offset_ms: int,
+    logger: logging.Logger,
+):
+    num_time_toks = priming_seq[:chunk_start].count(tokenizer.time_tok)
+    local_onset_ms = tokenizer.calc_length_ms(
+        priming_seq[:chunk_start], onset=True
+    )
+    logger.debug(f"Starting from local onset {local_onset_ms}")
+
+    for pos, tok_id in enumerate(
+        pred_ids[: len(priming_seq) - chunk_start], start=chunk_start
+    ):
+        prim_tok = priming_seq[pos]  # Should never error?
+        pred_tok = tokenizer.id_to_tok[tok_id]
+        logger.debug(f"prim={prim_tok}, pred={pred_tok}")
+
+        if isinstance(prim_tok, tuple) and prim_tok[0] == "onset":
+            local_onset_ms = num_time_toks * 5000 + prim_tok[1]
+        elif prim_tok == tokenizer.time_tok:
+            num_time_toks += 1
+        elif isinstance(prim_tok, tuple) and prim_tok[0] == "dur":
+            dur_true = prim_tok[1]
+            dur_pred = pred_tok[1]
+            if dur_pred > dur_true and (
+                local_onset_ms + dur_true
+                > last_offset_ms - RECALC_DUR_BUFFER_MS
+            ):
+                logger.info(
+                    f"Found token to resample at {pos}: {prim_tok} -> {pred_tok}"
+                )
+                return pos
+
+    return None
+
+
+# TODO: I'm still not 100% sure this is bug free.
+# A good debugging strat would be to run it over and over again until we
+# cover all of the edge cases
 @torch.inference_mode()
-def recalculate_dur_tokens(
+def recalc_dur_tokens_chunked(
     model: TransformerLM,
     priming_seq: list,
     enc_seq: torch.Tensor,
     tokenizer: AbsTokenizer,
     start_idx: int,
 ):
-    logger = get_logger("GENERATE")
+    """Speculative-decoding inspired duration re-calculation"""
     assert start_idx > 0
+    logger = get_logger("GENERATE")
 
-    priming_seq_len = len(priming_seq)
-    num_time_toks_seen = priming_seq[:start_idx].count(tokenizer.time_tok)
-    curr_onset = num_time_toks_seen * 5000
+    priming_len = len(priming_seq)
     last_offset = tokenizer.calc_length_ms(priming_seq)
-    LAST_OFFSET_BUFFER_MS = 50
 
-    for idx in range(start_idx, priming_seq_len):
-        with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
-            prev_tok_id = enc_seq[0, idx - 1]
-            prev_tok = tokenizer.id_to_tok[prev_tok_id.item()]
-            logits = decode_one(
-                model,
-                idxs=torch.tensor(
-                    [[prev_tok_id]], device="cuda", dtype=torch.int
-                ),
-                input_pos=torch.tensor(
-                    [idx - 1], device="cuda", dtype=torch.int
-                ),
-            )
-            logger.debug(
-                f"Sampled logits for position {idx} by inserting {prev_tok} at position {idx-1}"
-            )
+    idx = start_idx
+    while idx <= priming_len:
+        end_idx = idx + RECALC_DUR_PREFILL_CHUNK_SIZE
 
-        next_token_ids = torch.argmax(logits, dim=-1).flatten()
-        priming_tok = tokenizer.id_to_tok[enc_seq[0, idx].item()]
-        predicted_tok = tokenizer.id_to_tok[next_token_ids[0].item()]
-
-        logger.debug(
-            f"Ground truth token: {priming_tok}, resampled token: {predicted_tok}"
+        window_ids = torch.tensor(
+            enc_seq[:, idx - 1 : end_idx - 1].tolist(),
+            device="cuda",
+            dtype=torch.int,
+        )
+        window_pos = torch.arange(
+            idx - 1, end_idx - 1, device="cuda", dtype=torch.int
         )
 
-        resample = False
-        if isinstance(priming_tok, tuple) and priming_tok[0] == "onset":
-            curr_onset = (num_time_toks_seen * 5000) + priming_tok[1]
-        elif priming_tok == tokenizer.time_tok:
-            num_time_toks_seen += 1
-            curr_onset = num_time_toks_seen * 5000
-        elif isinstance(priming_tok, tuple) and priming_tok[0] == "dur":
-            assert (
-                isinstance(predicted_tok, tuple) and predicted_tok[0] == "dur"
-            )
+        logger.info(
+            f"Recalculating chunked durations for positions: {idx-1} - {end_idx-2}"
+        )
+        logger.debug(f"Inserted: {tokenizer.decode(window_ids[0].tolist())}")
+        logger.debug(f"Positions: {window_pos.tolist()}")
 
-            priming_dur = priming_tok[1]
-            predicted_dur = predicted_tok[1]
+        logits = prefill(model, idxs=window_ids, input_pos=window_pos)
+        pred_ids = logits.argmax(dim=-1).flatten().tolist()
 
-            if (predicted_dur > priming_dur) and (
-                curr_onset + priming_dur > last_offset - LAST_OFFSET_BUFFER_MS
-            ):
-                resample = True
-
-        if resample is True:
-            logger.info(
-                f"Replaced ground truth for position {idx}: {tokenizer.id_to_tok[enc_seq[:, idx].item()]} -> {tokenizer.id_to_tok[next_token_ids[0].item()]}"
-            )
-            enc_seq[:, idx] = next_token_ids
-            priming_seq[idx] = predicted_tok
-
-    # TODO: There is a bug here if no-notes are active when the signal is pressed
-    last_tok_id = enc_seq[0, idx]
-    last_tok = tokenizer.id_to_tok[last_tok_id.item()]
-
-    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
-        next_token_logits = decode_one(
-            model,
-            idxs=torch.tensor([[last_tok_id]], device="cuda", dtype=torch.int),
-            input_pos=torch.tensor([idx], device="cuda", dtype=torch.int),
+        bad_pos = _first_bad_dur_index(
+            tokenizer=tokenizer,
+            priming_seq=priming_seq,
+            pred_ids=pred_ids,
+            chunk_start=idx,
+            last_offset_ms=last_offset,
+            logger=logger,
         )
 
-    logger.info(f"Updated KV-Cache by inserting {last_tok} at position {idx}")
+        if bad_pos is None:
+            idx = end_idx
+        else:
+            new_id = pred_ids[bad_pos - idx]
+            enc_seq[0, bad_pos] = new_id
+            priming_seq[bad_pos] = tokenizer.id_to_tok[new_id]
+            idx = bad_pos
 
-    return enc_seq, priming_seq, next_token_logits
+    next_logits = logits[:, priming_len - idx]
+
+    return enc_seq, priming_seq, next_logits
 
 
-@torch.autocast("cuda", dtype=DTYPE)
+# TODO: This is now the latency bottleneck.
+# Ideas for reducing it:
+# - Get rid of the manual time_tok insert stuff, instead just mask logits
+#   for all invalid tokens, this should force the model to sample a time tok
+#   if there aren't any other valid options
 @torch.inference_mode()
 def decode_first_tokens(
     model: TransformerLM,
@@ -330,10 +396,8 @@ def decode_first_tokens(
 ):
     logger = get_logger("GENERATE")
 
-    BEAM_WIDTH = 5
-    BUFFER_MS = 100 + HARDWARE_LATENCY_MS
+    BUFFER_MS = 50 + HARDWARE_LATENCY_MS
     TIME_TOK_ID = tokenizer.tok_to_id[tokenizer.time_tok]
-    TIME_TOK_WEIGHTING = -6
 
     logits = first_token_logits
     time_since_first_onset_ms = get_epoch_time_ms() - first_on_msg_epoch_ms
@@ -525,12 +589,12 @@ def decode_tokens(
     generated_tokens_queue.put(None)
 
 
-@torch.autocast("cuda", dtype=DTYPE)
 @torch.inference_mode()
 def generate_tokens(
     priming_seq: list,
     tokenizer: AbsTokenizer,
     model: TransformerLM,
+    prev_context: list[int],
     control_sentinel: threading.Event,
     generated_tokens_queue: queue.Queue,
     num_preceding_active_pitches: int,
@@ -542,7 +606,7 @@ def generate_tokens(
 
     generate_start_s = time.time()
     priming_seq_len = len(priming_seq)
-    start_idx = max(2, priming_seq_len - 4 * num_preceding_active_pitches - 1)
+    start_idx = max(2, priming_seq_len - 4 * num_preceding_active_pitches)
     enc_seq = torch.tensor(
         [
             tokenizer.encode(
@@ -556,33 +620,26 @@ def generate_tokens(
 
     logger.debug(f"Priming sequence {priming_seq}")
     logger.info(f"Priming sequence length: {priming_seq_len}")
-    logger.info(f"Prefilling up to (and including) position: {start_idx-2}")
+    logger.info(f"Prefilling up to (and including) position: {start_idx-1}")
 
     # In theory we could reuse the logits from prefill
     prefill_start_s = time.time()
-    if start_idx < PREFILL_COMPILE_SEQ_LEN:
-        logger.info(
-            f"Using compiled prefill for sequence length: {PREFILL_COMPILE_SEQ_LEN}"
-        )
-        compiled_prefill(
-            model=model,
-            enc_seq=enc_seq,
-        )
-    else:
-        prefill(
-            model,
-            idxs=enc_seq[:, : start_idx - 1],
-            input_pos=torch.arange(0, start_idx - 1, device="cuda"),
-        )
+    chunked_prefill(
+        model=model,
+        tokenizer=tokenizer,
+        prev_context=prev_context,
+        curr_context=enc_seq[0, :start_idx].tolist(),
+        full=True,
+    )
 
     torch.cuda.synchronize()
     logger.info(
         f"Prefill took {(time.time() - prefill_start_s) * 1000:.2f} milliseconds"
     )
-    logger.info(f"Starting duration recalculation from: {start_idx}")
+    logger.info(f"Starting duration recalculation from position: {start_idx-1}")
 
     recalculate_dur_start_s = time.time()
-    enc_seq, priming_seq, next_token_logits = recalculate_dur_tokens(
+    enc_seq, priming_seq, next_token_logits = recalc_dur_tokens_chunked(
         model=model,
         priming_seq=priming_seq,
         enc_seq=enc_seq,
@@ -756,6 +813,8 @@ def stream_midi(
                 )
                 msg = midi_messages[0]
 
+                # TODO: Fix this (tomorrow) so it works for off-messages too
+                # (e.g., an off message which happens just before an on message)
                 if (
                     (msg["vel"] > 0)
                     and (
@@ -869,6 +928,7 @@ def stream_msgs(
     model: TransformerLM,
     tokenizer: AbsTokenizer,
     msgs: list[mido.Message],
+    prev_context: list[int],
     midi_output_port: str,
     first_on_msg_epoch_ms: int,
     control_sentinel: threading.Event,
@@ -880,11 +940,11 @@ def stream_msgs(
 ):
     midi = convert_msgs_to_midi(msgs=msgs)
     midi_dict = MidiDict(**midi_to_dict(midi))
-    priming_seq = tokenizer.tokenize(midi_dict=midi_dict)
+    priming_seq = tokenizer.tokenize(midi_dict=midi_dict, add_dim_tok=False)
     priming_seq = priming_seq[: priming_seq.index(tokenizer.eos_tok)]
 
-    if tokenizer.dim_tok in priming_seq:
-        priming_seq.remove(tokenizer.dim_tok)
+    # if tokenizer.dim_tok in priming_seq:
+    #     priming_seq.remove(tokenizer.dim_tok)
     if is_ending is True:
         priming_seq.append(tokenizer.dim_tok)
 
@@ -897,6 +957,7 @@ def stream_msgs(
             "priming_seq": priming_seq,
             "tokenizer": tokenizer,
             "model": model,
+            "prev_context": prev_context,
             "control_sentinel": control_sentinel,
             "generated_tokens_queue": generated_tokens_queue,
             "temperature": temperature,
@@ -964,16 +1025,202 @@ def convert_msgs_to_midi(msgs: list[mido.Message]):
     return mid
 
 
-def capture_midi_input(
-    midi_input_port: str,
+def _find_divergence(
+    prev_context: list,
+    curr_context: list,
+    logger: logging.Logger,
+):
+    agreement_index = 0
+    for prev_val, curr_val in zip(prev_context, curr_context):
+        if prev_val == curr_val:
+            agreement_index += 1
+        else:
+            logger.info(
+                f"Found divergence at position {agreement_index + 1}: {curr_val}, {prev_val}"
+            )
+            break
+
+    return agreement_index, curr_context[agreement_index:]
+
+
+# There is an error here if curr_context < prev_context
+@torch.inference_mode()
+def chunked_prefill(
+    model: TransformerLM,
+    tokenizer: AbsTokenizer,
+    prev_context: list,
+    curr_context: list,
+    full: bool = False,
+):
+
+    # prev_context = 124 (last thing that was prefilled)
+    # curr_context = 100 (what we are trying to make sure of now)
+
+    assert isinstance(curr_context[0], int)
+    assert tokenizer.pad_id not in prev_context
+    assert tokenizer.pad_id not in curr_context
+
+    logger = get_logger("PREFILL")
+    while True:
+        prefill_idx, prefill_toks = _find_divergence(
+            prev_context, curr_context, logger=logger
+        )
+        num_prefill_toks = len(prefill_toks)
+        logger.info(f"Tokens to prefill: {len(prefill_toks)}")
+
+        if num_prefill_toks > PREFILL_CHUNK_SIZE:
+            logger.info(
+                f"Prefilling {PREFILL_CHUNK_SIZE} tokens from idx={prefill_idx}"
+            )
+
+            prefill(
+                model,
+                idxs=torch.tensor(
+                    [prefill_toks[:PREFILL_CHUNK_SIZE]],
+                    device="cuda",
+                    dtype=torch.int,
+                ),
+                input_pos=torch.arange(
+                    prefill_idx,
+                    prefill_idx + PREFILL_CHUNK_SIZE,
+                    device="cuda",
+                    dtype=torch.int,
+                ),
+            )
+            prev_context = curr_context[: prefill_idx + PREFILL_CHUNK_SIZE]
+
+        elif num_prefill_toks > 0 and full is True:
+            logger.info(
+                f"Prefilling (force) {num_prefill_toks} tokens from idx={prefill_idx}"
+            )
+            prefill_toks += (PREFILL_CHUNK_SIZE - len(prefill_toks)) * [
+                tokenizer.pad_id
+            ]
+            prefill(
+                model,
+                idxs=torch.tensor(
+                    [prefill_toks], device="cuda", dtype=torch.int
+                ),
+                input_pos=torch.arange(
+                    prefill_idx,
+                    prefill_idx + PREFILL_CHUNK_SIZE,
+                    device="cuda",
+                    dtype=torch.int,
+                ),
+            )
+            prev_context = curr_context
+            break
+        else:
+            break
+
+    # TODO: This appears as -1 sometimes??
+    logger.info(
+        f"KV stored up to idx={len(prev_context)- 1} (curr_context_len={len(curr_context)})"
+    )
+
+    return prev_context
+
+
+def continuous_prefill(
+    model: TransformerLM,
+    msgs: list,
+    received_messages_queue: queue.Queue,
+    prev_context: list[int],
+):
+    tokenizer = AbsTokenizer()
+    logger = get_logger("PREFILL")
+    msg_cnt = 0
+    seen_sentinel = False
+
+    while seen_sentinel is False:
+        while seen_sentinel is False:
+            try:
+                msg = received_messages_queue.get_nowait()
+            except queue.Empty:
+                break
+            else:
+                if msg is None:
+                    logger.info("Seen sentinel in message received messages")
+                    seen_sentinel = True
+                else:
+                    msgs.append(msg)
+                    msg_cnt += 1
+
+        if (msg_cnt >= 5 or seen_sentinel) and len(msgs) > 10:
+            midi = convert_msgs_to_midi(msgs=msgs)
+            midi_dict = MidiDict(**midi_to_dict(midi))
+            curr_context = tokenizer.encode(
+                tokenizer.tokenize(midi_dict, add_dim_tok=False)
+            )
+            prev_context = chunked_prefill(
+                model=model,
+                tokenizer=tokenizer,
+                prev_context=prev_context,
+                curr_context=curr_context,
+                full=False,
+            )
+            msg_cnt = 0
+        else:
+            time.sleep(0.01)
+
+    return msgs, prev_context
+
+
+def capture_and_update_kv(
+    model: TransformerLM,
+    msgs: list,
+    prev_context: list,
     control_sentinel: threading.Event,
+    midi_input_port: str,
     midi_capture_channel: int,
     midi_control_signal: int | None = None,
     midi_through_port: str | None = None,
     first_msg_epoch_time_ms: int | None = None,
 ):
+    # Start capture_midi_input in threadpool
+    # Run continiously update kv in main thread
+    # When control sentinel is seen, return msgs and prev_context continiously update kv  (check for None sentinel here)
+
+    received_messages_queue = queue.Queue()
+    results_queue = queue.Queue()
+    capture_midi_thread = threading.Thread(
+        target=capture_midi_input,
+        kwargs={
+            "midi_input_port": midi_input_port,
+            "control_sentinel": control_sentinel,
+            "received_messages_queue": received_messages_queue,
+            "midi_capture_channel": midi_capture_channel,
+            "midi_control_signal": midi_control_signal,
+            "midi_through_port": midi_through_port,
+            "first_msg_epoch_time_ms": first_msg_epoch_time_ms,
+            "results_queue": results_queue,
+        },
+    )
+    capture_midi_thread.start()
+
+    msgs, prev_context = continuous_prefill(
+        model=model,
+        msgs=msgs,
+        received_messages_queue=received_messages_queue,
+        prev_context=prev_context,
+    )
+    capture_midi_thread.join()
+    first_on_msg_epoch_ms, num_active_pitches = results_queue.get()
+
+    return msgs, prev_context, first_on_msg_epoch_ms, num_active_pitches
+
+
+def capture_midi_input(
+    midi_input_port: str,
+    control_sentinel: threading.Event,
+    received_messages_queue: queue.Queue,
+    midi_capture_channel: int,
+    midi_control_signal: int | None = None,
+    midi_through_port: str | None = None,
+    first_msg_epoch_time_ms: int | None = None,
+    results_queue: queue.Queue | None = None,
+):
     logger = get_logger("CAPTURE")
-    received_messages = []
     active_pitches = set()
     first_on_msg_epoch_ms = None
     prev_msg_epoch_time_ms = first_msg_epoch_time_ms  #
@@ -1015,7 +1262,7 @@ def capture_midi_input(
                 msg.type == "note_on" and msg.velocity == 0
             ) or msg.type == "note_off":
                 active_pitches.discard(msg.note)
-                received_messages.append(msg)
+                received_messages_queue.put(msg)
                 if midi_through is not None:
                     midi_through.send(msg)
             elif msg.type == "note_on" and msg.velocity > 0:
@@ -1023,11 +1270,11 @@ def capture_midi_input(
                     first_on_msg_epoch_ms = get_epoch_time_ms()
 
                 active_pitches.add(msg.note)
-                received_messages.append(msg)
+                received_messages_queue.put(msg)
                 if midi_through is not None:
                     midi_through.send(msg)
             elif msg.type == "control_change" and msg.control == 64:
-                received_messages.append(msg)
+                received_messages_queue.put(msg)
             elif (
                 msg.type == "control_change"
                 and msg.control == midi_control_signal
@@ -1048,7 +1295,7 @@ def capture_midi_input(
                 channel=midi_capture_channel,
                 time=get_epoch_time_ms() - prev_msg_epoch_time_ms,
             )
-            received_messages.append(msg)
+            received_messages_queue.put(msg)
             if midi_through is not None:
                 midi_through.send(msg)
 
@@ -1061,10 +1308,11 @@ def capture_midi_input(
                 channel=midi_capture_channel,
                 time=0,
             )
-            received_messages.append(msg)
+            received_messages_queue.put(msg)
             if midi_through is not None:
                 midi_through.send(msg)
 
+        # Turn off pedal
         msg = mido.Message(
             type="control_change",
             control=64,
@@ -1072,23 +1320,16 @@ def capture_midi_input(
             channel=midi_capture_channel,
             time=0,
         )
-        received_messages.append(msg)
+        received_messages_queue.put(msg)
         if midi_through is not None:
             midi_through.send(msg)
 
-        # TODO: Need to figure out what the hell this does - is it needed?
-        # Workaround for the way that file-playback is implemented - delete
-        msg = mido.Message(
-            type="control_change",
-            control=midi_control_signal,
-            value=0,
-            channel=midi_capture_channel,
-            time=0,
-        )
-        if midi_through is not None:
-            midi_through.send(msg)
+        received_messages_queue.put(None)  # Sentinel
 
-        return received_messages, first_on_msg_epoch_ms, num_active_pitches
+        if results_queue is not None:
+            results_queue.put((first_on_msg_epoch_ms, num_active_pitches))
+
+        return first_on_msg_epoch_ms, num_active_pitches
 
 
 def play_midi_file(midi_port: str, midi_path: str):
@@ -1220,11 +1461,8 @@ def parse_args():
     return argp.parse_args()
 
 
-# TODO: Test demo on real instrument with real MIDI interface
-# TODO: Possibly a problem with endings being truncated
 # TODO: Need functionality for handing case where we run out of model context
-
-
+# TODO: Make sure channel=9 (drum) case is covered
 def main():
     args = parse_args()
     logger = get_logger()
@@ -1265,11 +1503,13 @@ def main():
     keypress_thread.start()
     midi_control_thread.start()
 
-    msgs = []
-    captured_msgs, first_on_msg_epoch_ms, num_active_pitches = (
-        capture_midi_input(
-            midi_input_port=midi_input_port,
+    msgs, prev_context, first_on_msg_epoch_ms, num_active_pitches = (
+        capture_and_update_kv(
+            model=model,
+            msgs=[],
+            prev_context=[],
             control_sentinel=control_sentinel,
+            midi_input_port=midi_input_port,
             midi_control_signal=args.midi_control_signal,
             midi_through_port=args.midi_through,
             midi_capture_channel=0,
@@ -1282,7 +1522,8 @@ def main():
         msgs = stream_msgs(
             model=model,
             tokenizer=tokenizer,
-            msgs=msgs + captured_msgs,
+            msgs=msgs,
+            prev_context=prev_context,
             midi_output_port=args.midi_out,
             first_on_msg_epoch_ms=first_on_msg_epoch_ms,
             control_sentinel=control_sentinel,
@@ -1299,19 +1540,24 @@ def main():
         else:
             itt += 1
 
-        captured_msgs, _, num_active_pitches = capture_midi_input(
-            midi_input_port=midi_input_port,
+        msgs, prev_context, _, num_active_pitches = capture_and_update_kv(
+            model=model,
+            msgs=msgs,
+            prev_context=prev_context,
             control_sentinel=control_sentinel,
+            midi_input_port=midi_input_port,
             midi_control_signal=args.midi_control_signal,
             midi_through_port=args.midi_through,
             midi_capture_channel=itt,
             first_msg_epoch_time_ms=first_on_msg_epoch_ms,
         )
 
+    # TODO: There is a bug with the <D> token somewhere?
     msgs = stream_msgs(
         model=model,
         tokenizer=tokenizer,
         msgs=msgs,
+        prev_context=prev_context,
         midi_output_port=args.midi_out,
         first_on_msg_epoch_ms=first_on_msg_epoch_ms,
         control_sentinel=control_sentinel,
