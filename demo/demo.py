@@ -8,6 +8,7 @@ import copy
 import logging
 import threading
 import queue
+import copy
 import torch
 import mido
 import torch._inductor.config
@@ -28,14 +29,14 @@ torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True
 
 DTYPE = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-MAX_SEQ_LEN = 2048
-PREFILL_CHUNK_SIZE = 16
+MAX_SEQ_LEN = 4096
+PREFILL_CHUNK_SIZE = 32
 RECALC_DUR_PREFILL_CHUNK_SIZE = 8
 RECALC_DUR_BUFFER_MS = 50
 
 # Decode first
-BEAM_WIDTH = 5
-TIME_TOK_WEIGHTING = -6
+BEAM_WIDTH = 3
+TIME_TOK_WEIGHTING = -5
 
 # HARDWARE: Decoded logits are masked for durations < MIN_NOTE_LEN_MS
 # HARDWARE: Sends early off-msg if pitch is on MIN_NOTE_DELTA_MS before on-msg
@@ -558,7 +559,6 @@ def decode_tokens(
             )
 
         logits[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
-        # logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
         for dur_ms in range(0, MIN_NOTE_LEN_MS, 10):
             logits[:, tokenizer.tok_to_id[("dur", dur_ms)]] = float("-inf")
 
@@ -606,7 +606,7 @@ def generate_tokens(
 
     generate_start_s = time.time()
     priming_seq_len = len(priming_seq)
-    start_idx = max(2, priming_seq_len - 4 * num_preceding_active_pitches)
+    start_idx = max(2, priming_seq_len - 4 * num_preceding_active_pitches - 1)
     enc_seq = torch.tensor(
         [
             tokenizer.encode(
@@ -772,6 +772,7 @@ def stream_midi(
     midi_output_port: str,
     control_sentinel: threading.Event,
     midi_stream_channel: int,
+    results_queue: queue.Queue,
 ):
     logger = get_logger("STREAM")
     logger.info(
@@ -796,9 +797,6 @@ def stream_midi(
                     logger.debug(f"Received message: {msg}")
                     midi_messages.append(msg)
 
-            if control_sentinel.is_set():
-                break
-
             midi_messages = sorted(
                 midi_messages,
                 key=lambda msg: (
@@ -806,6 +804,9 @@ def stream_midi(
                     msg["vel"],
                 ),
             )
+
+            if control_sentinel.is_set():
+                break
 
             while midi_messages:
                 latency_adjusted_epoch_time_ms = (
@@ -833,7 +834,7 @@ def stream_midi(
                         )
                     )
                     pitch_active[msg["pitch"]] = False
-                    logger.info(f"Sent early off for {msg}")
+                    logger.debug(f"Sent early off for {msg}")
 
                 if (
                     0
@@ -873,11 +874,9 @@ def stream_midi(
                         msgs.append(mido_msg_with_time)
                         pitch_active[msg["pitch"]] = msg["vel"] != 0
 
-                        logger.info(
-                            f"[{get_epoch_time_ms() - msg["epoch_time_ms"]}ms] Sent message: {msg}"
-                        )
+                        logger.info(f"Sent message: {mido_msg}")
                     else:
-                        logger.info(
+                        logger.debug(
                             f"Skipping note_off message due to uuid mismatch: {msg}"
                         )
                     midi_messages.pop(0)
@@ -886,7 +885,7 @@ def stream_midi(
                     latency_adjusted_epoch_time_ms - msg["epoch_time_ms"] > 100
                 ):
                     # Message occurs too far in the past
-                    logger.info(
+                    logger.debug(
                         f"Skipping message occurring too far ({latency_adjusted_epoch_time_ms - msg["epoch_time_ms"]}ms) in the past: {msg}"
                     )
                     midi_messages.pop(0)
@@ -897,7 +896,6 @@ def stream_midi(
             time.sleep(0.005)
 
         logger.info("Processing remaining note_off messages")
-
         logger.debug(midi_messages)
 
         remaining_note_off_messages = [
@@ -907,8 +905,7 @@ def stream_midi(
             and last_pitch_uuid.get(msg["pitch"]) == msg["uuid"]
         ]
 
-        while remaining_note_off_messages:
-            msg = remaining_note_off_messages.pop(0)
+        for msg in remaining_note_off_messages:
             mido_msg = mido.Message(
                 "note_on",
                 note=msg["pitch"],
@@ -917,11 +914,34 @@ def stream_midi(
                 time=msg["epoch_time_ms"] - prev_msg_epoch_time_ms,
             )
             prev_msg_epoch_time_ms = msg["epoch_time_ms"]
-            midi_out.send(mido_msg)
-            logger.info(f"Sent message: {msg}")
             msgs.append(mido_msg)
 
-    return msgs
+        results_queue.put(msgs)
+
+        while remaining_note_off_messages:
+            msg = remaining_note_off_messages.pop(0)
+            while True:
+                latency_adjusted_epoch_time_ms = (
+                    get_epoch_time_ms() + HARDWARE_LATENCY_MS
+                )
+
+                if (
+                    0
+                    < latency_adjusted_epoch_time_ms - msg["epoch_time_ms"]
+                    <= 50
+                ):
+                    mido_msg = mido.Message(
+                        "note_on",
+                        note=msg["pitch"],
+                        velocity=0,
+                        channel=midi_stream_channel,
+                        time=0,  # Does not matter as only used for streaming
+                    )
+                    midi_out.send(mido_msg)
+                    logger.info(f"Sent message: {mido_msg}")
+                    break
+                else:
+                    time.sleep(0.01)
 
 
 def stream_msgs(
@@ -965,7 +985,6 @@ def stream_msgs(
             "num_preceding_active_pitches": num_preceding_active_pitches,
             "first_on_msg_epoch_ms": first_on_msg_epoch_ms,
         },
-        daemon=True,
     )
     generate_tokens_thread.start()
 
@@ -980,29 +999,35 @@ def stream_msgs(
                 priming_seq, onset=True
             ),
         },
-        daemon=True,
     )
     decode_tokens_to_midi_thread.start()
 
-    msgs = stream_midi(
-        midi_messages_queue=midi_messages_queue,
-        msgs=msgs,
-        prev_msg_epoch_time_ms=first_on_msg_epoch_ms
-        + tokenizer.calc_length_ms(priming_seq, onset=False),
-        midi_output_port=midi_output_port,
-        control_sentinel=control_sentinel,
-        midi_stream_channel=midi_stream_channel,
+    stream_midi_results_queue = queue.Queue()
+    stream_midi_thread = threading.Thread(
+        target=stream_midi,
+        kwargs={
+            "midi_messages_queue": midi_messages_queue,
+            "msgs": msgs,
+            "prev_msg_epoch_time_ms": first_on_msg_epoch_ms
+            + tokenizer.calc_length_ms(priming_seq, onset=False),
+            "midi_output_port": midi_output_port,
+            "control_sentinel": control_sentinel,
+            "midi_stream_channel": midi_stream_channel,
+            "results_queue": stream_midi_results_queue,
+        },
+        daemon=True,
     )
+    stream_midi_thread.start()
 
     generate_tokens_thread.join()
     decode_tokens_to_midi_thread.join()
+    msgs = stream_midi_results_queue.get()
 
     return msgs
 
 
+# TODO: Channel 9 issues here?
 def convert_msgs_to_midi(msgs: list[mido.Message]):
-    logger = get_logger("convert")
-
     channel_to_track = {
         chan: mido.MidiTrack()
         for chan in list(set([msg.channel for msg in msgs]))
@@ -1010,6 +1035,14 @@ def convert_msgs_to_midi(msgs: list[mido.Message]):
 
     for msg in msgs:
         channel_to_track[msg.channel].append(msg)
+
+    # Workaround for possibility that track_0 start time != first_on_msg_epoch_ms
+    for msg in channel_to_track[0]:
+        if msg.type == "note_on" and msg.velocity > 0:
+            msg.time = 0
+            break
+        else:
+            msg.time = 0
 
     mid = mido.MidiFile(type=1)
     mid.ticks_per_beat = 500
@@ -1052,9 +1085,6 @@ def chunked_prefill(
     curr_context: list,
     full: bool = False,
 ):
-
-    # prev_context = 124 (last thing that was prefilled)
-    # curr_context = 100 (what we are trying to make sure of now)
 
     assert isinstance(curr_context[0], int)
     assert tokenizer.pad_id not in prev_context
@@ -1113,9 +1143,8 @@ def chunked_prefill(
         else:
             break
 
-    # TODO: This appears as -1 sometimes??
     logger.info(
-        f"KV stored up to idx={len(prev_context)- 1} (curr_context_len={len(curr_context)})"
+        f"KV stored up to idx={max(0, len(prev_context)- 1)} (curr_context_len={len(curr_context)})"
     )
 
     return prev_context
@@ -1177,10 +1206,6 @@ def capture_and_update_kv(
     midi_through_port: str | None = None,
     first_msg_epoch_time_ms: int | None = None,
 ):
-    # Start capture_midi_input in threadpool
-    # Run continiously update kv in main thread
-    # When control sentinel is seen, return msgs and prev_context continiously update kv  (check for None sentinel here)
-
     received_messages_queue = queue.Queue()
     results_queue = queue.Queue()
     capture_midi_thread = threading.Thread(
@@ -1215,10 +1240,10 @@ def capture_midi_input(
     control_sentinel: threading.Event,
     received_messages_queue: queue.Queue,
     midi_capture_channel: int,
+    results_queue: queue.Queue,
     midi_control_signal: int | None = None,
     midi_through_port: str | None = None,
     first_msg_epoch_time_ms: int | None = None,
-    results_queue: queue.Queue | None = None,
 ):
     logger = get_logger("CAPTURE")
     active_pitches = set()
@@ -1325,11 +1350,7 @@ def capture_midi_input(
             midi_through.send(msg)
 
         received_messages_queue.put(None)  # Sentinel
-
-        if results_queue is not None:
-            results_queue.put((first_on_msg_epoch_ms, num_active_pitches))
-
-        return first_on_msg_epoch_ms, num_active_pitches
+        results_queue.put((first_on_msg_epoch_ms, num_active_pitches))
 
 
 def play_midi_file(midi_port: str, midi_path: str):
