@@ -41,8 +41,8 @@ TIME_TOK_WEIGHTING = -5
 # HARDWARE: Decoded logits are masked for durations < MIN_NOTE_LEN_MS
 # HARDWARE: Sends early off-msg if pitch is on MIN_NOTE_DELTA_MS before on-msg
 # HARDWARE: All messages are sent HARDWARE_LATENCY_MS early
-MIN_NOTE_DELTA_MS = 50
-MIN_NOTE_LEN_MS = 50
+MIN_NOTE_DELTA_MS = 100
+MIN_NOTE_LEN_MS = 200
 HARDWARE_LATENCY_MS = 0
 
 # TODO:
@@ -699,6 +699,7 @@ def decode_tokens_to_midi(
         f"Total time elapsed since first onset: {get_epoch_time_ms() - first_on_msg_epoch_ms}"
     )
 
+    pitch_to_prev_msg = {}
     note_buffer = []
     num_time_toks = priming_seq_last_onset_ms // 5000
 
@@ -756,6 +757,24 @@ def decode_tokens_to_midi(
             "uuid": _uuid,
         }
 
+        # Not thread safe but in theory should be ok?
+        if pitch_to_prev_msg.get(pitch) is not None and MIN_NOTE_DELTA_MS > 0:
+            prev_on, prev_off = pitch_to_prev_msg.get(pitch)
+            new_prev_off = max(
+                min(
+                    prev_off["epoch_time_ms"],
+                    onset_epoch_ms - MIN_NOTE_DELTA_MS,
+                ),
+                prev_on["epoch_time_ms"],
+            )
+            if new_prev_off != prev_off["epoch_time_ms"]:
+                logger.info(
+                    f"Adjusting prev_off['epoch_time_ms'] ->  new_prev_off"
+                )
+                prev_off["epoch_time_ms"] = new_prev_off
+
+        pitch_to_prev_msg[pitch] = {"on": on_msg, "off": off_msg}
+
         midi_messages_queue.put(on_msg)
         midi_messages_queue.put(off_msg)
         logger.debug(f"Put message: {on_msg}")
@@ -765,6 +784,7 @@ def decode_tokens_to_midi(
         note_buffer = []
 
 
+# TODO: Test the new changes in decode_tokens_to_midi and clean this fn up.
 def stream_midi(
     midi_messages_queue: queue.Queue,
     msgs: list[mido.Message],
@@ -813,28 +833,6 @@ def stream_midi(
                     get_epoch_time_ms() + HARDWARE_LATENCY_MS
                 )
                 msg = midi_messages[0]
-
-                # TODO: Fix this (tomorrow) so it works for off-messages too
-                # (e.g., an off message which happens just before an on message)
-                if (
-                    (msg["vel"] > 0)
-                    and (
-                        msg["epoch_time_ms"] - latency_adjusted_epoch_time_ms
-                        <= MIN_NOTE_DELTA_MS
-                    )
-                    and pitch_active.get(msg["pitch"], False)
-                ):
-                    midi_out.send(
-                        mido.Message(
-                            "note_on",
-                            note=msg["pitch"],
-                            velocity=0,
-                            channel=0,
-                            time=0,
-                        )
-                    )
-                    pitch_active[msg["pitch"]] = False
-                    logger.debug(f"Sent early off for {msg}")
 
                 if (
                     0
