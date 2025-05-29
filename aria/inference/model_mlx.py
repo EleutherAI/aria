@@ -1,6 +1,5 @@
 """Inference implementation for mlx backend"""
 
-from dataclasses import dataclass
 from aria.model import ModelConfig
 
 import mlx.core as mx
