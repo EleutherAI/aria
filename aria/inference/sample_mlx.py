@@ -205,7 +205,7 @@ def sample():
 
     from ariautils.midi import MidiDict
     from ariautils.tokenizer import AbsTokenizer
-    from aria.sample import get_inference_prompt
+    from aria.inference.sample_cuda import get_inference_prompt
 
     CHECKPOINT_PATH = (
         "/Users/louis/work/aria/models/medium-75-annealed.safetensors"

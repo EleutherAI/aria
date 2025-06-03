@@ -152,7 +152,11 @@ def sample(args):
     from aria.inference.model_cuda import TransformerLM
     from aria.model import ModelConfig
     from aria.config import load_model_config
-    from aria.sample import sample_batch, sample_batch_cfg, get_inference_prompt
+    from aria.inference.sample_cuda import (
+        sample_batch,
+        sample_batch_cfg,
+        get_inference_prompt,
+    )
     from aria.utils import _load_weight
 
     from ariautils.midi import MidiDict
