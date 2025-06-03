@@ -43,6 +43,9 @@ class TransformerLM(nn.Module):
         self.lm_head = nn.Linear(
             model_config.d_model, model_config.vocab_size, bias=False
         )
+        self.embedding_adapter = nn.Linear(
+            model_config.emb_size, model_config.d_model, bias=False
+        )
 
     def forward(
         self,
@@ -59,13 +62,17 @@ class TransformerLM(nn.Module):
 
         return logits
 
+    def fill_condition_kv(self, cond_emb: torch.Tensor):
+        adapted_emb = self.embedding_adapter(cond_emb)
+        self.model.fill_condition_kv(emb=adapted_emb)
+
     def setup_cache(
         self,
-        batch_size,
+        batch_size: int,
         max_seq_len=4096,
         dtype=torch.bfloat16,
     ):
-        # Init cache
+        assert batch_size >= 1
         for b in self.model.encode_layers:
             b.kv_cache = KVCache(
                 max_batch_size=batch_size,
@@ -101,7 +108,19 @@ class Transformer(nn.Module):
         self.out_layer_norm = nn.LayerNorm(model_config.d_model)
 
         self.freqs_cis = None
-        self.casual_mask = None
+        self.causal_mask = None
+
+    def fill_condition_kv(self, emb: torch.Tensor):
+        assert self.freqs_cis is not None, "Caches must be initialized first"
+
+        input_pos = torch.tensor([0], device=emb.device)
+        mask = self.causal_mask[None, None, input_pos]
+        freqs_cis = self.freqs_cis[input_pos]
+
+        x = emb.unsqueeze(dim=1)
+
+        for layer in self.encode_layers:
+            x = layer(x, input_pos, freqs_cis, mask)
 
     def forward(
         self,
@@ -169,7 +188,6 @@ class TransformerBlock(nn.Module):
         self.norm1 = nn.LayerNorm(model_config.d_model)
         self.norm2 = nn.LayerNorm(model_config.d_model)
 
-        # TODO: Fill in args
         self.kv_cache = None
 
     def forward(
@@ -255,7 +273,8 @@ def precompute_freqs_cis(
     return cache.to(dtype=dtype)
 
 
-@torch.jit.script
+# TODO: Fix
+# @torch.jit.script
 def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     """
     In-place RoPE. Credits to Katherine Crowson:

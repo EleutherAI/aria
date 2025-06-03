@@ -16,9 +16,6 @@ from tqdm import tqdm
 from typing import Callable
 from concurrent.futures import ThreadPoolExecutor
 
-from aria.model import ModelConfig, TransformerLM
-from aria.config import load_model_config
-from aria.utils import _load_weight
 from ariautils.midi import MidiDict
 from ariautils.tokenizer import AbsTokenizer
 
@@ -63,6 +60,12 @@ CATEGORY_TAGS = {
         "yiruma": 6,
         "hillsong": 7,
     },
+    "emotion": {
+        "happy": 0,
+        "sad": 1,
+        "calm": 2,
+        "tense": 3,
+    },
 }
 LEARNING_RATE = 3e-4
 
@@ -101,7 +104,7 @@ def process_entry(
     for slice_note_msgs in get_chunks(
         note_msgs=midi_dict.note_msgs, chunk_len=slice_len_notes
     ):
-        if len(slice_note_msgs) < 20:
+        if len(slice_note_msgs) == 0:
             break
 
         slice_midi_dict = copy.deepcopy(midi_dict)
@@ -598,9 +601,6 @@ def _train(
                 scheduler.step()
                 lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
 
-    if accelerator.is_main_process:
-        accelerator.save_state("/mnt/ssd1/aria/test")
-
     return model
 
 
@@ -633,7 +633,7 @@ def train_classifier(
         model=model,
         total_steps=num_epochs * len(train_dataloader),
     )
-    accelerator = accelerate.Accelerator()
+    accelerator = accelerate.Accelerator(cpu=True)
 
     model, train_dataloader, optimizer, scheduler = accelerator.prepare(
         model,
@@ -686,8 +686,10 @@ def evaluate_classifier(
 
     total_correct = sum(v["correct"] for v in dist.values())
     total_samples = sum(v["total"] for v in dist.values())
-    print(f"Total accuracy: {total_correct/total_samples}")
+    overall_accuracy = total_correct / total_samples
 
+    class_metrics = {}
+    f1_scores = []
     for tag in tag_to_id.keys():
         TP = dist[tag]["correct"]
         FN = dist[tag]["total"] - TP
@@ -699,45 +701,21 @@ def evaluate_classifier(
             if (precision + recall) > 0
             else 0
         )
-        print(
-            f"{tag} -- Accuracy: {TP/dist[tag]['total']}, Precision: {precision}, Recall: {recall}, F1: {f1}"
-        )
+        tag_accuracy = TP / dist[tag]["total"] if dist[tag]["total"] > 0 else 0
+        class_metrics[tag] = {
+            "accuracy": tag_accuracy,
+            "precision": precision,
+            "recall": recall,
+            "F1": f1,
+        }
+        f1_scores.append(f1)
 
+    macro_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0
 
-# TODO: Move this to the build_embedding_eval_datasets.py script
-def build_baseline_dataset():
-    MAX_SEQ_LEN = 512
-    MODEL_PATH = "/mnt/ssd1/aria/v2/medium-dedupe-pt-cont2/checkpoints/epoch18_step0/model.safetensors"
-
-    tokenizer = AbsTokenizer()
-    model_state = _load_weight(MODEL_PATH, "cuda")
-    model_state = {
-        k.replace("_orig_mod.", ""): v for k, v in model_state.items()
+    results = {
+        "accuracy": overall_accuracy,
+        "F1-macro": macro_f1,
+        "class_wise": class_metrics,
     }
-    pretrained_model_config = ModelConfig(**load_model_config("medium"))
-    pretrained_model_config.set_vocab_size(tokenizer.vocab_size)
-    pretrained_model_config.grad_checkpoint = False
-    pretrained_model = TransformerLM(pretrained_model_config)
-    pretrained_model.load_state_dict(model_state)
-    pretrained_model.eval()
 
-    global model_forward
-    model_forward = torch.compile(
-        model_forward,
-        mode="reduce-overhead",
-        fullgraph=True,
-    )
-
-    EvaluationDataset.build(
-        midi_dataset_load_path="/mnt/ssd1/aria/data/mididict-ft_train.jsonl",
-        save_path="/mnt/ssd1/aria/data/train.jsonl",
-        max_seq_len=MAX_SEQ_LEN,
-        slice_len_notes=165,
-        batch_size=128,
-        embedding_hook=functools.partial(
-            get_baseline_embedding, pool_mode="mean"
-        ),
-        hook_model=pretrained_model.model.cuda(),
-        hook_max_seq_len=MAX_SEQ_LEN,
-        hook_tokenizer=tokenizer,
-    )
+    return results

@@ -24,7 +24,6 @@ from tqdm import tqdm
 
 
 def setup_logger(project_dir: str):
-    # Get logger and reset all handlers
     logger = logging.getLogger(__name__)
     for h in logger.handlers[:]:
         logger.removeHandler(h)
@@ -299,8 +298,8 @@ def get_dataloaders(
     batch_size: int,
     num_workers: int,
     min_number_slice_notes: int = 100,
-    max_number_slice_notes: int = 300,
-    max_seq_len: int = 1024,
+    max_number_slice_notes: int = 650,
+    max_seq_len: int = 2048,
 ):
     train_dataset = ContrastiveDataset(
         load_path=train_data_path,
@@ -560,13 +559,7 @@ def train(
         model_state = {
             k.replace("_orig_mod.", ""): v for k, v in model_state.items()
         }
-        if "lm_head.weight" in model_state.keys():
-            del model_state["lm_head.weight"]
-
-        model_state = {
-            k.replace("model.", ""): v for k, v in model_state.items()
-        }
-        model.model.load_state_dict(model_state)
+        model.load_state_dict(model_state, strict=False)
     else:
         logger.info("No checkpoint path provided")
 

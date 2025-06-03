@@ -3,48 +3,70 @@ import os
 import mmap
 import argparse
 import logging
-import random
-import copy
-import functools
 import accelerate
-import multiprocessing
 import json
-import jsonlines
 
 from aria.config import load_model_config
 from aria.utils import _load_weight
 from ariautils.tokenizer import AbsTokenizer
-from ariautils.midi import MidiDict
 from aria.model import TransformerCL, ModelConfig
 
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from accelerate.logging import get_logger
+from typing import Callable
 from logging.handlers import RotatingFileHandler
 from tqdm import tqdm
 
-TAG_IDS = {
-    "chopin": 0,
-    "bach": 1,
-    "beethoven": 2,
-    "liszt": 3,
-    "mozart": 4,
-    "debussy": 5,
-    "schumann": 6,
-    "schubert": 7,
-    "rachmaninoff": 8,
-    "brahms": 9,
-    "tchaikovsky": 10,
-    "haydn": 11,
-    "scriabin": 12,
-    "mendelssohn": 13,
-    "czerny": 14,
-    "ravel": 15,
-    "scarlatti": 16,
-    "other": 17,
+CATEGORY_TAGS = {
+    "genre": {
+        "classical": 0,
+        "jazz": 1,
+    },
+    "music_period": {
+        "baroque": 0,
+        "classical": 1,
+        "romantic": 2,
+        "impressionist": 3,
+    },
+    "composer": {
+        "beethoven": 0,
+        "debussy": 1,
+        "brahms": 2,
+        "rachmaninoff": 3,
+        "schumann": 4,
+        "mozart": 5,
+        "liszt": 6,
+        "bach": 7,
+        "chopin": 8,
+        "schubert": 9,
+    },
+    "form": {
+        "nocturne": 0,
+        "sonata": 1,
+        "improvisation": 2,
+        "etude": 3,
+        "fugue": 4,
+        "waltz": 5,
+    },
+    "pianist": {
+        "hisaishi": 0,
+        "hancock": 1,
+        "bethel": 2,
+        "einaudi": 3,
+        "clayderman": 4,
+        "ryuichi": 5,
+        "yiruma": 6,
+        "hillsong": 7,
+    },
+    "emotion": {
+        "happy": 0,
+        "sad": 1,
+        "calm": 2,
+        "tense": 3,
+    },
 }
-METADATA_CATEGORY = "composer"
 
 
 def setup_logger(project_dir: str):
@@ -121,71 +143,29 @@ def setup_project_dir(project_dir: str | None):
     return project_dir_abs
 
 
-def process_entry(
-    entry,
-    metadata_category: str,
-    tag_ids: dict,
-    min_slice_notes: int,
-    max_slice_notes: int,
-    max_seq_len: int,
-    tokenizer: AbsTokenizer,
-):
-    midi_dict = MidiDict.from_msg_dict(entry)
-    metadata_tag = midi_dict.metadata.get(metadata_category, None)
-
-    # Skip if metadata tag is missing or not in tag_ids.
-    if metadata_tag is None:
-        return []
-    elif metadata_tag not in tag_ids:
-        metadata_tag = "other"
-
-    outputs = []
-    note_msgs = midi_dict.note_msgs
-    idx = 0
-
-    while idx < len(note_msgs):
-        slice_length = random.randint(min_slice_notes, max_slice_notes)
-        chunk = note_msgs[idx : idx + slice_length]
-
-        # If the chunk is too short, break out of the loop.
-        if len(chunk) < min_slice_notes:
-            break
-
-        idx += slice_length
-
-        # Create slice
-        slice_midi_dict = copy.deepcopy(midi_dict)
-        slice_midi_dict.note_msgs = chunk
-        slice_midi_dict.metadata = {}
-
-        # Format
-        tokenized_slice = tokenizer.tokenize(slice_midi_dict)
-        if tokenizer.dim_tok in tokenized_slice:
-            tokenized_slice.remove(tokenizer.dim_tok)
-
-        # Use EOS tok for classification head
-        tokenized_slice = tokenized_slice[:max_seq_len]
-        tokenized_slice += [tokenizer.pad_tok] * (
-            max_seq_len - len(tokenized_slice)
-        )
-        if tokenizer.eos_tok not in tokenized_slice:
-            tokenized_slice[-1] = tokenizer.eos_tok
-
-        pos = tokenized_slice.index(tokenizer.eos_tok)
-
-        outputs.append(
-            {"seq": tokenized_slice, "tag": metadata_tag, "pos": pos}
-        )
-
-    return outputs
-
-
 class FinetuningDataset(Dataset):
-    def __init__(self, load_path: str, tag_ids: dict):
+    def __init__(
+        self,
+        load_path: str,
+        tag_to_id: dict,
+        metadata_category: str,
+        max_seq_len: int,
+        per_file: bool = False,
+    ):
         self.load_path = load_path
-        self.tag_ids = tag_ids
+        self.tag_to_id = tag_to_id
+        self.metadata_category = metadata_category
+        self.max_seq_len = max_seq_len
+        self.per_file = per_file
+        self._transform = None
         self.tokenizer = AbsTokenizer()
         self.index = []
+
+        assert metadata_category in CATEGORY_TAGS.keys()
+        assert all(
+            tag_to_id[_t] == _id
+            for _t, _id in CATEGORY_TAGS[metadata_category].items()
+        )
 
         self.file_buff = open(self.load_path, "rb")
         self.mmap_obj = mmap.mmap(
@@ -199,6 +179,24 @@ class FinetuningDataset(Dataset):
                 break
             self.index.append(pos)
 
+    def set_transform(self, transform: Callable | list[Callable]):
+        if isinstance(transform, Callable):
+            self._transform = transform
+        elif isinstance(transform, list):
+            # Check validity
+            for fn in transform:
+                assert isinstance(fn, Callable), "Invalid function"
+
+            # Define new transformation function (apply fn in order)
+            def _new_transform(x):
+                for fn in transform:
+                    x = fn(x)
+                return x
+
+            self._transform = _new_transform
+        else:
+            raise ValueError("Must provide function or list of functions.")
+
     def __getitem__(self, idx: int):
         def _format(tok):
             # Required because json formats tuples into lists
@@ -206,24 +204,53 @@ class FinetuningDataset(Dataset):
                 return tuple(tok)
             return tok
 
-        file_pos = self.index[idx]
-        self.mmap_obj.seek(file_pos)
-
+        pos = self.index[idx]
+        self.mmap_obj.seek(pos)
         raw_data = self.mmap_obj.readline().decode("utf-8")
         json_data = json.loads(raw_data)
 
-        seq, tag, pos = json_data["seq"], json_data["tag"], json_data["pos"]
-        assert tag in self.tag_ids.keys()
-        assert pos < len(seq)
+        metadata = json_data["metadata"]
+        tag = metadata[self.metadata_category]
 
-        seq = [_format(tok) for tok in seq]
-        seq_enc = torch.tensor(self.tokenizer.encode(seq))
-        tag_enc = torch.tensor(self.tag_ids[tag])
-        pos_enc = torch.tensor(pos)
+        assert tag in self.tag_to_id, metadata
+        tag_tensor = torch.tensor(self.tag_to_id[tag])
 
-        assert seq_enc[pos_enc.item()].item() == 1  # EOS ID
+        if self.per_file:
+            seq_list = json_data["seqs"]
+        else:
+            seq_list = [json_data["seq"]]
 
-        return seq_enc, tag_enc, pos_enc
+        seq_tensors = []
+        pos_tensors = []
+        for seq in seq_list:
+            seq = [_format(tok) for tok in seq]
+
+            if self._transform:
+                seq = self._transform(seq)
+
+            seq = seq[: self.max_seq_len]
+            if self.tokenizer.eos_tok not in seq:
+                assert self._transform is not None
+                seq[-1] = self.tokenizer.eos_tok
+
+            eos_index = seq.index(self.tokenizer.eos_tok)
+            pos_tensor = torch.tensor(eos_index)
+
+            assert len(seq) <= self.max_seq_len
+
+            seq = seq + [self.tokenizer.pad_tok] * (self.max_seq_len - len(seq))
+            encoded_seq = self.tokenizer.encode(seq)
+            seq_tensor = torch.tensor(encoded_seq)
+
+            assert seq_tensor[pos_tensor.item()].item() == 1  # EOS ID check
+
+            seq_tensors.append(seq_tensor)
+            pos_tensors.append(pos_tensor)
+
+        seq_tensor = torch.stack(seq_tensors)
+        pos_tensor = torch.stack(pos_tensors)
+
+        return seq_tensor, pos_tensor, tag_tensor
 
     def __len__(self):
         return len(self.index)
@@ -242,48 +269,6 @@ class FinetuningDataset(Dataset):
 
         return worker_init_fn
 
-    @classmethod
-    def build(
-        cls,
-        midi_dataset_load_path: str,
-        save_path: str,
-        min_slice_notes: int,
-        max_slice_notes: int,
-        max_seq_len: int,
-        metadata_category: str,
-        tag_ids: dict,
-    ):
-        assert os.path.isfile(midi_dataset_load_path)
-        assert os.path.isfile(save_path) is False
-
-        tokenizer = AbsTokenizer()
-
-        with jsonlines.open(
-            midi_dataset_load_path, "r"
-        ) as midi_dataset, jsonlines.open(save_path, "w") as writer:
-
-            cnt = 0
-            with multiprocessing.Pool() as pool:
-                for result in pool.imap_unordered(
-                    functools.partial(
-                        process_entry,
-                        metadata_category=metadata_category,
-                        tag_ids=tag_ids,
-                        min_slice_notes=min_slice_notes,
-                        max_slice_notes=max_slice_notes,
-                        max_seq_len=max_seq_len,
-                        tokenizer=tokenizer,
-                    ),
-                    midi_dataset,
-                    chunksize=10,
-                ):
-                    cnt += 1
-                    if cnt % 500 == 0:
-                        print(f"Completed {cnt}")
-
-                    for chunk in result:
-                        writer.write(chunk)
-
 
 def _get_optim(
     lr: float,
@@ -291,7 +276,7 @@ def _get_optim(
     num_epochs: int,
     steps_per_epoch: int,
     warmup: int = 100,
-    end_ratio: int = 0.1,
+    end_ratio: float = 0.1,
 ):
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -301,24 +286,33 @@ def _get_optim(
         eps=1e-5,
     )
 
-    warmup_lrs = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=0.000001,
-        end_factor=1,
-        total_iters=warmup,
-    )
-    linear_decay_lrs = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=1,
-        end_factor=end_ratio,
-        total_iters=(num_epochs * steps_per_epoch) - warmup,
-    )
+    total_steps = num_epochs * steps_per_epoch
 
-    lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer,
-        schedulers=[warmup_lrs, linear_decay_lrs],
-        milestones=[warmup],
-    )
+    if warmup > 0:
+        warmup_lrs = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=0.000001,
+            end_factor=1,
+            total_iters=warmup,
+        )
+        linear_decay_lrs = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=1,
+            end_factor=end_ratio,
+            total_iters=total_steps - warmup,
+        )
+        lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_lrs, linear_decay_lrs],
+            milestones=[warmup],
+        )
+    else:
+        lr_scheduler = torch.optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=1,
+            end_factor=end_ratio,
+            total_iters=total_steps,
+        )
 
     return optimizer, lr_scheduler
 
@@ -330,7 +324,7 @@ def get_optim(
 ):
     LR = 1e-5
     END_RATIO = 0.1
-    WARMUP_STEPS = 1000
+    WARMUP_STEPS = 0
 
     return _get_optim(
         lr=LR,
@@ -345,31 +339,46 @@ def get_optim(
 def get_dataloaders(
     train_data_path: str,
     val_data_path: str,
+    metadata_category: str,
+    tag_to_id: dict,
     batch_size: int,
     num_workers: int,
-    apply_aug=True,
+    apply_aug: bool = False,
+    max_seq_len: int = 1024,
 ):
     train_dataset = FinetuningDataset(
         load_path=train_data_path,
-        tag_ids=TAG_IDS,
+        tag_to_id=tag_to_id,
+        metadata_category=metadata_category,
+        max_seq_len=max_seq_len,
     )
     val_dataset = FinetuningDataset(
         load_path=val_data_path,
-        tag_ids=TAG_IDS,
+        tag_to_id=tag_to_id,
+        metadata_category=metadata_category,
+        max_seq_len=max_seq_len,
+        per_file=True,
     )
+
+    if apply_aug:
+        print("Applying dataset augmentation")
+        train_dataset.set_transform(AbsTokenizer().export_data_aug())
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
+        worker_init_fn=FinetuningDataset.export_worker_init_fn(),
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=batch_size,
+        batch_size=1,
         shuffle=False,
         num_workers=num_workers,
+        worker_init_fn=FinetuningDataset.export_worker_init_fn(),
     )
+
     return train_loader, val_loader
 
 
@@ -380,6 +389,7 @@ def _train(
     train_dataloader: DataLoader,
     val_dataloader: DataLoader,
     optimizer: torch.optim.Optimizer,
+    tag_to_id: dict,
     scheduler: torch.optim.lr_scheduler.LRScheduler = None,
     project_dir: str | None = None,
 ):
@@ -398,9 +408,7 @@ def _train(
             )
             _accelerator.save_state(checkpoint_dir)
 
-    def train_loop(
-        dataloader: DataLoader, _epoch: int, steps_per_checkpoint: int
-    ):
+    def train_loop(dataloader: DataLoader, _epoch: int):
         loss = torch.tensor([0.0])
         avg_train_loss = 0
         trailing_loss = 0
@@ -409,8 +417,6 @@ def _train(
         try:
             lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
         except Exception:
-            pass
-        else:
             lr_for_print = "{:.2e}".format(optimizer.param_groups[-1]["lr"])
 
         model.train()
@@ -431,7 +437,10 @@ def _train(
             with accelerator.accumulate(model):
                 step = __step + 1
 
-                seqs, labels, eos_pos = batch
+                seqs, eos_pos, labels = batch
+                seqs = seqs.squeeze(1)
+                eos_pos = eos_pos.squeeze(1)
+
                 logits = model(seqs)  # (b_sz, s_len, class_size)
                 logits = logits[
                     torch.arange(logits.shape[0], device=logits.device), eos_pos
@@ -461,70 +470,113 @@ def _train(
                     scheduler.step()
                     lr_for_print = "{:.2e}".format(scheduler.get_last_lr()[0])
 
-                if steps_per_checkpoint:
-                    if step % steps_per_checkpoint == 0:
-                        make_checkpoint(
-                            _accelerator=accelerator,
-                            _epoch=_epoch,
-                            _step=step,
-                        )
-
         return avg_train_loss
 
-    def val_loop(dataloader: DataLoader, _epoch: int):
+    def val_loop(dataloader: DataLoader, _epoch: int, tag_to_id: dict):
         model.eval()
-        val_loss_buffer = []
-        total_correct = 0
-        total_samples = 0
+        pad_id = AbsTokenizer().pad_id
+        preds = []
+        labels = []
 
-        with torch.no_grad():
+        with torch.inference_mode():
             pbar = tqdm(
                 dataloader, desc=f"Validation Epoch {_epoch}", leave=False
             )
             for batch in pbar:
-                seqs, labels, eos_pos = batch
-                logits = model(seqs)  # (b_sz, s_len, class_size)
+                seqs, pos, tag = batch
+                seqs = seqs.squeeze(0)  # (n, max_seq_len)
+                pos = pos.squeeze(0)  # (n,)
+
+                logits = model(seqs)  # (n, seq_len, class_size)
                 logits = logits[
-                    torch.arange(logits.shape[0], device=logits.device), eos_pos
+                    torch.arange(logits.shape[0], device=logits.device), pos
                 ]
-                loss = loss_fn(logits, labels)
-                # Gather loss from all devices (if applicable)
-                val_loss_buffer.append(
-                    accelerator.gather(loss).mean(dim=0).item()
-                )
+                probs = torch.softmax(logits, dim=-1)  # (n, class_size)
 
-                # Compute predictions and update accuracy stats
-                preds = torch.argmax(logits, dim=-1)
-                total_correct += (preds == labels).sum().item()
-                total_samples += labels.size(0)
-                current_accuracy = (
-                    total_correct / total_samples if total_samples > 0 else 0.0
+                non_pad_counts = (
+                    (seqs != pad_id).sum(dim=1, keepdim=True).float()
                 )
-                current_avg_loss = sum(val_loss_buffer) / len(val_loss_buffer)
+                weighted_probs = probs * non_pad_counts
+                aggregated_probs = weighted_probs.sum(dim=0)
+                predicted_label = aggregated_probs.argmax().item()
 
-                pbar.set_postfix_str(
-                    f"loss={round(current_avg_loss,4)}, acc={round(current_accuracy,4)}"
+                preds.append(predicted_label)
+                labels.append(tag.item())
+
+                tmp_acc = sum(p == t for p, t in zip(preds, labels)) / len(
+                    preds
                 )
+                pbar.set_postfix_str(f"acc={round(tmp_acc, 4)}")
 
-        avg_val_loss = sum(val_loss_buffer) / len(val_loss_buffer)
-        accuracy = total_correct / total_samples if total_samples > 0 else 0.0
+        accuracy = sum(p == t for p, t in zip(preds, labels)) / len(labels)
+
+        # Compute per-class F1 scores
+        id_to_tag = {v: k for k, v in tag_to_id.items()}
+        # Initialize counts per class
+        metrics = {tag: {"TP": 0, "FP": 0, "FN": 0} for tag in tag_to_id.keys()}
+        for true_id, pred_id in zip(labels, preds):
+            true_tag = id_to_tag[true_id]
+            pred_tag = id_to_tag[pred_id]
+            if true_id == pred_id:
+                metrics[true_tag]["TP"] += 1
+            else:
+                metrics[true_tag]["FN"] += 1
+                metrics[pred_tag]["FP"] += 1
+
+        class_metrics = {}
+        f1_scores = []
+        for tag, counts in metrics.items():
+            TP = counts["TP"]
+            FP = counts["FP"]
+            FN = counts["FN"]
+            precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+            recall = TP / (TP + FN) if (TP + FN) > 0 else 0
+            f1 = (
+                (2 * precision * recall / (precision + recall))
+                if (precision + recall) > 0
+                else 0
+            )
+            class_metrics[tag] = {
+                "precision": precision,
+                "recall": recall,
+                "F1": f1,
+            }
+            f1_scores.append(f1)
+
+        macro_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0
 
         logger.info(
-            f"Validation Epoch {_epoch}: average_loss={round(avg_val_loss, 4)}, accuracy={round(accuracy, 4)}"
+            f"Validation Epoch {_epoch}: accuracy={round(accuracy, 4)}, macro-F1={round(macro_f1, 4)}"
         )
-        return avg_val_loss, accuracy
+        logger.info(f"Class metrics: {class_metrics}")
+
+        return accuracy, macro_f1, class_metrics
 
     logger = get_logger(__name__)
     loss_fn = nn.CrossEntropyLoss()
-    TRAILING_LOSS_STEPS = 100
+    TRAILING_LOSS_STEPS = 20
 
-    train_loop(dataloader=train_dataloader, _epoch=0, steps_per_checkpoint=2000)
-    make_checkpoint(_accelerator=accelerator, _epoch=1, _step=0)
-    val_loop(dataloader=val_dataloader, _epoch=0)
+    epoch_metrics = []
+    for __epoch in range(num_epochs):
+        train_loop(dataloader=train_dataloader, _epoch=__epoch)
+        acc, macro_f1, class_metrics = val_loop(
+            dataloader=val_dataloader, _epoch=__epoch, tag_to_id=tag_to_id
+        )
+        epoch_metrics.append(
+            {
+                "accuracy": acc,
+                "macro_f1": macro_f1,
+                "class_metrics": class_metrics,
+            }
+        )
+
+    return epoch_metrics
 
 
 def train(
     model_name: str,
+    metadata_category: str,
+    apply_aug: bool,
     train_data_path: str,
     val_data_path: str,
     num_workers: int,
@@ -533,11 +585,14 @@ def train(
     grad_acc_steps: int,
     project_dir: str | None = None,
     checkpoint_path: str | None = None,
+    dataset_size: int | None = None,
 ):
     accelerator = accelerate.Accelerator(
         project_dir=project_dir,
         gradient_accumulation_steps=grad_acc_steps,
     )
+
+    tag_to_id = CATEGORY_TAGS[metadata_category]
 
     if accelerator.is_main_process:
         project_dir = setup_project_dir(project_dir)
@@ -548,8 +603,11 @@ def train(
         logger = get_logger(__name__)
 
     logger.info(f"Project directory: {project_dir}")
+    logger.info(f"Metadata category: {metadata_category}")
+    logger.info(f"Dataset size: {dataset_size}")
+    logger.info(f"Applying aug: {apply_aug}")
     logger.info(
-        f"Training config: epochs={num_epochs}, batch_size={batch_size}, num_workers={num_workers}"
+        f"Training config:epochs={num_epochs}, batch_size={batch_size}, num_workers={num_workers}"
     )
 
     tokenizer = AbsTokenizer()
@@ -557,19 +615,19 @@ def train(
     model_config.set_vocab_size(tokenizer.vocab_size)
     model = TransformerCL(model_config)
 
+    assert model_config.class_size == len(tag_to_id.keys())
+
     if checkpoint_path is not None:
         logger.info(f"Loading checkpoint from {checkpoint_path}")
         model_state = _load_weight(checkpoint_path)
         model_state = {
             k.replace("_orig_mod.", ""): v for k, v in model_state.items()
         }
-        if "lm_head.weight" in model_state.keys():
-            del model_state["lm_head.weight"]
+        model.load_state_dict(model_state, strict=False)
+        torch.nn.init.normal_(
+            model.model.tok_embeddings.weight.data[1:2], mean=0.0, std=0.02
+        )  # Re-init EOS tok
 
-        model_state = {
-            k.replace("model.", ""): v for k, v in model_state.items()
-        }
-        model.model.load_state_dict(model_state)
     else:
         logger.info("No checkpoint path provided")
 
@@ -578,9 +636,11 @@ def train(
     train_dataloader, val_dataloader = get_dataloaders(
         train_data_path=train_data_path,
         val_data_path=val_data_path,
+        metadata_category=metadata_category,
+        tag_to_id=tag_to_id,
         batch_size=batch_size,
         num_workers=num_workers,
-        apply_aug=True,
+        apply_aug=apply_aug,
     )
 
     optimizer, scheduler = get_optim(
@@ -603,50 +663,50 @@ def train(
         scheduler,
     )
 
-    _train(
+    epoch_metrics = _train(
         num_epochs=num_epochs,
         accelerator=accelerator,
         model=model,
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
         optimizer=optimizer,
+        tag_to_id=tag_to_id,
         scheduler=scheduler,
         project_dir=project_dir,
     )
 
-
-def test_build_dataset():
-    FinetuningDataset.build(
-        midi_dataset_load_path="/mnt/ssd1/aria/data/mididict-ft_val.jsonl",
-        save_path="/mnt/ssd1/aria/data/train.jsonl",
-        min_slice_notes=100,
-        max_slice_notes=165,
-        max_seq_len=512,
-        metadata_category=METADATA_CATEGORY,
-        tag_ids=TAG_IDS,
+    max_accuracy = (
+        max(metric["accuracy"] for metric in epoch_metrics)
+        if epoch_metrics
+        else 0.0
     )
-
-    # FinetuningDataset.build(
-    #     midi_dataset_load_path="/mnt/ssd1/aria/data/mididict-ft_val.jsonl",
-    #     save_path="/mnt/ssd1/aria/data/val.jsonl",
-    #     min_slice_notes=100,
-    #     max_slice_notes=165,
-    #     max_seq_len=512,
-    #     metadata_category=METADATA_CATEGORY,
-    #     tag_ids=TAG_IDS,
-    # )
+    logger.info(f"Max accuracy: {max_accuracy}")
+    results = {
+        "metadata_category": metadata_category,
+        "dataset_size": dataset_size,
+        "epoch_metrics": epoch_metrics,
+        "max_accuracy": max_accuracy,
+    }
+    with open(os.path.join(project_dir, "results.json"), "w") as f:
+        json.dump(results, f, indent=4)
 
 
 def test_dataset():
+    tokenizer = AbsTokenizer()
     dataset = FinetuningDataset(
-        load_path="/mnt/ssd1/aria/data/test.jsonl",
-        tag_ids=TAG_IDS,
+        load_path="/mnt/ssd1/aria/data/class_eval/genre/classifier_finetune/test.jsonl",
+        metadata_category="genre",
+        tag_to_id=CATEGORY_TAGS["genre"],
+        max_seq_len=1024,
+        per_file=True,
     )
 
-    for idx, entry in enumerate(dataset):
-        print(idx)
-        # print(entry)
-        # input("")
+    for seq, pos, tag in dataset:
+        print(seq.shape)
+        print(pos.shape)
+        print(tag)
+
+        input("")
 
 
 def parse_args():
@@ -654,6 +714,9 @@ def parse_args():
         description="Finetune a model for classification."
     )
     parser.add_argument("--model_name", type=str, required=True)
+    parser.add_argument("--metadata_category", type=str, required=True)
+    parser.add_argument("--dataset_size", type=int, required=False)
+    parser.add_argument("--apply_aug", action="store_true")
     parser.add_argument("--checkpoint_path", type=str, default=None)
     parser.add_argument("--train_data_path", type=str, required=True)
     parser.add_argument("--val_data_path", type=str, required=True)
@@ -666,18 +729,20 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    # args = parse_args()
-    # train(
-    #     model_name=args.model_name,
-    #     checkpoint_path=args.checkpoint_path,
-    #     train_data_path=args.train_data_path,
-    #     val_data_path=args.val_data_path,
-    #     batch_size=args.batch_size,
-    #     num_epochs=args.num_epochs,
-    #     num_workers=args.num_workers,
-    #     grad_acc_steps=args.grad_acc_steps,
-    #     project_dir=args.project_dir,
-    # )
+    args = parse_args()
+    train(
+        model_name=args.model_name,
+        metadata_category=args.metadata_category,
+        dataset_size=args.dataset_size,
+        apply_aug=args.apply_aug,
+        checkpoint_path=args.checkpoint_path,
+        train_data_path=args.train_data_path,
+        val_data_path=args.val_data_path,
+        batch_size=args.batch_size,
+        num_epochs=args.num_epochs,
+        num_workers=args.num_workers,
+        grad_acc_steps=args.grad_acc_steps,
+        project_dir=args.project_dir,
+    )
 
-    test_build_dataset()
     # test_dataset()

@@ -3,7 +3,7 @@ import torch
 import mido
 from transformers import BertConfig, GPT2Config
 
-from aria.embeddings.m3.config import (
+from aria.eval.m3.config import (
     AUDIO_HIDDEN_SIZE,
     AUDIO_NUM_LAYERS,
     MAX_AUDIO_LENGTH,
@@ -16,7 +16,7 @@ from aria.embeddings.m3.config import (
     TOKEN_NUM_LAYERS,
 )
 
-from aria.embeddings.m3.utils import CLaMP3Model, M3Patchilizer, M3Model
+from aria.eval.m3.utils import CLaMP3Model, M3Patchilizer, M3Model
 
 
 def msg_to_str(msg):

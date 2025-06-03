@@ -6,6 +6,6 @@
     "drop_p": 0.0,
     "max_seq_len": 8192,
     "grad_checkpoint": true,
-    "class_size": 2,
+    "class_size": 6,
     "resid_dropout": 0.2
 }
