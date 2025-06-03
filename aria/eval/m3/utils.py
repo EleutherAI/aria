@@ -3,7 +3,7 @@ import os
 import math
 import torch
 import random
-from aria.embeddings.m3.config import *
+from aria.eval.m3.config import *
 from unidecode import unidecode
 from torch.nn import functional as F
 from transformers import (

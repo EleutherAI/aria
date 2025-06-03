@@ -176,7 +176,7 @@ def get_mert_embedding(
     hook_pianoteq_exec_path: str,
     hook_pianoteq_num_procs: int,
 ):
-    from aria.embeddings.mert.emb import (
+    from aria.eval.mert.emb import (
         seq_to_audio_path,
         compute_audio_embedding,
     )
@@ -210,7 +210,7 @@ def get_clamp3_embedding(
     hook_patchilizer,
     hook_tokenizer: AbsTokenizer,
 ):
-    from aria.embeddings.m3.emb import get_midi_embedding
+    from aria.eval.m3.emb import get_midi_embedding
 
     emb = [
         get_midi_embedding(
