@@ -19,9 +19,9 @@ class ModelConfig:
     drop_p: float
     max_seq_len: int
     grad_checkpoint: bool
+    resid_dropout: float = 0.0
     vocab_size: Optional[int] = None
     class_size: Optional[int] = None
-    tag_to_id: Optional[dict] = None
     emb_size: Optional[dict] = None
 
     def set_vocab_size(self, vocab_size: int):
@@ -29,13 +29,13 @@ class ModelConfig:
 
 
 class FusedEncoderBlock(nn.Module):
-    def __init__(self, model_config: ModelConfig):
+    def __init__(self, model_config: ModelConfig, resid_dropout: float = 0.0):
         super().__init__()
-
         self.drop_p = model_config.drop_p
         self.n_heads = model_config.n_heads
         self.d_head = model_config.d_model // model_config.n_heads
         self.max_seq_len = model_config.max_seq_len
+        self.resid_dropout = resid_dropout
 
         # Attention
         self.mixed_qkv = nn.Linear(
@@ -71,8 +71,11 @@ class FusedEncoderBlock(nn.Module):
         self.norm2 = nn.LayerNorm(model_config.d_model)
 
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor):
-        x = x + self._att_block(self.norm1(x), freqs_cis)
-        x = x + self._ff_block(self.norm2(x))
+        att_out = self._att_block(self.norm1(x), freqs_cis)
+        x = x + F.dropout(att_out, p=self.resid_dropout, training=self.training)
+
+        ff_out = self._ff_block(self.norm2(x))
+        x = x + F.dropout(ff_out, p=self.resid_dropout, training=self.training)
 
         return x
 
@@ -136,8 +139,18 @@ class Transformer(nn.Module):
 
         self.out_layer_norm = nn.LayerNorm(model_config.d_model)
         self.encode_layers = nn.ModuleList()
-        for _ in range(model_config.n_layers):
-            self.encode_layers.append(FusedEncoderBlock(model_config))
+
+        for layer_index in range(model_config.n_layers):
+            if model_config.resid_dropout > 0:
+                layer_dropout = model_config.resid_dropout * (
+                    layer_index / (model_config.n_layers - 1)
+                )
+            else:
+                layer_dropout = 0.0
+
+            self.encode_layers.append(
+                FusedEncoderBlock(model_config, resid_dropout=layer_dropout)
+            )
 
     def forward(
         self,
