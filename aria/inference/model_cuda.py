@@ -1,4 +1,4 @@
-"""Inference implementation with torch-compiler friendly kv-cache."""
+"""Inference implementation for torch (cuda) backend"""
 
 import torch
 import torch.nn as nn
@@ -32,118 +32,6 @@ class KVCache(nn.Module):
         v_out[:, :, input_pos] = v_val
 
         return k_out, v_out
-
-
-class TransformerLM(nn.Module):
-    def __init__(self, model_config: ModelConfig):
-        super().__init__()
-        self.model_config = model_config
-        self.max_seq_len = model_config.max_seq_len
-        self.model = Transformer(model_config)
-        self.lm_head = nn.Linear(
-            model_config.d_model, model_config.vocab_size, bias=False
-        )
-        self.embedding_adapter = nn.Linear(
-            model_config.emb_size, model_config.d_model, bias=False
-        )
-
-    def forward(
-        self,
-        idxs: torch.Tensor,
-        input_pos: torch.Tensor,
-        pad_idxs: torch.Tensor | None = None,
-    ):
-        hidden_states = self.model(
-            idxs=idxs,
-            input_pos=input_pos,
-            pad_idxs=pad_idxs,
-        )
-        logits = self.lm_head(hidden_states)
-
-        return logits
-
-    def fill_condition_kv(self, cond_emb: torch.Tensor):
-        adapted_emb = self.embedding_adapter(cond_emb)
-        self.model.fill_condition_kv(emb=adapted_emb)
-
-    def setup_cache(
-        self,
-        batch_size: int,
-        max_seq_len=4096,
-        dtype=torch.bfloat16,
-    ):
-        assert batch_size >= 1
-        for b in self.model.encode_layers:
-            b.kv_cache = KVCache(
-                max_batch_size=batch_size,
-                max_seq_length=max_seq_len,
-                n_heads=self.model_config.n_heads,
-                head_dim=self.model_config.d_model // self.model_config.n_heads,
-                dtype=dtype,
-            ).cuda()
-
-        self.model.freqs_cis = precompute_freqs_cis(
-            seq_len=max_seq_len,
-            n_elem=self.model_config.d_model // self.model_config.n_heads,
-            base=500000,
-            dtype=dtype,
-        ).cuda()
-        self.model.causal_mask = torch.tril(
-            torch.ones(max_seq_len, max_seq_len, dtype=torch.bool)
-        ).cuda()
-
-
-class Transformer(nn.Module):
-    def __init__(self, model_config: ModelConfig) -> None:
-        super().__init__()
-        self.model_config = model_config
-
-        self.tok_embeddings = nn.Embedding(
-            num_embeddings=model_config.vocab_size,
-            embedding_dim=model_config.d_model,
-        )
-        self.encode_layers = nn.ModuleList(
-            TransformerBlock(model_config) for _ in range(model_config.n_layers)
-        )
-        self.out_layer_norm = nn.LayerNorm(model_config.d_model)
-
-        self.freqs_cis = None
-        self.causal_mask = None
-
-    def fill_condition_kv(self, emb: torch.Tensor):
-        assert self.freqs_cis is not None, "Caches must be initialized first"
-
-        input_pos = torch.tensor([0], device=emb.device)
-        mask = self.causal_mask[None, None, input_pos]
-        freqs_cis = self.freqs_cis[input_pos]
-
-        x = emb.unsqueeze(dim=1)
-
-        for layer in self.encode_layers:
-            x = layer(x, input_pos, freqs_cis, mask)
-
-    def forward(
-        self,
-        idxs: torch.Tensor,
-        input_pos: torch.Tensor,
-        pad_idxs: torch.Tensor | None = None,
-    ):
-        assert self.freqs_cis is not None, "Caches must be initialized first"
-
-        mask = self.causal_mask[None, None, input_pos]
-
-        if pad_idxs is not None:
-            mask = mask & ~(pad_idxs.unsqueeze(1).unsqueeze(1))
-
-        freqs_cis = self.freqs_cis[input_pos]
-
-        x = self.tok_embeddings(idxs)
-        for layer in self.encode_layers:
-            x = layer(x, input_pos, freqs_cis, mask)
-
-        x = self.out_layer_norm(x)
-
-        return x
 
 
 class TransformerBlock(nn.Module):
@@ -254,6 +142,123 @@ class TransformerBlock(nn.Module):
         return self.ff_down_proj(
             F.silu(self.ff_gate_proj(x)) * self.ff_up_proj(x)
         )
+
+
+class Transformer(nn.Module):
+    def __init__(self, model_config: ModelConfig) -> None:
+        super().__init__()
+        self.model_config = model_config
+
+        self.tok_embeddings = nn.Embedding(
+            num_embeddings=model_config.vocab_size,
+            embedding_dim=model_config.d_model,
+        )
+        self.encode_layers = nn.ModuleList(
+            TransformerBlock(model_config) for _ in range(model_config.n_layers)
+        )
+        self.out_layer_norm = nn.LayerNorm(model_config.d_model)
+
+        self.freqs_cis = None
+        self.causal_mask = None
+
+    def fill_condition_kv(self, emb: torch.Tensor):
+        assert self.freqs_cis is not None, "Caches must be initialized first"
+        assert self.model_config.emb_size is not None
+
+        input_pos = torch.tensor([0], device=emb.device)
+        mask = self.causal_mask[None, None, input_pos]
+        freqs_cis = self.freqs_cis[input_pos]
+
+        x = emb.unsqueeze(dim=1)
+
+        for layer in self.encode_layers:
+            x = layer(x, input_pos, freqs_cis, mask)
+
+    def forward(
+        self,
+        idxs: torch.Tensor,
+        input_pos: torch.Tensor,
+        pad_idxs: torch.Tensor | None = None,
+    ):
+        assert self.freqs_cis is not None, "Caches must be initialized first"
+
+        mask = self.causal_mask[None, None, input_pos]
+
+        if pad_idxs is not None:
+            mask = mask & ~(pad_idxs.unsqueeze(1).unsqueeze(1))
+
+        freqs_cis = self.freqs_cis[input_pos]
+
+        x = self.tok_embeddings(idxs)
+        for layer in self.encode_layers:
+            x = layer(x, input_pos, freqs_cis, mask)
+
+        x = self.out_layer_norm(x)
+
+        return x
+
+
+class TransformerLM(nn.Module):
+    def __init__(self, model_config: ModelConfig):
+        super().__init__()
+        self.model_config = model_config
+        self.max_seq_len = model_config.max_seq_len
+        self.model = Transformer(model_config)
+        self.lm_head = nn.Linear(
+            model_config.d_model, model_config.vocab_size, bias=False
+        )
+
+        if model_config.emb_size is not None:
+            self.embedding_adapter = nn.Linear(
+                model_config.emb_size, model_config.d_model, bias=False
+            )
+
+    def forward(
+        self,
+        idxs: torch.Tensor,
+        input_pos: torch.Tensor,
+        pad_idxs: torch.Tensor | None = None,
+    ):
+        hidden_states = self.model(
+            idxs=idxs,
+            input_pos=input_pos,
+            pad_idxs=pad_idxs,
+        )
+        logits = self.lm_head(hidden_states)
+
+        return logits
+
+    def fill_condition_kv(self, cond_emb: torch.Tensor):
+        assert self.model_config.emb_size is not None
+
+        adapted_emb = self.embedding_adapter(cond_emb)
+        self.model.fill_condition_kv(emb=adapted_emb)
+
+    def setup_cache(
+        self,
+        batch_size: int,
+        max_seq_len=8096,
+        dtype=torch.bfloat16,
+    ):
+        assert batch_size >= 1
+        for b in self.model.encode_layers:
+            b.kv_cache = KVCache(
+                max_batch_size=batch_size,
+                max_seq_length=max_seq_len,
+                n_heads=self.model_config.n_heads,
+                head_dim=self.model_config.d_model // self.model_config.n_heads,
+                dtype=dtype,
+            ).cuda()
+
+        self.model.freqs_cis = precompute_freqs_cis(
+            seq_len=max_seq_len,
+            n_elem=self.model_config.d_model // self.model_config.n_heads,
+            base=500000,
+            dtype=dtype,
+        ).cuda()
+        self.model.causal_mask = torch.tril(
+            torch.ones(max_seq_len, max_seq_len, dtype=torch.bool)
+        ).cuda()
 
 
 def precompute_freqs_cis(

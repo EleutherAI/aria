@@ -1,9 +1,9 @@
 """Inference implementation for mlx backend"""
 
-from aria.model import ModelConfig
-
 import mlx.core as mx
 import mlx.nn as nn
+
+from aria.model import ModelConfig
 
 
 class KVCache(nn.Module):
@@ -13,7 +13,7 @@ class KVCache(nn.Module):
         max_seq_length: int,
         n_heads: int,
         head_dim: int,
-        dtype: mx.Dtype = mx.bfloat16,
+        dtype: mx.Dtype = mx.float32,
     ):
         super().__init__()
         self.dtype = dtype
@@ -159,6 +159,20 @@ class Transformer(nn.Module):
             TransformerBlock(model_config) for _ in range(model_config.n_layers)
         ]
         self.out_layer_norm = nn.LayerNorm(model_config.d_model)
+
+    def fill_condition_kv(self, emb: mx.array):
+        assert self.causal_mask is not None, "Caches must be initialized first"
+        assert self.model_config.emb_size is not None
+
+        input_pos = mx.array([0], dtype=mx.int32)
+        mask = self.causal_mask[None, None, input_pos]
+        offset = 0
+
+        x = mx.expand_dims(emb, axis=1)
+
+        for layer in self.encode_layers:
+            x = layer(x, input_pos, offset, mask)
+
         self.causal_mask = None
 
     def __call__(
@@ -195,6 +209,11 @@ class TransformerLM(nn.Module):
             model_config.d_model, model_config.vocab_size, bias=False
         )
 
+        if model_config.emb_size is not None:
+            self.embedding_adapter = nn.Linear(
+                model_config.emb_size, model_config.d_model, bias=False
+            )
+
     def __call__(
         self,
         idxs: mx.array,
@@ -212,11 +231,17 @@ class TransformerLM(nn.Module):
 
         return logits
 
+    def fill_condition_kv(self, cond_emb: mx.array):
+        assert self.model_config.emb_size is not None
+
+        adapted_emb = self.embedding_adapter(cond_emb)
+        self.model.fill_condition_kv(emb=adapted_emb)
+
     def setup_cache(
         self,
         batch_size,
-        max_seq_len=4096,
-        dtype=mx.bfloat16,
+        max_seq_len=8096,
+        dtype=mx.float32,
     ):
         # Init cache
         for b in self.model.encode_layers:
