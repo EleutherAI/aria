@@ -182,7 +182,7 @@ class Transformer(nn.Module):
             ).to(src.device)
         freqs_cis = self.freqs_cis[: src.shape[1]]
 
-        if self.model_config.grad_checkpoint is True:
+        if self.model_config.grad_checkpoint is True and self.training:
             for layer in self.encode_layers:
 
                 def create_custom_forward(module):

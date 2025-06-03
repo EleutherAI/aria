@@ -106,12 +106,11 @@ def sample_batch(
     compile: bool = False,
 ):
     assert top_p is not None or min_p is not None
+    assert 0.0 <= temp <= 2.0
     if top_p is not None:
         assert 0.5 <= top_p <= 1.0
     if min_p is not None:
         assert 0.0 <= min_p <= 1.0
-    if temp is not None:
-        assert 0.0 <= temp <= 2.0
     if force_end:
         assert max_new_tokens > 130, "prompt too long to use force_end=True"
 
@@ -212,51 +211,52 @@ def sample_batch(
     return decoded_results
 
 
-# TODO: Verify and implement for mlx
 @torch.autocast("cuda", dtype=DTYPE)
 @torch.inference_mode()
 def sample_batch_cfg(
     model: TransformerLM,
     tokenizer: AbsTokenizer,
-    prompts: list[list],
+    prompt: list,
+    num_variations: list,
     max_new_tokens: int,
     cfg_gamma: float,
     embedding: list[float],
+    temp: float,
     force_end=False,
-    temp: float = 0.95,
     top_p: float | None = None,
     min_p: float | None = None,
     compile: bool = False,
 ):
-    assert 0.0 <= cfg_gamma <= 15.0
     assert top_p is not None or min_p is not None
+    assert 0.0 <= temp <= 2.0
+    assert 0.0 <= cfg_gamma <= 10.0
     if top_p is not None:
         assert 0.5 <= top_p <= 1.0
-    if temp is not None:
-        assert 0.0 <= temp <= 2.0
+    if min_p is not None:
+        assert 0.0 <= min_p <= 1.0
     if force_end:
         assert max_new_tokens > 130, "prompt too long to use force_end=True"
 
-    prompts = get_cfg_prompt(prompts)
+    prompt_len = len(prompt)
+    num_variations = 2 * num_variations  # For CFG
 
-    prompt_len = len(prompts[0])
-    num_prompts = len(prompts)
-    assert all([len(p) == prompt_len for p in prompts])
-
+    model = model.cuda()
     model.eval()
-    total_context_len = prompt_len + max_new_tokens
+    dim_tok_inserted = [False for _ in range(num_variations)]
+    eos_tok_seen = [False for _ in range(num_variations)]
+    total_len = prompt_len + max_new_tokens
     seq = torch.stack(
         [
             torch.tensor(
                 tokenizer.encode(
-                    p + [tokenizer.pad_tok] * (total_context_len - len(p))
+                    prompt + [tokenizer.pad_tok] * (total_len - prompt_len)
                 )
             )
-            for p in prompts
+            for _ in range(num_variations)
         ]
     ).cuda()
-    dim_tok_inserted = [False for _ in range(num_prompts)]
-    eos_tok_seen = [False for _ in range(num_prompts)]
+    dim_tok_inserted = [False for _ in range(num_variations)]
+    eos_tok_seen = [False for _ in range(num_variations)]
 
     if compile is True:
         global decode_one
@@ -267,13 +267,13 @@ def sample_batch_cfg(
         )
 
     model.setup_cache(
-        batch_size=num_prompts,
-        max_seq_len=total_context_len,
+        batch_size=num_variations,
+        max_seq_len=total_len,
         dtype=DTYPE,
     )
 
     condition_embedding = torch.tensor(
-        [embedding for _ in range(num_prompts)], device=seq.device
+        [embedding for _ in range(num_variations)], device=seq.device
     )
     model.fill_condition_kv(cond_emb=condition_embedding)
     embedding_offset = 1
@@ -281,15 +281,15 @@ def sample_batch_cfg(
     pad_idxs[1::2, 0] = True
 
     print(
-        f"Using hyperparams: temp={temp}, top_p={top_p}, min_p={min_p}, gamma={cfg_gamma}, gen_len={max_new_tokens}"
+        f"Using hyperparams: temp={temp}, top_p={top_p}, min_p={min_p}, cfg={cfg_gamma}, gen_len={max_new_tokens}"
     )
 
-    CFG_WARM_UP_STEPS = min(250, max_new_tokens)
+    CFG_WARM_UP_STEPS = min(10, max_new_tokens)
     curr_step = 0
     for idx in (
         pbar := tqdm(
-            range(prompt_len, total_context_len),
-            total=total_context_len - prompt_len,
+            range(prompt_len, total_len),
+            total=total_len - prompt_len,
             leave=False,
         )
     ):
@@ -341,7 +341,7 @@ def sample_batch_cfg(
             next_token_ids=next_token_ids,
             dim_tok_inserted=dim_tok_inserted,
             eos_tok_seen=eos_tok_seen,
-            max_len=total_context_len,
+            max_len=total_len,
             force_end=force_end,
             tokenizer=tokenizer,
         )

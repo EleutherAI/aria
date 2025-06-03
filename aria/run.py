@@ -75,20 +75,25 @@ def _parse_generate_args():
 
 
 def _parse_conditioned_generate_args():
-    argp = argparse.ArgumentParser(prog="aria conditioned-generate")
+    argp = argparse.ArgumentParser(prog="aria generate")
+    argp.add_argument(
+        "--backend",
+        choices=["torch_cuda", "mlx"],
+        default="torch_cuda",
+        help="backend for inference",
+    )
     argp.add_argument(
         "--checkpoint_path", help="path to model used for decoding"
     )
     argp.add_argument("--prompt_midi_path", help="path to midi file")
     argp.add_argument(
         "--prompt_duration",
-        help="length of the input MIDI prompt (seconds)",
+        help="length of the input MIDI prompt, in seconds",
         type=int,
         default=20,
     )
     argp.add_argument(
         "--embedding_model_checkpoint_path",
-        required=False,
         help="path to model checkpoint used for embeddings",
     )
     argp.add_argument(
@@ -137,15 +142,9 @@ def _parse_conditioned_generate_args():
         default=2048,
     )
     argp.add_argument(
-        "--backend",
-        choices=["torch_cuda", "mlx"],
-        default="torch_cuda",
-        help="backend for inference",
-    )
-    argp.add_argument(
         "--compile",
         action="store_true",
-        help="use torch compiler to generate cudagraph for inference - only applies to backend='torch_cuda'",
+        help="use torch compiler to generate cudagraph for inference",
     )
     argp.add_argument(
         "--save_dir",
@@ -172,7 +171,24 @@ def _get_prompt(
     )
 
 
-def _load_model_torch(
+def _load_embedding_model(checkpoint_path: str):
+    from safetensors.torch import load_file
+
+    from ariautils.tokenizer import AbsTokenizer
+    from aria.model import TransformerEMB, ModelConfig
+    from aria.config import load_model_config
+
+    model_config = ModelConfig(**load_model_config(name="medium-emb"))
+    model_config.set_vocab_size(AbsTokenizer().vocab_size)
+    model = TransformerEMB(model_config)
+
+    state_dict = load_file(filename=checkpoint_path)
+    model.load_state_dict(state_dict=state_dict, strict=True)
+
+    return model
+
+
+def _load_inference_model_torch(
     checkpoint_path: str,
     config_name: str,
     strict: bool = True,
@@ -194,7 +210,7 @@ def _load_model_torch(
     return model
 
 
-def _load_model_mlx(
+def _load_inference_model_mlx(
     checkpoint_path: str,
     config_name: str,
     strict: bool = True,
@@ -224,7 +240,7 @@ def generate(args):
     max_new_tokens = args.length
 
     assert num_variations > 0
-    assert prompt_duration_s > 0
+    assert prompt_duration_s >= 0
     assert max_new_tokens > 0
     assert os.path.isdir(args.save_dir)
 
@@ -241,19 +257,19 @@ def generate(args):
 
         assert is_available(), "CUDA not available"
 
-        model = _load_model_torch(
+        model = _load_inference_model_torch(
             checkpoint_path=args.checkpoint_path,
             config_name="medium",
             strict=True,
-        )
+        )  # Might want strict = False
         results = sample_batch_t(
             model=model,
             tokenizer=tokenizer,
             prompt=prompt,
             num_variations=num_variations,
             max_new_tokens=max_new_tokens,
-            force_end=args.end,
             temp=args.temp,
+            force_end=args.end,
             top_p=args.top_p,
             min_p=args.min_p,
             compile=args.compile,
@@ -261,7 +277,7 @@ def generate(args):
     elif backend == "mlx":
         from aria.inference.sample_mlx import sample_batch as sample_batch_mlx
 
-        model = _load_model_mlx(
+        model = _load_inference_model_mlx(
             checkpoint_path=args.checkpoint_path,
             config_name="medium",
             strict=True,
@@ -272,11 +288,101 @@ def generate(args):
             prompt=prompt,
             num_variations=num_variations,
             max_new_tokens=max_new_tokens,
-            force_end=args.end,
             temp=args.temp,
+            force_end=args.end,
             top_p=args.top_p,
             min_p=args.min_p,
         )
+
+    for idx, tokenized_seq in enumerate(results):
+        res_midi_dict = tokenizer.detokenize(tokenized_seq)
+        res_midi = res_midi_dict.to_midi()
+        res_midi.save(os.path.join(args.save_dir, f"res_{idx + 1}.mid"))
+
+    print(f"Results saved to {os.path.realpath(args.save_dir)}")
+
+
+# TODO: Double checking during training we didn't do a weighted global sum
+def _get_embedding(
+    embedding_model_checkpoints_path: str,
+    embedding_midi_path: str,
+):
+    from aria.embedding import get_global_embedding_from_midi
+
+    model = _load_embedding_model(
+        checkpoint_path=embedding_model_checkpoints_path
+    ).cpu()
+    global_embedding = get_global_embedding_from_midi(
+        model=model,
+        midi_path=embedding_midi_path,
+        device="cpu",
+    )
+
+    return global_embedding.tolist()
+
+
+def conditioned_generate(args):
+    from ariautils.tokenizer import AbsTokenizer
+
+    num_variations = args.variations
+    prompt_duration_s = args.prompt_duration
+    backend = args.backend
+    max_new_tokens = args.length
+
+    assert num_variations > 0
+    assert prompt_duration_s >= 0
+    assert max_new_tokens > 0
+    assert os.path.isdir(args.save_dir)
+
+    tokenizer = AbsTokenizer()
+    prompt = _get_prompt(
+        args.prompt_midi_path,
+        prompt_duration_s=prompt_duration_s,
+    )
+    embedding = _get_embedding(
+        embedding_model_checkpoints_path=args.embedding_model_checkpoint_path,
+        embedding_midi_path=args.embedding_midi_path,
+    )
+    max_new_tokens = min(8096 - len(prompt), max_new_tokens)
+
+    if backend == "torch_cuda":
+        from torch.cuda import is_available
+        from aria.inference.sample_cuda import (
+            sample_batch_cfg as sample_batch_cfg_t,
+        )
+
+        assert is_available(), "CUDA not available"
+
+        model = _load_inference_model_torch(
+            checkpoint_path=args.checkpoint_path,
+            config_name="medium-emb",
+            strict=True,
+        )
+        results = sample_batch_cfg_t(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=prompt,
+            num_variations=num_variations,
+            max_new_tokens=max_new_tokens,
+            cfg_gamma=args.cfg,
+            embedding=embedding,
+            temp=args.temp,
+            force_end=args.end,
+            top_p=args.top_p,
+            min_p=args.min_p,
+            compile=args.compile,
+        )
+
+    elif backend == "mlx":
+        from aria.inference.sample_mlx import sample_batch as sample_batch_mlx
+
+        model = _load_inference_model_mlx(
+            checkpoint_path=args.checkpoint_path,
+            config_name="medium",
+            strict=True,
+        )
+
+        raise NotImplementedError
 
     for idx, tokenized_seq in enumerate(results):
         res_midi_dict = tokenizer.detokenize(tokenized_seq)
@@ -391,7 +497,7 @@ def main():
         help="command to run",
         choices=(
             "generate",
-            "conditional-generate",
+            "conditioned-generate",
             "midi-dataset",
             "pretrain-dataset",
         ),
@@ -405,8 +511,8 @@ def main():
         exit(1)
     elif args.command == "generate":
         generate(args=_parse_generate_args())
-    # elif args.command == "conditioned-generate":
-    #     condi(args=_parse_conditioned_generate_args())
+    elif args.command == "conditioned-generate":
+        conditioned_generate(args=_parse_conditioned_generate_args())
     elif args.command == "midi-dataset":
         build_midi_dataset(args=_parse_midi_dataset_args())
     elif args.command == "pretrain-dataset":

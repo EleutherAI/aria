@@ -7,6 +7,8 @@ from ariautils.tokenizer._base import Token
 
 from aria.model import TransformerEMB
 
+MAX_EMBEDDING_SEQ_LEN = 2048
+
 
 def _validate_midi_for_emb(midi_dict: MidiDict):
     present_instruments = {
@@ -41,9 +43,10 @@ def get_embedding_from_seq(
 ):
     tokenizer = AbsTokenizer()
 
-    assert len(seq) <= 2048, "Sequence lengths above 2048 not supported"
+    assert len(seq) <= MAX_EMBEDDING_SEQ_LEN, f"Sequence lengths above {MAX_EMBEDDING_SEQ_LEN} not supported"  # fmt: skip
     _validate_midi_for_emb(tokenizer.detokenize(seq))
 
+    model.eval()
     eos_pos = seq.index(tokenizer.eos_tok)
     seq_enc = torch.tensor(tokenizer.encode(seq), device=device)
     emb = model.forward(seq_enc.view(1, -1))[0, eos_pos]
@@ -51,6 +54,7 @@ def get_embedding_from_seq(
     return emb
 
 
+# TODO: Make sure this is bug free
 def get_global_embedding_from_midi(
     model: TransformerEMB,
     midi_dict: MidiDict | None = None,
@@ -70,7 +74,16 @@ def get_global_embedding_from_midi(
     _validate_midi_for_emb(midi_dict)
 
     chunks = _get_chunks(midi_dict=midi_dict, notes_per_chunk=notes_per_chunk)
-    seqs = [tokenizer.tokenize(c, add_dim_tok=False)[:2048] for c in chunks]
+    seqs = [
+        tokenizer.tokenize(c, add_dim_tok=False)[:MAX_EMBEDDING_SEQ_LEN]
+        for c in chunks
+    ]
+
+    # Add back eos_tok if truncated by MAX_EMBEDDING_SEQ_LEN
+    for seq in seqs:
+        if seq[-1] != tokenizer.eos_tok:
+            seq[-1] = tokenizer.eos_tok
+
     embs = [
         get_embedding_from_seq(model=model, seq=s, device=device) for s in seqs
     ]

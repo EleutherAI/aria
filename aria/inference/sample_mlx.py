@@ -91,12 +91,11 @@ def sample_batch(
     min_p: float | None = None,
 ):
     assert top_p is not None or min_p is not None
+    assert 0.0 <= temp <= 2.0
     if top_p is not None:
         assert 0.5 <= top_p <= 1.0
     if min_p is not None:
         assert 0.0 <= min_p <= 1.0
-    if temp is not None:
-        assert 0.0 <= temp <= 2.0
     if force_end:
         assert max_new_tokens > 130, "prompt too long to use force_end=True"
 
