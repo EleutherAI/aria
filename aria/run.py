@@ -79,7 +79,7 @@ def _get_embedding(
     from aria.model import ModelConfig
     from aria.config import load_model_config
     from aria.utils import _load_weight
-    from aria.embeddings.evaluate import (
+    from aria.eval.linear_probe import (
         get_aria_contrastive_embedding,
         process_entry,
     )
@@ -149,7 +149,7 @@ def sample(args):
     """Entrypoint for sampling"""
 
     from torch.cuda import is_available as cuda_is_available
-    from aria.inference import TransformerLM
+    from aria.inference.model_cuda import TransformerLM
     from aria.model import ModelConfig
     from aria.config import load_model_config
     from aria.sample import sample_batch, sample_batch_cfg, get_inference_prompt

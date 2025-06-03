@@ -6,7 +6,6 @@ import mlx.core as mx
 import mlx.nn as nn
 
 
-# TODO: Implement this with dynamic kv-size
 class KVCache(nn.Module):
     def __init__(
         self,
@@ -229,7 +228,6 @@ class TransformerLM(nn.Module):
                 dtype=dtype,
             )
 
-        # mx.bool isn't a thing? How do I do this in mlx, is it mx.bool_ ?
         self.model.causal_mask = mx.tril(
             mx.ones((max_seq_len, max_seq_len), dtype=mx.bool_)
         )

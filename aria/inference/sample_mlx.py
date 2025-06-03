@@ -182,8 +182,6 @@ def sample_min_p(probs: mx.array, p_base: float):  # Added type hint
     p_scaled = p_base * p_max
     mask = probs >= p_scaled
 
-    print(mx.sum(mask).item())
-
     masked_probs = mx.where(~mask, mx.zeros_like(probs), probs)
     sum_masked_probs = mx.sum(masked_probs, axis=-1, keepdims=True)
     masked_probs_normalized = masked_probs / sum_masked_probs
