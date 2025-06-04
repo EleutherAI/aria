@@ -274,8 +274,8 @@ def generate(args):
         model = _load_inference_model_torch(
             checkpoint_path=args.checkpoint_path,
             config_name="medium",
-            strict=True,
-        )  # Might want strict = False
+            strict=False,
+        )
         results = sample_batch_t(
             model=model,
             tokenizer=tokenizer,
@@ -316,7 +316,6 @@ def generate(args):
     print(f"Results saved to {os.path.realpath(args.save_dir)}")
 
 
-# TODO: Double checking during training we didn't do a weighted global sum
 def _get_embedding(
     embedding_model_checkpoints_path: str,
     embedding_midi_path: str,
@@ -419,26 +418,39 @@ def conditioned_generate(args):
     print(f"Results saved to {os.path.realpath(args.save_dir)}")
 
 
-# TODO: Add turn - to -- flags
 def _parse_midi_dataset_args():
     argp = argparse.ArgumentParser(prog="aria midi-dataset")
-    argp.add_argument("dir", help="directory containing midi files")
-    argp.add_argument("save_path", help="path to save dataset")
-    argp.add_argument("-r", action="store_true", help="recursively search dirs")
     argp.add_argument(
-        "-s", action="store_true", help="shuffle dataset", default=False
+        "dir",
+        help="directory containing midi files",
     )
     argp.add_argument(
-        "-metadata",
+        "save_path",
+        help="path to save dataset",
+    )
+    argp.add_argument(
+        "--recursive",
+        action="store_true",
+        help="recursively search dirs",
+    )
+    argp.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="shuffle dataset",
+    )
+    argp.add_argument(
+        "--split",
+        type=float,
+        help="create train/val split",
+        required=False,
+    )
+    argp.add_argument(
+        "--metadata",
         nargs=2,
         metavar=("KEY", "VALUE"),
         action="append",
         help="manually add metadata key-value pair when building dataset",
     )
-    argp.add_argument(
-        "-split", type=float, help="create train/val split", required=False
-    )
-
     return argp.parse_args(sys.argv[2:])
 
 
@@ -451,10 +463,10 @@ def build_midi_dataset(args):
     MidiDataset.build_to_file(
         dir=args.dir,
         save_path=args.save_path,
-        recur=args.r,
+        recur=args.recursive,
         overwrite=True,
         manual_metadata=manual_metadata,
-        shuffle=args.s,
+        shuffle=args.shuffle,
     )
 
     if args.split:
@@ -469,19 +481,44 @@ def build_midi_dataset(args):
 # TODO: Add turn - to -- flags
 def _parse_pretrain_dataset_args():
     argp = argparse.ArgumentParser(prog="aria pretrain-dataset")
-    argp.add_argument("-load_path", help="path midi_dict dataset")
-    argp.add_argument("-save_dir", help="path to save dataset")
     argp.add_argument(
-        "-tokenizer_name", help="tokenizer name", choices=["abs", "rel"]
+        "--load_path",
+        help="path midi_dict dataset",
+        required=True,
     )
-    argp.add_argument("-l", help="max sequence length", type=int, default=4096)
-    argp.add_argument("-e", help="num epochs", type=int, default=1)
     argp.add_argument(
-        "-sep_sequences",
+        "--save_dir",
+        help="path to save dataset",
+        required=True,
+    )
+    argp.add_argument(
+        "--tokenizer_name",
+        help="tokenizer name",
+        choices=["abs", "rel"],
+        required=True,
+    )
+    argp.add_argument(
+        "--seq_len",
+        help="sequence length (tokens)",
+        type=int,
+        default=4096,
+    )
+    argp.add_argument(
+        "--num_epochs",
+        help="number of epochs to build",
+        type=int,
+        default=1,
+    )
+    argp.add_argument(
+        "--sep_sequences",
         help="start each with a new entry",
         action="store_true",
     )
-    argp.add_argument("-embedding_dataset_path", required=False)
+    argp.add_argument(
+        "--embedding_dataset_path",
+        help="path to embedding dataset - same format as EvaluationDataset",
+        required=False,
+    )
 
     return argp.parse_args(sys.argv[2:])
 
@@ -508,8 +545,8 @@ def build_pretraining_dataset(args):
     PretrainingDataset.build(
         tokenizer=tokenizer,
         save_dir=args.save_dir,
-        max_seq_len=args.l,
-        num_epochs=args.e,
+        max_seq_len=args.seq_len,
+        num_epochs=args.num_epochs,
         midi_dataset_path=args.load_path,
         separate_sequences=args.sep_sequences,
         file_embeddings=file_embeddings,
