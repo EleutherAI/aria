@@ -38,25 +38,25 @@ torch._dynamo.config.optimize_ddp = False
 # For example usage you could run the pre-training script with:
 #
 # accelerate launch [arguments] aria/train.py train \
-#   small \
-#   -train_data data/train \
-#   -val_data data/val \
-#   -epochs 10 \
-#   -bs 32 \
-#   -workers 8
+#   medium \
+#   --train_data data/train \
+#   --val_data data/val \
+#   --epochs 10 \
+#   --bs 32 \
+#   --workers 8
 #
 # You could resume a run from an accelerate checkpoint with:
 #
 # accelerate launch [arguments] aria/train.py resume \
-#   small \
-#   -train_data data/train \
-#   -val_data data/val \
-#   -cp_dir models/epoch5_step0 \
-#   -r_step 0 \
-#   -r_epoch 5 \
-#   -epochs 5 \
-#   -bs 32 \
-#   -workers 8
+#   medium \
+#   --train_data data/train \
+#   --val_data data/val \
+#   --cp_dir models/epoch5_step0 \
+#   --r_step 0 \
+#   --r_epoch 5 \
+#   --epochs 5 \
+#   --bs 32 \
+#   --workers 8
 
 
 def setup_logger(project_dir: str):
@@ -153,7 +153,7 @@ def _get_optim(
     num_epochs: int,
     steps_per_epoch: int,
     warmup: int = 100,
-    end_ratio: int = 0.1,
+    end_ratio: float = 0.1,
 ):
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -799,26 +799,30 @@ def convert_cp_from_accelerate(
 def parse_resume_args():
     argp = argparse.ArgumentParser(prog="python aria/train.py resume")
     argp.add_argument("model", help="name of model config file")
-    argp.add_argument("-train_data", nargs="+", help="path to train dir")
-    argp.add_argument("-val_data", help="path to val dir")
-    argp.add_argument("-cp_dir", help="checkpoint dir", type=str, required=True)
     argp.add_argument(
-        "-use_embeddings", help="prepend embeddings", action="store_true"
+        "--train_data", nargs="+", help="path to train dir", required=True
     )
-    argp.add_argument("-r_step", help="resume step", type=int, required=True)
-    argp.add_argument("-r_epoch", help="resume epoch", type=int, required=True)
-    argp.add_argument("-epochs", help="train epochs", type=int, required=True)
-    argp.add_argument("-bs", help="batch size", type=int, default=32)
+    argp.add_argument("--val_data", help="path to val dir", required=True)
     argp.add_argument(
-        "-grad_acc_steps",
+        "--cp_dir", help="checkpoint dir", type=str, required=True
+    )
+    argp.add_argument(
+        "--use_embeddings", help="prepend embeddings", action="store_true"
+    )
+    argp.add_argument("--r_step", help="resume step", type=int, required=True)
+    argp.add_argument("--r_epoch", help="resume epoch", type=int, required=True)
+    argp.add_argument("--epochs", help="train epochs", type=int, required=True)
+    argp.add_argument("--bs", help="batch size", type=int, default=32)
+    argp.add_argument(
+        "--grad_acc_steps",
         help="gradient accumulation steps",
         type=int,
         default=1,
     )
-    argp.add_argument("-workers", help="number workers", type=int, default=1)
-    argp.add_argument("-pdir", help="project dir", type=str, required=False)
+    argp.add_argument("--workers", help="number workers", type=int, default=1)
+    argp.add_argument("--pdir", help="project dir", type=str, required=False)
     argp.add_argument(
-        "-spc", help="steps per checkpoint", type=int, required=False
+        "--spc", help="steps per checkpoint", type=int, required=False
     )
 
     return argp.parse_args(sys.argv[2:])
@@ -827,26 +831,28 @@ def parse_resume_args():
 def parse_train_args():
     argp = argparse.ArgumentParser(prog="python aria/train.py train")
     argp.add_argument("model", help="name of model config file")
-    argp.add_argument("-train_data", nargs="+", help="path to train dir")
-    argp.add_argument("-val_data", help="path to val dir")
     argp.add_argument(
-        "-cp_path", help="path to checkpoint", required=False, default=None
+        "--train_data", nargs="+", help="path to train dir", required=True
+    )
+    argp.add_argument("--val_data", help="path to val dir", required=True)
+    argp.add_argument(
+        "--cp_path", help="path to checkpoint", required=False, default=None
     )
     argp.add_argument(
-        "-use_embeddings", help="prepend embeddings", action="store_true"
+        "--use_embeddings", help="prepend embeddings", action="store_true"
     )
-    argp.add_argument("-epochs", help="train epochs", type=int, required=True)
-    argp.add_argument("-bs", help="batch size", type=int, default=32)
+    argp.add_argument("--epochs", help="train epochs", type=int, required=True)
+    argp.add_argument("--bs", help="batch size", type=int, default=32)
     argp.add_argument(
-        "-grad_acc_steps",
+        "--grad_acc_steps",
         help="gradient accumulation steps",
         type=int,
         default=1,
     )
-    argp.add_argument("-workers", help="number workers", type=int, default=1)
-    argp.add_argument("-pdir", help="project dir", type=str, required=False)
+    argp.add_argument("--workers", help="number workers", type=int, default=1)
+    argp.add_argument("--pdir", help="project dir", type=str, required=False)
     argp.add_argument(
-        "-spc", help="steps per checkpoint", type=int, required=False
+        "--spc", help="steps per checkpoint", type=int, required=False
     )
 
     return argp.parse_args(sys.argv[2:])
