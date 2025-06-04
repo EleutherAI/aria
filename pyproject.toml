@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aria"
+version = "0.0.1"
+description = ""
+authors = [{name = "Louis Bradshaw", email = "loua19@outlook.com"}]
+requires-python = ">=3.11"
+
+dependencies = [
+    "ariautils @ git+https://github.com/EleutherAI/aria-utils.git",
+    "torch>=2.3",
+    "mlx",
+    "safetensors",
+    "jsonlines",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = ["black"]
+train = ["accelerate"]
+eval = ["transformers", "torchaudio", "mido"]
+demo = ["python-rtmidi"]
+all = ["black", "accelerate", "transformers", "torchaudio", "mido", "python-rtmidi"]
+
+[tool.black]
+line-length = 80
+target-version = ["py311"]
+include = '\.pyi?$'
+
+[project.scripts]
+aria = "aria.run:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["aria", "aria.*"]
+
+[tool.setuptools.package-data]
+aria = ["../config/*.json", "../config/models/*.json"]
