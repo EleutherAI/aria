@@ -137,7 +137,7 @@ def sample_batch(
             logits = prefill(
                 model,
                 idxs=seq[:, :idx],
-                input_pos=mx.arange(0, idx),
+                input_pos=mx.arange(0, idx, dtype=mx.int32),
             )[:, -1]
         else:
             logits = decode_one(
@@ -239,7 +239,7 @@ def sample_batch_cfg(
     )
     model.fill_condition_kv(cond_emb=condition_embedding)
     embedding_offset = 1
-    pad_idxs = mx.zeros_like(seq)
+    pad_idxs = mx.zeros(seq.shape, dtype=mx.bool_)
     pad_idxs[1::2, 0] = True
 
     print(
@@ -259,7 +259,9 @@ def sample_batch_cfg(
             logits = prefill(
                 model,
                 idxs=seq[:, :idx],
-                input_pos=mx.arange(embedding_offset, idx + embedding_offset),
+                input_pos=mx.arange(
+                    embedding_offset, idx + embedding_offset, dtype=mx.int32
+                ),
                 pad_idxs=pad_idxs,
             )[:, -1]
         else:

@@ -15,14 +15,20 @@ def _parse_generate_args():
         help="backend for inference",
     )
     argp.add_argument(
-        "--checkpoint_path", help="path to model used for decoding"
+        "--checkpoint_path",
+        help="path to model used for decoding",
+        required=True,
     )
-    argp.add_argument("--prompt_midi_path", help="path to midi file")
+    argp.add_argument(
+        "--prompt_midi_path",
+        help="path to midi file",
+        required=True,
+    )
     argp.add_argument(
         "--prompt_duration",
         help="length of the input MIDI prompt, in seconds",
         type=int,
-        default=20,
+        default=15,
     )
     argp.add_argument(
         "--variations",
@@ -83,22 +89,30 @@ def _parse_conditioned_generate_args():
         help="backend for inference",
     )
     argp.add_argument(
-        "--checkpoint_path", help="path to model used for decoding"
+        "--checkpoint_path",
+        help="path to model used for decoding",
+        required=True,
     )
-    argp.add_argument("--prompt_midi_path", help="path to midi file")
+    argp.add_argument(
+        "--prompt_midi_path",
+        help="path to midi file",
+        required=True,
+    )
     argp.add_argument(
         "--prompt_duration",
         help="length of the input MIDI prompt, in seconds",
         type=int,
-        default=20,
+        default=15,
     )
     argp.add_argument(
         "--embedding_model_checkpoint_path",
         help="path to model checkpoint used for embeddings",
+        required=True,
     )
     argp.add_argument(
         "--embedding_midi_path",
         help="path to MIDI file used for conditioning",
+        required=True,
     )
     argp.add_argument(
         "--variations",
@@ -280,7 +294,7 @@ def generate(args):
         model = _load_inference_model_mlx(
             checkpoint_path=args.checkpoint_path,
             config_name="medium",
-            strict=True,
+            strict=False,
         )
         results = sample_batch_mlx(
             model=model,
