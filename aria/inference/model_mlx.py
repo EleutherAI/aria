@@ -173,8 +173,6 @@ class Transformer(nn.Module):
         for layer in self.encode_layers:
             x = layer(x, input_pos, offset, mask)
 
-        self.causal_mask = None
-
     def __call__(
         self,
         idxs: mx.array,

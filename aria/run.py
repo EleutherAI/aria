@@ -374,15 +374,28 @@ def conditioned_generate(args):
         )
 
     elif backend == "mlx":
-        from aria.inference.sample_mlx import sample_batch as sample_batch_mlx
+        from aria.inference.sample_mlx import (
+            sample_batch_cfg as sample_batch_cfg_mlx,
+        )
 
         model = _load_inference_model_mlx(
             checkpoint_path=args.checkpoint_path,
-            config_name="medium",
+            config_name="medium-emb",
             strict=True,
         )
-
-        raise NotImplementedError
+        results = sample_batch_cfg_mlx(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=prompt,
+            num_variations=num_variations,
+            max_new_tokens=max_new_tokens,
+            cfg_gamma=args.cfg,
+            embedding=embedding,
+            temp=args.temp,
+            force_end=args.end,
+            top_p=args.top_p,
+            min_p=args.min_p,
+        )
 
     for idx, tokenized_seq in enumerate(results):
         res_midi_dict = tokenizer.detokenize(tokenized_seq)

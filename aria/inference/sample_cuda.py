@@ -255,8 +255,6 @@ def sample_batch_cfg(
             for _ in range(num_variations)
         ]
     ).cuda()
-    dim_tok_inserted = [False for _ in range(num_variations)]
-    eos_tok_seen = [False for _ in range(num_variations)]
 
     if compile is True:
         global decode_one
@@ -284,7 +282,7 @@ def sample_batch_cfg(
         f"Using hyperparams: temp={temp}, top_p={top_p}, min_p={min_p}, cfg={cfg_gamma}, gen_len={max_new_tokens}"
     )
 
-    CFG_WARM_UP_STEPS = min(10, max_new_tokens)
+    CFG_WARM_UP_STEPS = min(250, max_new_tokens)
     curr_step = 0
     for idx in (
         pbar := tqdm(
@@ -335,6 +333,7 @@ def sample_batch_cfg(
             next_token_ids = torch.argmax(logits_cfg, dim=-1).flatten()
 
         next_token_ids = next_token_ids.repeat_interleave(2)
+
         update_seq_ids_(
             seq=seq,
             idx=idx,
