@@ -20,7 +20,7 @@ pip install -e ".[all]"
 
 Download model weights from the official HuggingFace page for our pretrained model, as well as checkpoints finetuned for piano-continuation and generating MIDI-embeddings: 
 
-- `aria-medium-base` ([huggingface](https://example.com/), [direct-download](https://example.com/))
+- `aria-medium-base` ([huggingface](https://huggingface.co/loubb/aria-medium-base), [direct-download](https://huggingface.co/loubb/aria-medium-base/resolve/main/model.safetensors?download=true))
 - `aria-medium-gen` ([huggingface](https://example.com/), [direct-download](https://example.com/))
 - `aria-medium-embedding` ([huggingface](https://example.com/), [direct-download](https://example.com/))
 
@@ -41,7 +41,13 @@ aria generate \
     --save_dir <dir-to-save-results>
 ```
 
-Since the model has not been post-trained with instruction tuning or RLHF (similar to pre-instruct GPT models), it is very sensitive to input quality and performs best when prompted with well-played music. To get sample MIDI files, see the `example-prompts/` directory or explore the Aria-MIDI dataset. For a full list of sampling options: `aria generate -h`. If you wish to do inference on the CPU, please see the platform-agnostic implementation on our HuggingFace page [link]. 
+Since the model has not been post-trained with instruction tuning or RLHF (similar to pre-instruct GPT models), it is very sensitive to input quality and performs best when prompted with well-played music. To get prompt MIDI files, see the `example-prompts/` directory, explore the [Aria-MIDI](https://huggingface.co/datasets/loubb/aria-midi) dataset, or transcribe your own files using [piano-transcription model](https://github.com/EleutherAI/aria-amt). For a full list of sampling options: `aria generate -h`. If you wish to do inference on the CPU, please see the platform-agnostic implementation on our HuggingFace page [link].
+
+### Intended Use and Limitations
+
+Aria performs best when **continuing existing piano MIDI files** rather than generating music from scratch. While multi-track tokenization and generation are supported, the model was trained primarily on **single-track expressive piano performances**, and we recommend using single-track inputs for optimal results.
+
+Due to the high representation of popular classical works (e.g., Chopin) in the training data and the difficulty of complete deduplication, the model may **memorize or closely reproduce** such pieces. For more original outputs, we suggest prompting Aria with **lesser-known works or your own compositions**.
 
 ### Inference (MIDI embeddings)
 
@@ -70,7 +76,7 @@ embedding = get_global_embedding_from_midi(
 
 Our embedding model was trained to capture composition-level and performance-level attributes, and therefore might not be appropriate for every use case.
 
-## Real-time Demo
+## Real-time demo
 
 In `demo/` we provide CUDA (Linux/PyTorch) and MLX (Apple Silicon) implementations of the real-time interactive piano-continuation demo showcased in our release blog post. For the demo we used an acoustic Yamaha Disklavier piano with simultaneous MIDI input and output ports connected via a standard MIDI interface. 
 
@@ -86,7 +92,7 @@ MIDI_PATH="example-prompts/pokey_jazz.mid"
 python demo/demo_mlx.py \
     --checkpoint <checkpoint-path> \
     --midi_path ${MIDI_PATH} \
-    --midi_through <port-to-stream-midi-file-over> \  
+    --midi_through <port-to-stream-midi-file-through> \  
     --midi_out <port-to-stream-generation-over> \
     --save_path <path-to-save-result> \
     --temp 0.98 \
@@ -95,18 +101,18 @@ python demo/demo_mlx.py \
 
 ## Evaluation
 
-We provide the specific files/splits we used for Aria-MIDI derived linear-probe and classification evaluations. These can be downloaded from HuggingFace ([direct-download](https://example.com/)). Class labels are provided in `metadata.json` with the schema:
+We provide the specific files/splits we used for Aria-MIDI derived linear-probe and classification evaluations. These can be downloaded from HuggingFace ([direct-download](https://huggingface.co/loubb/aria-medium-base/resolve/main/eval-splits.tar.gz?download=true)). Class labels are provided in `metadata.json` with the schema:
 
 ```json
 {
   "<category>": {
     "<split-name>": {
       "<relative/path/to/file.mid>": "<metadata_value_for_that_category>",
-      …
+      ...
     },
-    …
+    ...
   },
-  …
+  ...
 }
 ```
 
