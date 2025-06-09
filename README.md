@@ -1,64 +1,125 @@
-# gpt-aria
+# Aria
 
-[Discord](https://discord.com/invite/zBGx3azzUn)
+This repository contains training, inference, and evaluation code for the paper *Scaling Self-Supervised Representation Learning for Symbolic Piano Performance*, as well as implementations of our real-time piano continuation demo. *Aria* is a pretrained autoregressive generative model for symbolic music, based on the LLaMA 3.2 (1B) architecture, which was trained on ~60k hours of MIDI transcriptions of expressive solo-piano recordings. Alongside the base model, we are releasing a checkpoint finetuned to improve generative quality, as well as a checkpoint finetuned to produce general-purpose piano MIDI embeddings using a SimCSE-style contrastive training objective.
 
-A repository containing resources for pre-training, fine-tuning, and evaluating musical (MIDI) transformer models.
+📖 Read our [release blog post](https://example.com/) and [paper](https://example.com/)  
+🤗 Access our models via the [HuggingFace page](https://huggingface.co/loubb/aria-medium-base)  
+📊 Get access to our training dataset [Aria-MIDI](https://huggingface.co/datasets/loubb/aria-midi) and train your own models
 
-***Note that this project is under active development***
+## Installation 
 
-## Description
+Installation requires Python 3.11+. To install the package and all dependencies with pip:
 
-The main goal of the gpt-aria project is to create a suite of powerful pre-trained generative (symbolic) music models. We want to investigate how modern training (pre-training & fine-tuning) techniques can be used to improve the quality/usefulness of such models. Alongside this we are building various data (MIDI) preprocessing tools, allowing **you** to easily fine-tune our models on your own data.
-
-If you are new to symbolic music models, a good place to start are the following projects/blogposts by Google Magenta and OpenAI:
-
-- [Music Transformer](https://magenta.tensorflow.org/music-transformer)
-- [MuseNet](https://openai.com/research/musenet)
-
- Long story short: Transformer + MIDI + GPUs = 🎵 x ∞
-
-## Installation
-
-Make sure you are using Python 3.10+. Note that I haven't explicitly developed this project for anything other than Linux. If you are using Windows, things might not work properly. In this case I suggest installing using WSL.
-
-```
-git clone https://github.com/eleutherai/aria
+```bash
+git clone https://github.com/EleutherAI/aria 
 cd aria
-pip install -e .
+pip install -e ".[all]"
 ```
 
-## Inference
+## Quickstart
 
-You can find preliminary checkpoints at the following locations 
+Download model weights from the official HuggingFace page for our pretrained model, as well as checkpoints finetuned for piano-continuation and generating MIDI-embeddings: 
 
-Finetuned piano-only checkpoints (improved robustness):
+- `aria-medium-base` ([huggingface](https://example.com/), [direct-download](https://example.com/))
+- `aria-medium-gen` ([huggingface](https://example.com/), [direct-download](https://example.com/))
+- `aria-medium-embedding` ([huggingface](https://example.com/), [direct-download](https://example.com/))
 
-```
-large - https://storage.googleapis.com/aria-checkpoints/large-abs-inst.safetensors
-```
+### Inference (Prompt Continuation)
 
-Pretrained checkpoints:
+We provide optimized model implementations for PyTorch (CUDA) and MLX (Apple Silicon). You can generate continuations of a MIDI file using the CLI, e.g., using CUDA (Linux):
 
-```
-large - https://storage.googleapis.com/aria-checkpoints/large-abs-pt.bin
-medium - https://storage.googleapis.com/aria-checkpoints/medium-abs-pt.bin
-small - https://storage.googleapis.com/aria-checkpoints/small-abs-pt.bin
-```
-
-You can then sample using the cli:
-
-```
-aria sample \
-    -m large \
-    -c <path-to-checkpoint> \
-    -p <path-to-midifile> \
-    -var <num-variations-to-generate> \
-    -trunc <seconds-in-to-truncate-prompt> \
-    -l <number-of-tokens-to-generate> \
-    -temp 0.95 \
-    -e
+```bash
+aria generate \
+    --backend torch_cuda \
+    --checkpoint_path <path-to-model-weights> \
+    --prompt_midi_path <path-to-midi-file-to-continue> \
+    --prompt_duration <length-in-seconds-for-prompt> \
+    --variations <number-of-variations-to-generate> \
+    --temp 0.98 \
+    --min_p 0.035 \
+    --length 2048 \
+    --save_dir <dir-to-save-results>
 ```
 
-You can use `aria sample -h` to see a full list of options. If you wish to sample from a pretrained checkpoint, please use the `-pt` flag.
+Since the model has not been post-trained with instruction tuning or RLHF (similar to pre-instruct GPT models), it is very sensitive to input quality and performs best when prompted with well-played music. To get sample MIDI files, see the `example-prompts/` directory or explore the Aria-MIDI dataset. For a full list of sampling options: `aria generate -h`. If you wish to do inference on the CPU, please see the platform-agnostic implementation on our HuggingFace page [link]. 
 
+### Inference (MIDI embeddings)
 
+You can generate embeddings from MIDI files using the `aria.embeddings` module. This is primarily exposed with the `get_global_embedding_from_midi` function, for example:
+
+```python
+from aria.embeddings import get_global_embedding_from_midi
+from aria.model import TransformerEMB, ModelConfig
+from aria.config import load_model_config
+from ariautils.tokenizer import AbsTokenizer
+
+# Load model
+model_config = ModelConfig(**load_model_config(name="medium-emb"))
+model_config.set_vocab_size(AbsTokenizer().vocab_size)
+model = TransformerEMB(model_config)
+state_dict = load_file(filename=CHECKPOINT_PATH)
+model.load_state_dict(state_dict=state_dict, strict=True)
+
+# Generate embedding
+embedding = get_global_embedding_from_midi(
+    model=model,
+    midi_path=MIDI_PATH,
+    device="cpu",
+)
+```
+
+Our embedding model was trained to capture composition-level and performance-level attributes, and therefore might not be appropriate for every use case.
+
+## Real-time Demo
+
+In `demo/` we provide CUDA (Linux/PyTorch) and MLX (Apple Silicon) implementations of the real-time interactive piano-continuation demo showcased in our release blog post. For the demo we used an acoustic Yamaha Disklavier piano with simultaneous MIDI input and output ports connected via a standard MIDI interface. 
+
+❗**NOTE**: Responsiveness of the real-time demo is dependent on your system configuration, e.g., GPU FLOPS and memory bandwidth.
+
+A MIDI input device is not strictly required to play around with the demo: By using the `--midi_path` and `--midi_through` arguments you can mock real-time input by playing from a MIDI file. All that is required are MIDI drivers (e.g., CoreMIDI, ALSA) and a virtual software instrument (e.g., Fluidsynth, Pianoteq) to render the output. 
+
+Example usage (MLX):
+
+```bash
+MIDI_PATH="example-prompts/pokey_jazz.mid"
+
+python demo/demo_mlx.py \
+    --checkpoint <checkpoint-path> \
+    --midi_path ${MIDI_PATH} \
+    --midi_through <port-to-stream-midi-file-over> \  
+    --midi_out <port-to-stream-generation-over> \
+    --save_path <path-to-save-result> \
+    --temp 0.98 \
+    --min_p 0.035
+```
+
+## Evaluation
+
+We provide the specific files/splits we used for Aria-MIDI derived linear-probe and classification evaluations. These can be downloaded from HuggingFace ([direct-download](https://example.com/)). Class labels are provided in `metadata.json` with the schema:
+
+```json
+{
+  "<category>": {
+    "<split-name>": {
+      "<relative/path/to/file.mid>": "<metadata_value_for_that_category>",
+      …
+    },
+    …
+  },
+  …
+}
+```
+
+## License and Attribution
+
+The Aria project has been kindly supported by EleutherAI, Stability AI, as well as by a compute grant from the Ministry of Science and ICT of Korea. Our models and MIDI tooling are released under the Apache-2.0 license. If you use the models or tooling for follow-up work, please cite the paper in which they were introduced:
+
+```bibtex
+@inproceedings{bradshawscaling,
+  title={Scaling Self-Supervised Representation Learning for Symbolic Piano Performance},
+  author={Bradshaw, Louis and Fan, Honglu and Spangher, Alex and Biderman, Stella and Colton, Simon},
+  booktitle={arXiv preprint},
+  year={2025},
+  url={https://arxiv.org/abs/2504.15071}
+}
+```
