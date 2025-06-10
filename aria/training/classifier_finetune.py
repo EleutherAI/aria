@@ -691,24 +691,6 @@ def train(
         json.dump(results, f, indent=4)
 
 
-def test_dataset():
-    tokenizer = AbsTokenizer()
-    dataset = FinetuningDataset(
-        load_path="/mnt/ssd1/aria/data/class_eval/genre/classifier_finetune/test.jsonl",
-        metadata_category="genre",
-        tag_to_id=CATEGORY_TAGS["genre"],
-        max_seq_len=1024,
-        per_file=True,
-    )
-
-    for seq, pos, tag in dataset:
-        print(seq.shape)
-        print(pos.shape)
-        print(tag)
-
-        input("")
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Finetune a model for classification."
@@ -744,5 +726,3 @@ if __name__ == "__main__":
         grad_acc_steps=args.grad_acc_steps,
         project_dir=args.project_dir,
     )
-
-    # test_dataset()
