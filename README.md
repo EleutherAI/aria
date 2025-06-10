@@ -1,6 +1,6 @@
 # Aria
 
-This repository contains training, inference, and evaluation code for the paper *Scaling Self-Supervised Representation Learning for Symbolic Piano Performance*, as well as implementations of our real-time piano continuation demo. *Aria* is a pretrained autoregressive generative model for symbolic music, based on the LLaMA 3.2 (1B) architecture, which was trained on ~60k hours of MIDI transcriptions of expressive solo-piano recordings. Alongside the base model, we are releasing a checkpoint finetuned to improve generative quality, as well as a checkpoint finetuned to produce general-purpose piano MIDI embeddings using a SimCSE-style contrastive training objective.
+This repository contains training, inference, and evaluation code for the paper *Scaling Self-Supervised Representation Learning for Symbolic Piano Performance (ISMIR 2025)*, as well as implementations of our real-time piano continuation demo. *Aria* is a pretrained autoregressive generative model for symbolic music, based on the LLaMA 3.2 (1B) architecture, which was trained on ~60k hours of MIDI transcriptions of expressive solo-piano recordings. Alongside the base model, we are releasing a checkpoint finetuned to improve generative quality, as well as a checkpoint finetuned to produce general-purpose piano MIDI embeddings using a SimCSE-style contrastive training objective.
 
 📖 Read our [release blog post](https://example.com/) and [paper](https://example.com/)  
 🤗 Access our models via the [HuggingFace page](https://huggingface.co/loubb/aria-medium-base)  
@@ -21,8 +21,8 @@ pip install -e ".[all]"
 Download model weights from the official HuggingFace page for our pretrained model, as well as checkpoints finetuned for piano-continuation and generating MIDI-embeddings: 
 
 - `aria-medium-base` ([huggingface](https://huggingface.co/loubb/aria-medium-base), [direct-download](https://huggingface.co/loubb/aria-medium-base/resolve/main/model.safetensors?download=true))
-- `aria-medium-gen` ([huggingface](https://example.com/), [direct-download](https://example.com/))
-- `aria-medium-embedding` ([huggingface](https://example.com/), [direct-download](https://example.com/))
+- `aria-medium-gen`([huggingface](https://huggingface.co/loubb/aria-medium-gen), [direct-download](https://huggingface.co/loubb/aria-medium-gen/resolve/main/model.safetensors?download=true)) 
+- `aria-medium-embedding`([huggingface](https://huggingface.co/loubb/aria-medium-embedding), [direct-download](https://huggingface.co/loubb/aria-medium-embedding/resolve/main/model.safetensors?download=true)) 
 
 ### Inference (Prompt Continuation)
 
