@@ -25,24 +25,24 @@ from aria.inference.model_mlx import TransformerLM
 from aria.model import ModelConfig
 from aria.config import load_model_config
 
-# TODO: Investigate DTYPE=mx.float16 (speedup?)
 DTYPE = mx.float32
 MAX_SEQ_LEN = 2048
-PREFILL_CHUNK_SIZE = 32
+PREFILL_CHUNK_SIZE_L = 128
+PREFILL_CHUNK_SIZE = 16
 RECALC_DUR_PREFILL_CHUNK_SIZE = 8
-RECALC_DUR_BUFFER_MS = 50
+RECALC_DUR_BUFFER_MS = 100
 
 BEAM_WIDTH = 3
 TIME_TOK_WEIGHTING = -5
-FIRST_ONSET_BUFFER_MS = -150  # Controls onset timing for first generated note
+FIRST_ONSET_BUFFER_MS = -200  # Controls onset timing for first generated note
 
 # HARDWARE: Decoded logits are masked for durations < MIN_NOTE_LEN_MS
 # HARDWARE: Sends early off-msg if pitch is on MIN_NOTE_DELTA_MS before on-msg
 # HARDWARE: All messages are sent HARDWARE_LATENCY_MS early
-MIN_NOTE_DELTA_MS = 50
-MIN_NOTE_LEN_MS = 100
-HARDWARE_LATENCY_MS = 100
-MAX_STREAM_DELAY_MS = 50
+MIN_NOTE_DELTA_MS = 100
+MIN_NOTE_LEN_MS = 50
+HARDWARE_LATENCY_MS = 150  # There is a bug with how this works
+MAX_STREAM_DELAY_MS = 25
 
 file_handler = logging.FileHandler("./demo.log", mode="w")
 file_handler.setLevel(logging.DEBUG)
@@ -231,7 +231,13 @@ def compile_model(model: TransformerLM):
     )
 
     model = _compile_decode_one(model=model, logger=logger)
-    for chunk_size in list({PREFILL_CHUNK_SIZE, RECALC_DUR_PREFILL_CHUNK_SIZE}):
+    for chunk_size in list(
+        {
+            # PREFILL_CHUNK_SIZE_L,
+            PREFILL_CHUNK_SIZE,
+            RECALC_DUR_PREFILL_CHUNK_SIZE,
+        }
+    ):
         model = _compile_prefill(
             model=model, logger=logger, chunk_size=chunk_size
         )
@@ -374,7 +380,7 @@ def decode_first_tokens(
 ):
     logger = get_logger("GENERATE")
 
-    buffer_ms = FIRST_ONSET_BUFFER_MS
+    buffer_ms = FIRST_ONSET_BUFFER_MS - HARDWARE_LATENCY_MS
     time_tok_id = tokenizer.tok_to_id[tokenizer.time_tok]
     eos_tok_id = tokenizer.tok_to_id[tokenizer.eos_tok]
     dim_tok_id = tokenizer.tok_to_id[tokenizer.dim_tok]
@@ -515,6 +521,10 @@ def decode_tokens(
         f"Using sampling parameters: temperature={temperature}, min_p={min_p}"
     )
 
+    # TODO: This seems to fix issues?
+    if control_sentinel.is_set():
+        control_sentinel.clear()
+
     while (not control_sentinel.is_set()) and idx < MAX_SEQ_LEN:
         decode_one_start_time_s = time.time()
         prev_tok_id = enc_seq[0, idx - 1]
@@ -550,14 +560,14 @@ def decode_tokens(
         )
 
         if next_token == tokenizer.eos_tok:
-            logger.info("EOS token produced, exiting...")
+            logger.info("EOS token produced")
             generated_tokens_queue.put(next_token)
             return
         else:
             generated_tokens_queue.put(next_token)
             idx += 1
 
-    logger.info("Seen exit signal")
+    logger.info(f"Finished generating: {idx}")
     generated_tokens_queue.put(None)
 
 
@@ -691,7 +701,7 @@ def decode_tokens_to_midi(
                 return
 
             elif tok is None:
-                logger.info(f"Seen exit signal")
+                logger.info(f"Seen exit signal: Sentinel")
                 return
 
             logger.debug(f"Seen token: {tok}")
@@ -754,7 +764,6 @@ def decode_tokens_to_midi(
         note_buffer = []
 
 
-# TODO: Refactor for readability
 def stream_midi(
     inbound_midi_msg_queue: queue.Queue,
     msgs: list[mido.Message],
@@ -1055,11 +1064,30 @@ def chunked_prefill(
         num_prefill_toks = len(prefill_toks)
         logger.debug(f"Tokens to prefill: {len(prefill_toks)}")
 
-        if num_prefill_toks > PREFILL_CHUNK_SIZE:
+        if num_prefill_toks > PREFILL_CHUNK_SIZE_L:
+            logger.debug(
+                f"Prefilling {PREFILL_CHUNK_SIZE_L} tokens from idx={prefill_idx}"
+            )
+            mx.eval(
+                prefill(
+                    model,
+                    idxs=mx.array(
+                        [prefill_toks[:PREFILL_CHUNK_SIZE_L]],
+                        dtype=mx.int32,
+                    ),
+                    input_pos=mx.arange(
+                        prefill_idx,
+                        prefill_idx + PREFILL_CHUNK_SIZE_L,
+                        dtype=mx.int32,
+                    ),
+                )
+            )
+            prev_context = curr_context[: prefill_idx + PREFILL_CHUNK_SIZE_L]
+
+        elif num_prefill_toks > PREFILL_CHUNK_SIZE:
             logger.debug(
                 f"Prefilling {PREFILL_CHUNK_SIZE} tokens from idx={prefill_idx}"
             )
-
             mx.eval(
                 prefill(
                     model,
@@ -1131,7 +1159,9 @@ def continuous_prefill(
                     msgs.append(msg)
                     msg_cnt += 1
 
-        if (msg_cnt >= 10 or seen_sentinel) and len(msgs) > 30:
+        # TODO: This workaround is not good enough. Instead just loop is
+        # curr context has no notes.
+        if (msg_cnt >= 10 or seen_sentinel) and len(msgs) > 75:
             midi = convert_msgs_to_midi(msgs=msgs)
             midi_dict = MidiDict(**midi_to_dict(midi))
             curr_context = tokenizer.encode(
@@ -1193,6 +1223,7 @@ def capture_and_update_kv(
     return msgs, prev_context, first_on_msg_epoch_ms, num_active_pitches
 
 
+# TODO: Change MIDI-through logic, this is not the best way to mock playing
 def capture_midi_input(
     midi_input_port: str,
     control_sentinel: threading.Event,
@@ -1209,8 +1240,6 @@ def capture_midi_input(
     first_on_msg_epoch_ms = None
     prev_msg_epoch_time_ms = first_msg_epoch_time_ms  #
 
-    logger.info(f"Listening on MIDI port: '{midi_input_port}'")
-    logger.info(f"Using MIDI control signal: {midi_control_signal}")
     if midi_through_port is not None:
         logger.info(f"Sending through on MIDI port: '{midi_through_port}'")
 
@@ -1221,6 +1250,15 @@ def capture_midi_input(
             if midi_through_port
             else None
         )
+        logger.info(f"Listening on MIDI port: '{midi_input_port}'")
+        logger.info(f"Ready to capture MIDI events")
+
+        if midi_control_signal is not None:
+            logger.info(
+                f"Commencing generation upon keypress or MIDI control: {midi_control_signal}"
+            )
+        else:
+            logger.info(f"Commencing generation upon keypress")
 
         while not control_sentinel.is_set() or (
             wait_for_close and active_pitches
@@ -1285,18 +1323,18 @@ def capture_midi_input(
             if midi_through is not None:
                 midi_through.send(msg)
 
-        while active_pitches:
-            pitch = active_pitches.pop()
-            msg = mido.Message(
-                type="note_on",
-                note=pitch,
-                velocity=0,
-                channel=midi_capture_channel,
-                time=0,
-            )
-            received_messages_queue.put(msg)
-            if midi_through is not None:
-                midi_through.send(msg)
+            while active_pitches:
+                pitch = active_pitches.pop()
+                msg = mido.Message(
+                    type="note_on",
+                    note=pitch,
+                    velocity=0,
+                    channel=midi_capture_channel,
+                    time=0,
+                )
+                received_messages_queue.put(msg)
+                if midi_through is not None:
+                    midi_through.send(msg)
 
         # Turn off pedal
         msg = mido.Message(
@@ -1320,7 +1358,7 @@ def play_midi_file(midi_port: str, midi_path: str):
 
     midi_dict = MidiDict.from_midi(midi_path)
 
-    if MIN_NOTE_DELTA_MS:
+    if MIN_NOTE_DELTA_MS > 0:
         midi_dict.enforce_gaps(min_gap_ms=MIN_NOTE_DELTA_MS)
 
     mid = midi_dict.to_midi()
@@ -1352,7 +1390,7 @@ def listen_for_keypress_control_signal(
 ):
     logger = get_logger("KEYBOARD")
     while True:
-        time.sleep(3)
+        time.sleep(5)
         _input = input()
         logger.info(f'Keypress seen "{_input}"')
         if _input == "":
@@ -1363,12 +1401,12 @@ def listen_for_keypress_control_signal(
             return
 
 
-# TODO: Get rid of logic for end sentinel
-def listen_for_midi_control_signal(
+def _listen(
     midi_input_port: str,
-    control_sentinel: threading.Event,
+    logger: logging.Logger,
     midi_control_signal: int | None = None,
 ):
+    logger.info("Listening...")
     with mido.open_input(midi_input_port) as midi_input:
         while True:
             msg = midi_input.receive(block=False)
@@ -1379,7 +1417,25 @@ def listen_for_midi_control_signal(
                 and msg.control == midi_control_signal
                 and msg.value >= 64
             ):
-                control_sentinel.set()
+                return
+
+
+def listen_for_midi_control_signal(
+    midi_input_port: str,
+    control_sentinel: threading.Event,
+    midi_control_signal: int | None = None,
+):
+    logger = get_logger("MIDI-CONTROL")
+
+    while True:
+        _listen(
+            midi_input_port=midi_input_port,
+            midi_control_signal=midi_control_signal,
+            logger=logger,
+        )
+        control_sentinel.set()
+        logger.info("Seen MIDI control signal")
+        time.sleep(5)
 
 
 def parse_args():
@@ -1443,16 +1499,15 @@ def main(args):
 
     assert (args.midi_path and os.path.isfile(args.midi_path)) or args.midi_in
     if args.midi_path:
-        # TODO: Don't hardcode this
         midi_input_port = "IAC Driver Bus 1"
         play_file_thread = threading.Thread(
             target=play_midi_file,
             args=(midi_input_port, args.midi_path),
             daemon=True,
         )
-        play_file_thread.start()
     else:
         midi_input_port = args.midi_in
+        play_file_thread = None
 
     control_sentinel = threading.Event()
     generate_ending_sentinel = threading.Event()
@@ -1464,7 +1519,9 @@ def main(args):
     midi_control_thread = threading.Thread(
         target=listen_for_midi_control_signal,
         kwargs={
-            "midi_input_port": midi_input_port,
+            "midi_input_port": (
+                args.midi_in if args.midi_in else midi_input_port
+            ),
             "control_sentinel": control_sentinel,
             "midi_control_signal": args.midi_control_signal,
         },
@@ -1472,6 +1529,9 @@ def main(args):
     )
     keypress_thread.start()
     midi_control_thread.start()
+
+    if play_file_thread is not None:
+        play_file_thread.start()
 
     msgs, prev_context, first_on_msg_epoch_ms, num_active_pitches = (
         capture_and_update_kv(
@@ -1560,6 +1620,4 @@ if __name__ == "__main__":
     try:
         main(args)
     except KeyboardInterrupt:
-        if args.midi_out:
-            exit(args.midi_out)
-        raise
+        exit(args.midi_out)
