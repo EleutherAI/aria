@@ -17,32 +17,40 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from contextlib import ExitStack
-
 from ariautils.midi import MidiDict, midi_to_dict
 from ariautils.tokenizer import AbsTokenizer
 from aria.inference.model_mlx import TransformerLM
 from aria.model import ModelConfig
 from aria.config import load_model_config
 
-# TODO: Investigate DTYPE=mx.float16 (speedup?)
 DTYPE = mx.float32
 MAX_SEQ_LEN = 2048
-PREFILL_CHUNK_SIZE = 32
+PREFILL_CHUNK_SIZE_L = 128
+PREFILL_CHUNK_SIZE = 16
 RECALC_DUR_PREFILL_CHUNK_SIZE = 8
-RECALC_DUR_BUFFER_MS = 50
+RECALC_DUR_BUFFER_MS = 100
 
 BEAM_WIDTH = 3
 TIME_TOK_WEIGHTING = -5
-FIRST_ONSET_BUFFER_MS = -150  # Controls onset timing for first generated note
+FIRST_ONSET_BUFFER_MS = -100  # Controls onset timing for first generated note
 
 # HARDWARE: Decoded logits are masked for durations < MIN_NOTE_LEN_MS
 # HARDWARE: Sends early off-msg if pitch is on MIN_NOTE_DELTA_MS before on-msg
-# HARDWARE: All messages are sent HARDWARE_LATENCY_MS early
-MIN_NOTE_DELTA_MS = 50
-MIN_NOTE_LEN_MS = 100
-HARDWARE_LATENCY_MS = 100
-MAX_STREAM_DELAY_MS = 50
+# HARDWARE: All messages are sent HARDWARE_OUTPUT_LATENCY_MS early
+
+# C4DM Disklavier:
+# MIN_NOTE_DELTA_MS = 40
+# MIN_NOTE_LEN_MS = 50
+# HARDWARE_INPUT_LATENCY_MS = 50
+# HARDWARE_OUTPUT_LATENCY_MS = 150
+
+# Pianoteq
+MIN_NOTE_DELTA_MS = 0
+MIN_NOTE_LEN_MS = 0
+HARDWARE_INPUT_LATENCY_MS = 0
+HARDWARE_OUTPUT_LATENCY_MS = 0
+
+MAX_STREAM_DELAY_MS = 25
 
 file_handler = logging.FileHandler("./demo.log", mode="w")
 file_handler.setLevel(logging.DEBUG)
@@ -150,13 +158,15 @@ def _compile_prefill(
 
     compile_start_time_s = time.time()
     logger.info(f"Compiling prefill (chunk_size={chunk_size})")
-    for _start_idx in range(0, MAX_SEQ_LEN, chunk_size * 4):
+    for _ in range(5):
         mx.eval(
             prefill(
                 model,
                 idxs=mx.ones([1, chunk_size], dtype=mx.int32),
                 input_pos=mx.arange(
-                    _start_idx, _start_idx + chunk_size, dtype=mx.int32
+                    MAX_SEQ_LEN - (chunk_size + 1),
+                    MAX_SEQ_LEN - 1,
+                    dtype=mx.int32,
                 ),
             )
         )
@@ -190,12 +200,12 @@ def _compile_decode_one(
     # Don't need to explicitly compile with mlx, instead we are just precalculating
     # the computation graphs for different shapes
     compile_start_time_s = time.time()
-    for _start_idx in range(0, MAX_SEQ_LEN, 4):
+    for _ in range(5):
         mx.eval(
             decode_one(
                 model,
                 idxs=mx.array([[random.randint(0, 20)]], dtype=mx.int32),
-                input_pos=mx.array([_start_idx], dtype=mx.int32),
+                input_pos=mx.array([MAX_SEQ_LEN - 1], dtype=mx.int32),
             ),
         )
     logger.info(
@@ -231,7 +241,13 @@ def compile_model(model: TransformerLM):
     )
 
     model = _compile_decode_one(model=model, logger=logger)
-    for chunk_size in list({PREFILL_CHUNK_SIZE, RECALC_DUR_PREFILL_CHUNK_SIZE}):
+    for chunk_size in list(
+        {
+            PREFILL_CHUNK_SIZE_L,
+            PREFILL_CHUNK_SIZE,
+            RECALC_DUR_PREFILL_CHUNK_SIZE,
+        }
+    ):
         model = _compile_prefill(
             model=model, logger=logger, chunk_size=chunk_size
         )
@@ -374,7 +390,8 @@ def decode_first_tokens(
 ):
     logger = get_logger("GENERATE")
 
-    buffer_ms = FIRST_ONSET_BUFFER_MS
+    # buffer_ms determines how far in the past to start generating notes
+    buffer_ms = FIRST_ONSET_BUFFER_MS - HARDWARE_OUTPUT_LATENCY_MS
     time_tok_id = tokenizer.tok_to_id[tokenizer.time_tok]
     eos_tok_id = tokenizer.tok_to_id[tokenizer.eos_tok]
     dim_tok_id = tokenizer.tok_to_id[tokenizer.dim_tok]
@@ -388,6 +405,7 @@ def decode_first_tokens(
     num_time_toks_to_add = num_time_toks_required - num_time_toks_in_priming_seq
 
     logger.info(f"Time since first onset: {time_since_first_onset_ms}ms")
+    logger.info(f"Using first note-onset buffer: {buffer_ms}ms")
 
     while num_time_toks_to_add > 0:
         generated_tokens_queue.put(tokenizer.time_tok)
@@ -515,6 +533,9 @@ def decode_tokens(
         f"Using sampling parameters: temperature={temperature}, min_p={min_p}"
     )
 
+    if control_sentinel.is_set():
+        control_sentinel.clear()
+
     while (not control_sentinel.is_set()) and idx < MAX_SEQ_LEN:
         decode_one_start_time_s = time.time()
         prev_tok_id = enc_seq[0, idx - 1]
@@ -550,14 +571,14 @@ def decode_tokens(
         )
 
         if next_token == tokenizer.eos_tok:
-            logger.info("EOS token produced, exiting...")
+            logger.info("EOS token produced")
             generated_tokens_queue.put(next_token)
             return
         else:
             generated_tokens_queue.put(next_token)
             idx += 1
 
-    logger.info("Seen exit signal")
+    logger.info(f"Finished generating: {idx}")
     generated_tokens_queue.put(None)
 
 
@@ -662,7 +683,8 @@ def decode_tokens_to_midi(
     logger = get_logger("DECODE")
 
     assert (
-        first_on_msg_epoch_ms + priming_seq_last_onset_ms < get_epoch_time_ms()
+        first_on_msg_epoch_ms + priming_seq_last_onset_ms
+        < get_epoch_time_ms() + HARDWARE_INPUT_LATENCY_MS
     )
 
     logger.info(f"Priming sequence last onset: {priming_seq_last_onset_ms}")
@@ -691,7 +713,7 @@ def decode_tokens_to_midi(
                 return
 
             elif tok is None:
-                logger.info(f"Seen exit signal")
+                logger.info(f"Seen exit signal: Sentinel")
                 return
 
             logger.debug(f"Seen token: {tok}")
@@ -754,7 +776,6 @@ def decode_tokens_to_midi(
         note_buffer = []
 
 
-# TODO: Refactor for readability
 def stream_midi(
     inbound_midi_msg_queue: queue.Queue,
     msgs: list[mido.Message],
@@ -769,7 +790,7 @@ def stream_midi(
         f"Sending generated messages on MIDI port: '{midi_output_port}'"
     )
     logger.info(
-        f"Applying hardware latency adjustment: {HARDWARE_LATENCY_MS}ms"
+        f"Applying hardware output latency adjustment: {HARDWARE_OUTPUT_LATENCY_MS}ms"
     )
 
     active_pitch_uuid = {}
@@ -799,8 +820,9 @@ def stream_midi(
                 break
 
             while midi_msgs:
+                # Messages are sent HARDWARE_OUTPUT_LATENCY_MS early
                 latency_adjusted_epoch_time_ms = (
-                    get_epoch_time_ms() + HARDWARE_LATENCY_MS
+                    get_epoch_time_ms() + HARDWARE_OUTPUT_LATENCY_MS
                 )
                 msg = midi_msgs[0]
 
@@ -1055,11 +1077,30 @@ def chunked_prefill(
         num_prefill_toks = len(prefill_toks)
         logger.debug(f"Tokens to prefill: {len(prefill_toks)}")
 
-        if num_prefill_toks > PREFILL_CHUNK_SIZE:
+        if num_prefill_toks > PREFILL_CHUNK_SIZE_L:
+            logger.debug(
+                f"Prefilling {PREFILL_CHUNK_SIZE_L} tokens from idx={prefill_idx}"
+            )
+            mx.eval(
+                prefill(
+                    model,
+                    idxs=mx.array(
+                        [prefill_toks[:PREFILL_CHUNK_SIZE_L]],
+                        dtype=mx.int32,
+                    ),
+                    input_pos=mx.arange(
+                        prefill_idx,
+                        prefill_idx + PREFILL_CHUNK_SIZE_L,
+                        dtype=mx.int32,
+                    ),
+                )
+            )
+            prev_context = curr_context[: prefill_idx + PREFILL_CHUNK_SIZE_L]
+
+        elif num_prefill_toks > PREFILL_CHUNK_SIZE:
             logger.debug(
                 f"Prefilling {PREFILL_CHUNK_SIZE} tokens from idx={prefill_idx}"
             )
-
             mx.eval(
                 prefill(
                     model,
@@ -1131,19 +1172,22 @@ def continuous_prefill(
                     msgs.append(msg)
                     msg_cnt += 1
 
-        if (msg_cnt >= 10 or seen_sentinel) and len(msgs) > 30:
+        if msg_cnt >= 10 or seen_sentinel:
             midi = convert_msgs_to_midi(msgs=msgs)
             midi_dict = MidiDict(**midi_to_dict(midi))
-            curr_context = tokenizer.encode(
-                tokenizer.tokenize(midi_dict, add_dim_tok=False)
-            )
-            prev_context = chunked_prefill(
-                model=model,
-                tokenizer=tokenizer,
-                prev_context=prev_context,
-                curr_context=curr_context,
-                full=False,
-            )
+
+            if len(midi_dict.note_msgs) > 0:
+                curr_context = tokenizer.encode(
+                    tokenizer.tokenize(midi_dict, add_dim_tok=False)
+                )
+                prev_context = chunked_prefill(
+                    model=model,
+                    tokenizer=tokenizer,
+                    prev_context=prev_context,
+                    curr_context=curr_context,
+                    full=False,
+                )
+
             msg_cnt = 0
         else:
             time.sleep(0.01)
@@ -1160,7 +1204,6 @@ def capture_and_update_kv(
     midi_input_port: str,
     midi_capture_channel: int,
     midi_control_signal: int | None = None,
-    midi_through_port: str | None = None,
     first_msg_epoch_time_ms: int | None = None,
 ):
     received_messages_queue = queue.Queue()
@@ -1173,7 +1216,6 @@ def capture_and_update_kv(
             "received_messages_queue": received_messages_queue,
             "midi_capture_channel": midi_capture_channel,
             "midi_control_signal": midi_control_signal,
-            "midi_through_port": midi_through_port,
             "first_msg_epoch_time_ms": first_msg_epoch_time_ms,
             "results_queue": results_queue,
             "wait_for_close": wait_for_close,
@@ -1200,27 +1242,31 @@ def capture_midi_input(
     midi_capture_channel: int,
     results_queue: queue.Queue,
     midi_control_signal: int | None = None,
-    midi_through_port: str | None = None,
     first_msg_epoch_time_ms: int | None = None,
     wait_for_close: bool = False,
 ):
     logger = get_logger("CAPTURE")
     active_pitches = set()
     first_on_msg_epoch_ms = None
-    prev_msg_epoch_time_ms = first_msg_epoch_time_ms  #
+    prev_msg_epoch_time_ms = first_msg_epoch_time_ms
 
     logger.info(f"Listening on MIDI port: '{midi_input_port}'")
-    logger.info(f"Using MIDI control signal: {midi_control_signal}")
-    if midi_through_port is not None:
-        logger.info(f"Sending through on MIDI port: '{midi_through_port}'")
+    logger.info(f"Ready to capture MIDI events")
 
-    with ExitStack() as stack:
-        midi_input = stack.enter_context(mido.open_input(midi_input_port))
-        midi_through = (
-            stack.enter_context(mido.open_output(midi_through_port))
-            if midi_through_port
-            else None
-        )
+    # Clear undesired buffered notes
+    with mido.open_input(midi_input_port) as midi_input:
+        while True:
+            msg = midi_input.receive(block=False)
+            if msg is None:
+                break
+
+    with mido.open_input(midi_input_port) as midi_input:
+        if midi_control_signal is not None:
+            logger.info(
+                f"Commencing generation upon keypress or MIDI control: {midi_control_signal}"
+            )
+        else:
+            logger.info(f"Commencing generation upon keypress")
 
         while not control_sentinel.is_set() or (
             wait_for_close and active_pitches
@@ -1249,16 +1295,14 @@ def capture_midi_input(
             ) or msg.type == "note_off":
                 active_pitches.discard(msg.note)
                 received_messages_queue.put(msg)
-                if midi_through is not None:
-                    midi_through.send(msg)
             elif msg.type == "note_on" and msg.velocity > 0:
                 if first_on_msg_epoch_ms is None:
-                    first_on_msg_epoch_ms = get_epoch_time_ms()
+                    first_on_msg_epoch_ms = (
+                        get_epoch_time_ms() - HARDWARE_INPUT_LATENCY_MS
+                    )
 
                 active_pitches.add(msg.note)
                 received_messages_queue.put(msg)
-                if midi_through is not None:
-                    midi_through.send(msg)
             elif msg.type == "control_change" and msg.control == 64:
                 received_messages_queue.put(msg)
             elif (
@@ -1282,21 +1326,17 @@ def capture_midi_input(
                 time=get_epoch_time_ms() - prev_msg_epoch_time_ms,
             )
             received_messages_queue.put(msg)
-            if midi_through is not None:
-                midi_through.send(msg)
 
-        while active_pitches:
-            pitch = active_pitches.pop()
-            msg = mido.Message(
-                type="note_on",
-                note=pitch,
-                velocity=0,
-                channel=midi_capture_channel,
-                time=0,
-            )
-            received_messages_queue.put(msg)
-            if midi_through is not None:
-                midi_through.send(msg)
+            while active_pitches:
+                pitch = active_pitches.pop()
+                msg = mido.Message(
+                    type="note_on",
+                    note=pitch,
+                    velocity=0,
+                    channel=midi_capture_channel,
+                    time=0,
+                )
+                received_messages_queue.put(msg)
 
         # Turn off pedal
         msg = mido.Message(
@@ -1307,43 +1347,48 @@ def capture_midi_input(
             time=0,
         )
         received_messages_queue.put(msg)
-        if midi_through is not None:
-            midi_through.send(msg)
-
-        received_messages_queue.put(None)  # Sentinel
+        received_messages_queue.put(None)
         results_queue.put((first_on_msg_epoch_ms, num_active_pitches))
 
 
-def play_midi_file(midi_port: str, midi_path: str):
+def play_midi_file(
+    midi_through_port: str,
+    midi_in_port: str,
+    midi_path: str,
+    currently_streaming_sentinel: threading.Event,
+):
+    def _send_delayed_message(port, msg):
+        port.send(msg)
+        logger.debug(f"SENT: {msg}")
+
     logger = get_logger("FILE")
-    logger.info(f"Playing file at {midi_path} on MIDI port '{midi_port}'")
+    logger.info(f"Playing {midi_path} on through-port '{midi_through_port}'")
+    logger.info(
+        f"Simulating input to port '{midi_in_port}' with {HARDWARE_INPUT_LATENCY_MS}ms latency"
+    )
 
-    midi_dict = MidiDict.from_midi(midi_path)
-
-    if MIN_NOTE_DELTA_MS:
+    if MIN_NOTE_DELTA_MS > 0:
+        midi_dict = MidiDict.from_midi(midi_path)
         midi_dict.enforce_gaps(min_gap_ms=MIN_NOTE_DELTA_MS)
-
-    mid = midi_dict.to_midi()
+        mid = midi_dict.to_midi()
+    else:
+        mid = mido.MidiFile(midi_path)
 
     time.sleep(1)
-    active_pitches = []
-    with mido.open_output(midi_port) as output_port:
-        for msg in mid.play():
-            if msg.type == "note_on" and msg.velocity > 0:
-                if msg.note in active_pitches:
-                    _off_msg = copy.deepcopy(msg)
-                    _off_msg.velocity = 0
-                    output_port.send(_off_msg)
-                else:
-                    active_pitches.append(msg.note)
-            elif msg.type == "note_off" or (
-                msg.type == "note_on" and msg.velocity == 0
-            ):
-                if msg.note in active_pitches:
-                    active_pitches.remove(msg.note)
+    with mido.open_output(midi_through_port) as through_port:
+        with mido.open_output(midi_in_port) as in_port:
+            for msg in mid.play():
+                if currently_streaming_sentinel.is_set() is False and not (
+                    msg.type == "control_change" and msg.control == 64
+                ):
+                    through_port.send(msg)
 
-            logger.debug(f"{msg}")
-            output_port.send(msg)
+                timer = threading.Timer(
+                    interval=HARDWARE_INPUT_LATENCY_MS / 1000.0,
+                    function=_send_delayed_message,
+                    args=[in_port, msg],
+                )
+                timer.start()
 
 
 def listen_for_keypress_control_signal(
@@ -1352,7 +1397,7 @@ def listen_for_keypress_control_signal(
 ):
     logger = get_logger("KEYBOARD")
     while True:
-        time.sleep(3)
+        time.sleep(5)
         _input = input()
         logger.info(f'Keypress seen "{_input}"')
         if _input == "":
@@ -1363,12 +1408,12 @@ def listen_for_keypress_control_signal(
             return
 
 
-# TODO: Get rid of logic for end sentinel
-def listen_for_midi_control_signal(
+def _listen(
     midi_input_port: str,
-    control_sentinel: threading.Event,
+    logger: logging.Logger,
     midi_control_signal: int | None = None,
 ):
+    logger.info("Listening...")
     with mido.open_input(midi_input_port) as midi_input:
         while True:
             msg = midi_input.receive(block=False)
@@ -1379,7 +1424,25 @@ def listen_for_midi_control_signal(
                 and msg.control == midi_control_signal
                 and msg.value >= 64
             ):
-                control_sentinel.set()
+                return
+
+
+def listen_for_midi_control_signal(
+    midi_input_port: str,
+    control_sentinel: threading.Event,
+    midi_control_signal: int | None = None,
+):
+    logger = get_logger("MIDI-CONTROL")
+
+    while True:
+        _listen(
+            midi_input_port=midi_input_port,
+            midi_control_signal=midi_control_signal,
+            logger=logger,
+        )
+        control_sentinel.set()
+        logger.info("Seen MIDI control signal")
+        time.sleep(5)
 
 
 def parse_args():
@@ -1431,9 +1494,6 @@ def parse_args():
     return argp.parse_args()
 
 
-# TODO: Need functionality for handing case where we run out of model context
-
-
 def main(args):
     args = parse_args()
     logger = get_logger()
@@ -1442,20 +1502,32 @@ def main(args):
     model = compile_model(model=model)
 
     assert (args.midi_path and os.path.isfile(args.midi_path)) or args.midi_in
-    if args.midi_path:
-        # TODO: Don't hardcode this
-        midi_input_port = "IAC Driver Bus 1"
-        play_file_thread = threading.Thread(
-            target=play_midi_file,
-            args=(midi_input_port, args.midi_path),
-            daemon=True,
-        )
-        play_file_thread.start()
-    else:
-        midi_input_port = args.midi_in
 
     control_sentinel = threading.Event()
     generate_ending_sentinel = threading.Event()
+    currently_generating_sentinel = threading.Event()
+
+    if args.midi_through:
+        close_notes(args.midi_through)
+    if args.midi_out:
+        close_notes(args.midi_out)
+
+    if args.midi_path:
+        midi_input_port = "IAC Driver Bus 1"
+        play_file_thread = threading.Thread(
+            target=play_midi_file,
+            args=(
+                args.midi_through,
+                midi_input_port,
+                args.midi_path,
+                currently_generating_sentinel,
+            ),
+            daemon=True,
+        )
+    else:
+        midi_input_port = args.midi_in
+        play_file_thread = None
+
     keypress_thread = threading.Thread(
         target=listen_for_keypress_control_signal,
         args=[control_sentinel, generate_ending_sentinel],
@@ -1464,7 +1536,9 @@ def main(args):
     midi_control_thread = threading.Thread(
         target=listen_for_midi_control_signal,
         kwargs={
-            "midi_input_port": midi_input_port,
+            "midi_input_port": (
+                args.midi_in if args.midi_in else midi_input_port
+            ),
             "control_sentinel": control_sentinel,
             "midi_control_signal": args.midi_control_signal,
         },
@@ -1472,6 +1546,9 @@ def main(args):
     )
     keypress_thread.start()
     midi_control_thread.start()
+
+    if play_file_thread is not None:
+        play_file_thread.start()
 
     msgs, prev_context, first_on_msg_epoch_ms, num_active_pitches = (
         capture_and_update_kv(
@@ -1482,7 +1559,6 @@ def main(args):
             wait_for_close=args.wait_for_close,
             midi_input_port=midi_input_port,
             midi_control_signal=args.midi_control_signal,
-            midi_through_port=args.midi_through,
             midi_capture_channel=0,
         )
     )
@@ -1490,6 +1566,7 @@ def main(args):
     curr_midi_channel = 0
     while True:
         control_sentinel.clear()
+        currently_generating_sentinel.set()
         msgs = stream_msgs(
             model=model,
             tokenizer=tokenizer,
@@ -1513,6 +1590,7 @@ def main(args):
         if generate_ending_sentinel.is_set():
             break
         else:
+            currently_generating_sentinel.clear()
             msgs, prev_context, _, num_active_pitches = capture_and_update_kv(
                 model=model,
                 msgs=msgs,
@@ -1521,7 +1599,6 @@ def main(args):
                 wait_for_close=args.wait_for_close,
                 midi_input_port=midi_input_port,
                 midi_control_signal=args.midi_control_signal,
-                midi_through_port=args.midi_through,
                 midi_capture_channel=curr_midi_channel,
                 first_msg_epoch_time_ms=first_on_msg_epoch_ms,
             )
@@ -1548,8 +1625,9 @@ def main(args):
         midi.save(args.save_path)
 
 
-def exit(midi_out_port: str):
+def close_notes(midi_out_port: str):
     with mido.open_output(midi_out_port) as out:
+        out.send(mido.Message(type="control_change", control=64, value=0))
         for note in range(128):
             out.send(mido.Message("note_off", note=note, velocity=0))
 
@@ -1560,6 +1638,4 @@ if __name__ == "__main__":
     try:
         main(args)
     except KeyboardInterrupt:
-        if args.midi_out:
-            exit(args.midi_out)
-        raise
+        close_notes(args.midi_out)
