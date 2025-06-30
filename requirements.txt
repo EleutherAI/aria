@@ -1,6 +1,0 @@
-ariautils @ git+https://github.com/EleutherAI/aria-utils.git
-torch >= 2.3
-accelerate 
-jsonlines
-tqdm
-safetensors

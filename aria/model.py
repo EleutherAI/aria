@@ -1,4 +1,4 @@
-"""Training implementation."""
+"""Training model implementation."""
 
 from dataclasses import dataclass
 from typing import Optional
@@ -19,20 +19,23 @@ class ModelConfig:
     drop_p: float
     max_seq_len: int
     grad_checkpoint: bool
+    resid_dropout: float = 0.0
     vocab_size: Optional[int] = None
+    class_size: Optional[int] = None
+    emb_size: Optional[dict] = None
 
     def set_vocab_size(self, vocab_size: int):
         self.vocab_size = vocab_size
 
 
 class FusedEncoderBlock(nn.Module):
-    def __init__(self, model_config: ModelConfig):
+    def __init__(self, model_config: ModelConfig, resid_dropout: float = 0.0):
         super().__init__()
-
         self.drop_p = model_config.drop_p
         self.n_heads = model_config.n_heads
         self.d_head = model_config.d_model // model_config.n_heads
         self.max_seq_len = model_config.max_seq_len
+        self.resid_dropout = resid_dropout
 
         # Attention
         self.mixed_qkv = nn.Linear(
@@ -68,8 +71,11 @@ class FusedEncoderBlock(nn.Module):
         self.norm2 = nn.LayerNorm(model_config.d_model)
 
     def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor):
-        x = x + self._att_block(self.norm1(x), freqs_cis)
-        x = x + self._ff_block(self.norm2(x))
+        att_out = self._att_block(self.norm1(x), freqs_cis)
+        x = x + F.dropout(att_out, p=self.resid_dropout, training=self.training)
+
+        ff_out = self._ff_block(self.norm2(x))
+        x = x + F.dropout(ff_out, p=self.resid_dropout, training=self.training)
 
         return x
 
@@ -115,10 +121,10 @@ class FusedEncoderBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    """Transformer decoder with no language model head.
+    """Transformer decoder without a language model head.
 
     Args:
-        model_config (ModelConfig): Model config settings.
+        model_config (ModelConfig): Model configuration settings.
     """
 
     def __init__(self, model_config: ModelConfig):
@@ -133,28 +139,39 @@ class Transformer(nn.Module):
 
         self.out_layer_norm = nn.LayerNorm(model_config.d_model)
         self.encode_layers = nn.ModuleList()
-        for _ in range(model_config.n_layers):
-            self.encode_layers.append(FusedEncoderBlock(model_config))
+
+        for layer_index in range(model_config.n_layers):
+            if model_config.resid_dropout > 0:
+                layer_dropout = model_config.resid_dropout * (
+                    layer_index / (model_config.n_layers - 1)
+                )
+            else:
+                layer_dropout = 0.0
+
+            self.encode_layers.append(
+                FusedEncoderBlock(model_config, resid_dropout=layer_dropout)
+            )
 
     def forward(
         self,
         src: torch.Tensor,
+        emb: torch.Tensor | None = None,
     ):
-        """Forward pass of Transformer.
+        """Perform a forward pass through the transformer.
 
         Args:
-            src (torch.tensor): Input to encoder block, of shape (batch_size,
-                seq_len, d_model).
-            attn_mask (Optional[torch.tensor]): Attention mask of shape
-                (batch_size, seq_len). Defaults to None.
-            past_kv (Optional[list[KVCache]]): a list of kv caches. The list index
-                corresponds to the layer index.
+            src (torch.Tensor): Input tensor of token indices with shape (batch_size, seq_len).
+            emb (Optional[torch.Tensor]): Optional extra embedding with shape (batch_size, emb_dim).
 
         Returns:
-            torch.tensor: Model outputs with shape (batch_size, seq_len,
-                d_model).
+            torch.Tensor: Output tensor with shape (batch_size, seq_len, d_model).
         """
+
         hidden_states = self.tok_embeddings(src)
+
+        if emb is not None:
+            emb = emb[:, None, :]
+            hidden_states = torch.cat([emb, hidden_states[:, :-1, :]], dim=1)
 
         if self.freqs_cis is None:
             self.freqs_cis = precompute_freqs_cis(
@@ -165,7 +182,7 @@ class Transformer(nn.Module):
             ).to(src.device)
         freqs_cis = self.freqs_cis[: src.shape[1]]
 
-        if self.model_config.grad_checkpoint is True:
+        if self.model_config.grad_checkpoint is True and self.training:
             for layer in self.encode_layers:
 
                 def create_custom_forward(module):
@@ -189,14 +206,15 @@ class Transformer(nn.Module):
 
 
 class TransformerLM(nn.Module):
-    """Transformer decoder with head for language modelling.
+    """Transformer decoder with a language modeling head.
 
     Args:
-        model_config (ModelConfig): Model config settings.
+        model_config (ModelConfig): Model configuration settings (vocab_size must be defined).
     """
 
     def __init__(self, model_config: ModelConfig):
         super().__init__()
+        assert model_config.vocab_size is not None
 
         self.max_seq_len = model_config.max_seq_len
         self.model = Transformer(model_config)
@@ -208,24 +226,153 @@ class TransformerLM(nn.Module):
         self,
         src: torch.Tensor,
     ):
-        """Forward pass of Transformer decoder with LM head.
+        """Compute language modeling logits.
 
         Args:
-            src (torch.tensor): Input to encoder block, of shape (batch_size,
-                seq_len, d_model).
-            attn_mask (Optional[torch.tensor]): Attention mask of shape
-                (batch_size, seq_len). Defaults to None.
-            past_kv (Optional[list[KVCache]]): a list of kv caches. The list index
-                corresponds to the layer index.
+            src (torch.Tensor): Input tensor of token indices with shape (batch_size, seq_len).
 
         Returns:
-            torch.tensor: Forward pass of src through Transformer and LM head.
-                Has shape (batch_size, seq_len, vocab_size).
+            torch.Tensor: Logits with shape (batch_size, seq_len, vocab_size).
         """
+
         hidden = self.model(src)
         logits = self.lm_head(hidden)
 
         return logits
+
+
+class TransformerCL(nn.Module):
+    """Transformer decoder with a classification head.
+
+    Args:
+        model_config (ModelConfig): Model configuration settings (class_size must be defined).
+    """
+
+    def __init__(self, model_config: ModelConfig):
+        super().__init__()
+        assert model_config.class_size is not None
+
+        self.max_seq_len = model_config.max_seq_len
+        self.model = Transformer(model_config)
+        self.class_head = nn.Linear(
+            model_config.d_model, model_config.class_size, bias=False
+        )
+
+    def forward(
+        self,
+        src: torch.Tensor,
+    ):
+        """Compute classification logits.
+
+        Args:
+            src (torch.Tensor): Input tensor of token indices with shape (batch_size, seq_len).
+
+        Returns:
+            torch.Tensor: Classification logits with shape (batch_size, seq_len, class_size).
+        """
+
+        hidden = self.model(src)
+        logits = self.class_head(hidden)
+
+        return logits
+
+
+class TransformerLM_CND(nn.Module):
+    """Transformer decoder with a language modeling head and optional conditioning.
+
+    Args:
+        model_config (ModelConfig): Model configuration settings (vocab_size and emb_size must be defined).
+    """
+
+    def __init__(self, model_config: ModelConfig):
+        super().__init__()
+        assert model_config.vocab_size is not None
+
+        self.max_seq_len = model_config.max_seq_len
+        self.model = Transformer(model_config)
+        self.lm_head = nn.Linear(
+            model_config.d_model, model_config.vocab_size, bias=False
+        )
+        self.embedding_adapter = nn.Linear(
+            model_config.emb_size, model_config.d_model, bias=False
+        )
+
+    def forward(
+        self,
+        src: torch.Tensor,
+        emb: torch.Tensor | None = None,
+    ):
+        """Compute language modeling logits with optional conditioning.
+
+        Args:
+            src (torch.Tensor): Input tensor of token indices with shape (batch_size, seq_len).
+            emb (Optional[torch.Tensor]): Optional conditioning embedding with shape (batch_size, emb_size).
+
+        Returns:
+            torch.Tensor: Logits with shape (batch_size, seq_len, vocab_size).
+                Note that if the emb is provided, the seq_len will be seq_len -1.
+
+        """
+
+        if emb is not None:
+            # Embedding is prepended to sequence via the adapter. We slice the
+            # logits so that the logits format still matches src.
+            emb = self.embedding_adapter(emb)
+            hidden = self.model(src, emb)
+            logits = self.lm_head(hidden)
+
+            return logits[:, 1:, :]
+        else:
+            # Needed for torch dpp error
+            dummy_input = torch.zeros(
+                src.size(0),
+                self.embedding_adapter.in_features,
+                device=src.device,
+            )
+            dummy_output = self.embedding_adapter(dummy_input)
+            dummy_loss = dummy_output.sum() * 0.0
+
+            hidden = self.model(src, None)
+            logits = self.lm_head(hidden)
+            logits = logits + dummy_loss
+
+            return logits
+
+
+class TransformerEMB(nn.Module):
+    """Transformer decoder with an embedding head.
+
+    Args:
+        model_config (ModelConfig): Model configuration settings (emb_size must be defined).
+    """
+
+    def __init__(self, model_config: ModelConfig):
+        super().__init__()
+        assert model_config.emb_size is not None
+
+        self.max_seq_len = model_config.max_seq_len
+        self.model = Transformer(model_config)
+        self.emb_head = nn.Linear(
+            model_config.d_model, model_config.emb_size, bias=False
+        )
+
+    def forward(
+        self,
+        src: torch.Tensor,
+    ):
+        """Compute output embeddings from the transformer.
+
+        Args:
+            src (torch.Tensor): Input tensor of token indices with shape (batch_size, seq_len).
+
+        Returns:
+            torch.Tensor: Output embeddings with shape (batch_size, seq_len, emb_size).
+        """
+
+        hidden = self.model(src)
+        emb = self.emb_head(hidden)
+
+        return emb
 
 
 def precompute_freqs_cis(

@@ -2,220 +2,455 @@
 
 import argparse
 import os
-import re
+import json
 import sys
 
 
-def _parse_sample_args():
-    argp = argparse.ArgumentParser(prog="aria sample")
-    argp.add_argument("-m", help="name of model config file")
-    argp.add_argument("-c", help="path to model checkpoint")
-    argp.add_argument("-p", help="path to midi file")
+def _parse_generate_args():
+    argp = argparse.ArgumentParser(prog="aria generate")
     argp.add_argument(
-        "-temp",
-        help="sampling temperature value",
-        type=float,
-        required=False,
-        default=0.95,
+        "--backend",
+        choices=["torch_cuda", "mlx"],
+        default="torch_cuda",
+        help="backend for inference",
     )
     argp.add_argument(
-        "-top_p",
-        help="sampling top_p value",
-        type=float,
-        required=False,
-        default=0.95,
+        "--checkpoint_path",
+        help="path to model used for decoding",
+        required=True,
     )
     argp.add_argument(
-        "-cfg",
-        help="sampling cfg gamma value",
-        type=float,
-        required=False,
+        "--prompt_midi_path",
+        help="path to midi file",
+        required=True,
     )
     argp.add_argument(
-        "-metadata",
-        nargs=2,
-        metavar=("KEY", "VALUE"),
-        action="append",
-        help="manually add metadata key-value pair when sampling",
+        "--prompt_duration",
+        help="length of the input MIDI prompt, in seconds",
+        type=int,
+        default=15,
     )
     argp.add_argument(
-        "-var",
-        help="number of variations",
+        "--variations",
+        help="number of variations to generate",
         type=int,
         default=1,
     )
     argp.add_argument(
-        "-trunc",
-        help="length (in seconds) of the prompt",
-        type=int,
-        default=20,
-    )
-    argp.add_argument("-e", action="store_true", help="enable force end")
-    argp.add_argument("-l", type=int, help="generation length", default=1024)
-    argp.add_argument(
-        "-guidance_path", type=str, help="path to guidance MIDI", required=False
+        "--temp",
+        help="sampling temperature value",
+        type=float,
+        required=False,
+        default=0.98,
     )
     argp.add_argument(
-        "-guidance_start_ms",
-        help="guidance interval start (ms)",
-        type=int,
+        "--min_p",
+        help="sampling min_p value",
+        type=float,
+        default=0.035,
         required=False,
     )
     argp.add_argument(
-        "-guidance_end_ms",
-        help="guidance interval end (ms)",
-        type=int,
+        "--top_p",
+        help="sampling top_p value",
+        type=float,
         required=False,
     )
-    argp.add_argument("-compile", action="store_true", help="compile cudagraph")
+    argp.add_argument(
+        "--end", action="store_true", help="generate ending for piece"
+    )
+    argp.add_argument(
+        "--length",
+        type=int,
+        help="number of tokens to generate per variation",
+        default=2048,
+    )
+    argp.add_argument(
+        "--compile",
+        action="store_true",
+        help="use torch compiler to generate cudagraph for inference",
+    )
+    argp.add_argument(
+        "--save_dir",
+        type=str,
+        default=".",
+        help="directory to save generated MIDI files",
+    )
 
     return argp.parse_args(sys.argv[2:])
 
 
-def sample(args):
-    """Entrypoint for sampling"""
-
-    from torch.cuda import is_available as cuda_is_available
-    from aria.inference import TransformerLM
-    from aria.model import ModelConfig
-    from aria.config import load_model_config, load_config
-    from aria.tokenizer import InferenceAbsTokenizer
-    from aria.sample import (
-        sample_batch_cfg,
-        sample_batch,
-        get_inference_prompt,
+def _parse_conditioned_generate_args():
+    argp = argparse.ArgumentParser(prog="aria generate")
+    argp.add_argument(
+        "--backend",
+        choices=["torch_cuda", "mlx"],
+        default="torch_cuda",
+        help="backend for inference",
     )
+    argp.add_argument(
+        "--checkpoint_path",
+        help="path to model used for decoding",
+        required=True,
+    )
+    argp.add_argument(
+        "--prompt_midi_path",
+        help="path to midi file",
+        required=True,
+    )
+    argp.add_argument(
+        "--prompt_duration",
+        help="length of the input MIDI prompt, in seconds",
+        type=int,
+        default=15,
+    )
+    argp.add_argument(
+        "--embedding_model_checkpoint_path",
+        help="path to model checkpoint used for embeddings",
+        required=True,
+    )
+    argp.add_argument(
+        "--embedding_midi_path",
+        help="path to MIDI file used for conditioning",
+        required=True,
+    )
+    argp.add_argument(
+        "--variations",
+        help="number of variations to generate",
+        type=int,
+        default=1,
+    )
+    argp.add_argument(
+        "--temp",
+        help="sampling temperature value",
+        type=float,
+        required=False,
+        default=0.98,
+    )
+    argp.add_argument(
+        "--cfg",
+        help="sampling cfg gamma value",
+        type=float,
+        default=1.0,
+    )
+    argp.add_argument(
+        "--min_p",
+        help="sampling min_p value",
+        type=float,
+        default=0.035,
+        required=False,
+    )
+    argp.add_argument(
+        "--top_p",
+        help="sampling top_p value",
+        type=float,
+        required=False,
+    )
+    argp.add_argument(
+        "--end", action="store_true", help="generate ending for piece"
+    )
+    argp.add_argument(
+        "--length",
+        type=int,
+        help="number of tokens to generate per variation",
+        default=2048,
+    )
+    argp.add_argument(
+        "--compile",
+        action="store_true",
+        help="use torch compiler to generate cudagraph for inference",
+    )
+    argp.add_argument(
+        "--save_dir",
+        type=str,
+        default=".",
+        help="directory to save generated MIDI files",
+    )
+
+    return argp.parse_args(sys.argv[2:])
+
+
+def _get_prompt(
+    midi_path: str,
+    prompt_duration_s: int,
+):
     from ariautils.midi import MidiDict
-    from aria.utils import _load_weight
+    from ariautils.tokenizer import AbsTokenizer
+    from aria.inference import get_inference_prompt
 
-    if not cuda_is_available():
-        raise Exception("CUDA device is not available.")
-
-    model_state = _load_weight(args.c, "cuda")
-    model_state = {
-        k.replace("_orig_mod.", ""): v for k, v in model_state.items()
-    }
-
-    manual_metadata = {k: v for k, v in args.metadata} if args.metadata else {}
-    valid_metadata = load_config()["data"]["metadata"]["manual"]
-    for k, v in manual_metadata.copy().items():
-        assert k in valid_metadata.keys(), f"{manual_metadata} is invalid"
-        if v not in valid_metadata[k]:
-            print(f"Ignoring invalid manual metadata: {k}")
-            print(f"Please choose from {valid_metadata[k]}")
-            del manual_metadata[k]
-
-    num_variations = args.var
-    truncate_len = args.trunc
-    force_end = args.e
-    model_name = args.m
-
-    tokenizer = InferenceAbsTokenizer()
-    model_config = ModelConfig(**load_model_config(model_name))
-    model_config.set_vocab_size(tokenizer.vocab_size)
-    model_config.grad_checkpoint = False
-    model = TransformerLM(model_config).cuda()
-
-    try:
-        model.load_state_dict(model_state)
-    except Exception as e:
-        print(
-            "Failed to load model_state. This is likely due to an incompatibility "
-            "between the checkpoint file (-c) and model name/config (-m)."
-        )
-        raise e
-
-    assert args.l > 0, "Generation length must be positive."
-    max_new_tokens = args.l
-
-    # Load and format prompts and metadata
-    midi_dict = MidiDict.from_midi(mid_path=args.p)
-    if args.guidance_path:
-        guidance_midi_dict = MidiDict.from_midi(mid_path=args.guidance_path)
-    else:
-        guidance_midi_dict = None
-
-    for k, v in manual_metadata.items():
-        midi_dict.metadata[k] = v
-
-    print(f"Extracted metadata: {midi_dict.metadata}")
-    print(
-        f"Instruments: {set([MidiDict.get_program_to_instrument()[msg['data']] for msg in midi_dict.instrument_msgs])}"
+    return get_inference_prompt(
+        midi_dict=MidiDict.from_midi(midi_path),
+        tokenizer=AbsTokenizer(),
+        prompt_len_ms=1e3 * prompt_duration_s,
     )
 
-    prompt_seq, guidance_seq = get_inference_prompt(
-        tokenizer=tokenizer,
-        midi_dict=midi_dict,
-        truncate_len=truncate_len,
-        guidance_start_ms=args.guidance_start_ms,
-        guidance_end_ms=args.guidance_end_ms,
-        guidance_midi_dict=guidance_midi_dict,
+
+def _load_embedding_model(checkpoint_path: str):
+    from safetensors.torch import load_file
+
+    from ariautils.tokenizer import AbsTokenizer
+    from aria.model import TransformerEMB, ModelConfig
+    from aria.config import load_model_config
+
+    model_config = ModelConfig(**load_model_config(name="medium-emb"))
+    model_config.set_vocab_size(AbsTokenizer().vocab_size)
+    model = TransformerEMB(model_config)
+
+    state_dict = load_file(filename=checkpoint_path)
+    model.load_state_dict(state_dict=state_dict, strict=True)
+
+    return model
+
+
+def _load_inference_model_torch(
+    checkpoint_path: str,
+    config_name: str,
+    strict: bool = True,
+):
+    from safetensors.torch import load_file
+
+    from ariautils.tokenizer import AbsTokenizer
+    from aria.inference.model_cuda import TransformerLM
+    from aria.model import ModelConfig
+    from aria.config import load_model_config
+
+    model_config = ModelConfig(**load_model_config(name=config_name))
+    model_config.set_vocab_size(AbsTokenizer().vocab_size)
+    model = TransformerLM(model_config)
+
+    state_dict = load_file(filename=checkpoint_path)
+    model.load_state_dict(state_dict=state_dict, strict=strict)
+
+    return model
+
+
+def _load_inference_model_mlx(
+    checkpoint_path: str,
+    config_name: str,
+    strict: bool = True,
+):
+    import mlx.core as mx
+
+    from ariautils.tokenizer import AbsTokenizer
+    from aria.inference.model_mlx import TransformerLM
+    from aria.model import ModelConfig
+    from aria.config import load_model_config
+
+    model_config = ModelConfig(**load_model_config(name=config_name))
+    model_config.set_vocab_size(AbsTokenizer().vocab_size)
+    model = TransformerLM(model_config)
+    model.load_weights(checkpoint_path, strict=strict)
+    mx.eval(model.parameters())
+
+    return model
+
+
+def generate(args):
+    from ariautils.tokenizer import AbsTokenizer
+
+    num_variations = args.variations
+    prompt_duration_s = args.prompt_duration
+    backend = args.backend
+    max_new_tokens = args.length
+
+    assert num_variations > 0
+    assert prompt_duration_s >= 0
+    assert max_new_tokens > 0
+    assert os.path.isdir(args.save_dir)
+
+    tokenizer = AbsTokenizer()
+    prompt = _get_prompt(
+        args.prompt_midi_path,
+        prompt_duration_s=prompt_duration_s,
     )
+    max_new_tokens = min(8096 - len(prompt), max_new_tokens)
 
-    if len(prompt_seq) + args.l > model_config.max_seq_len:
-        print(
-            "WARNING: Required context exceeds max_seq_len supported by model"
-        )
-    prompts = [prompt_seq for _ in range(num_variations)]
+    if backend == "torch_cuda":
+        from torch.cuda import is_available
+        from aria.inference.sample_cuda import sample_batch as sample_batch_t
 
-    samples_dir = os.path.join(os.path.dirname(__file__), "..", "samples")
-    if os.path.isdir(samples_dir) is False:
-        os.mkdir(samples_dir)
-    if guidance_seq:
-        tokenizer.detokenize(guidance_seq).to_midi().save(
-            os.path.join(samples_dir, f"guidance.mid")
+        assert is_available(), "CUDA not available"
+
+        model = _load_inference_model_torch(
+            checkpoint_path=args.checkpoint_path,
+            config_name="medium",
+            strict=False,
         )
-    if args.cfg is not None and guidance_seq is not None:
-        results = sample_batch_cfg(
+        results = sample_batch_t(
             model=model,
             tokenizer=tokenizer,
-            prompts=prompts,
+            prompt=prompt,
+            num_variations=num_variations,
             max_new_tokens=max_new_tokens,
-            cfg_gamma=args.cfg,
-            force_end=force_end,
-            temperature=args.temp,
+            temp=args.temp,
+            force_end=args.end,
             top_p=args.top_p,
+            min_p=args.min_p,
             compile=args.compile,
         )
-    else:
-        results = sample_batch(
+    elif backend == "mlx":
+        from aria.inference.sample_mlx import sample_batch as sample_batch_mlx
+
+        model = _load_inference_model_mlx(
+            checkpoint_path=args.checkpoint_path,
+            config_name="medium",
+            strict=False,
+        )
+        results = sample_batch_mlx(
             model=model,
             tokenizer=tokenizer,
-            prompts=prompts,
+            prompt=prompt,
+            num_variations=num_variations,
             max_new_tokens=max_new_tokens,
-            force_end=force_end,
-            temperature=args.temp,
+            temp=args.temp,
+            force_end=args.end,
             top_p=args.top_p,
-            compile=args.compile,
+            min_p=args.min_p,
         )
 
     for idx, tokenized_seq in enumerate(results):
         res_midi_dict = tokenizer.detokenize(tokenized_seq)
         res_midi = res_midi_dict.to_midi()
-        res_midi.save(os.path.join(samples_dir, f"res_{idx + 1}.mid"))
+        res_midi.save(os.path.join(args.save_dir, f"res_{idx + 1}.mid"))
 
-    print("Results saved to samples/")
+    print(f"Results saved to {os.path.realpath(args.save_dir)}")
+
+
+def _get_embedding(
+    embedding_model_checkpoints_path: str,
+    embedding_midi_path: str,
+):
+    from aria.embedding import get_global_embedding_from_midi
+
+    model = _load_embedding_model(
+        checkpoint_path=embedding_model_checkpoints_path
+    ).cpu()
+    global_embedding = get_global_embedding_from_midi(
+        model=model,
+        midi_path=embedding_midi_path,
+        device="cpu",
+    )
+
+    return global_embedding.tolist()
+
+
+def conditioned_generate(args):
+    from ariautils.tokenizer import AbsTokenizer
+
+    num_variations = args.variations
+    prompt_duration_s = args.prompt_duration
+    backend = args.backend
+    max_new_tokens = args.length
+
+    assert num_variations > 0
+    assert prompt_duration_s >= 0
+    assert max_new_tokens > 0
+    assert os.path.isdir(args.save_dir)
+
+    tokenizer = AbsTokenizer()
+    prompt = _get_prompt(
+        args.prompt_midi_path,
+        prompt_duration_s=prompt_duration_s,
+    )
+    embedding = _get_embedding(
+        embedding_model_checkpoints_path=args.embedding_model_checkpoint_path,
+        embedding_midi_path=args.embedding_midi_path,
+    )
+    max_new_tokens = min(8096 - len(prompt), max_new_tokens)
+
+    if backend == "torch_cuda":
+        from torch.cuda import is_available
+        from aria.inference.sample_cuda import (
+            sample_batch_cfg as sample_batch_cfg_t,
+        )
+
+        assert is_available(), "CUDA not available"
+
+        model = _load_inference_model_torch(
+            checkpoint_path=args.checkpoint_path,
+            config_name="medium-emb",
+            strict=True,
+        )
+        results = sample_batch_cfg_t(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=prompt,
+            num_variations=num_variations,
+            max_new_tokens=max_new_tokens,
+            cfg_gamma=args.cfg,
+            embedding=embedding,
+            temp=args.temp,
+            force_end=args.end,
+            top_p=args.top_p,
+            min_p=args.min_p,
+            compile=args.compile,
+        )
+
+    elif backend == "mlx":
+        from aria.inference.sample_mlx import (
+            sample_batch_cfg as sample_batch_cfg_mlx,
+        )
+
+        model = _load_inference_model_mlx(
+            checkpoint_path=args.checkpoint_path,
+            config_name="medium-emb",
+            strict=True,
+        )
+        results = sample_batch_cfg_mlx(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=prompt,
+            num_variations=num_variations,
+            max_new_tokens=max_new_tokens,
+            cfg_gamma=args.cfg,
+            embedding=embedding,
+            temp=args.temp,
+            force_end=args.end,
+            top_p=args.top_p,
+            min_p=args.min_p,
+        )
+
+    for idx, tokenized_seq in enumerate(results):
+        res_midi_dict = tokenizer.detokenize(tokenized_seq)
+        res_midi = res_midi_dict.to_midi()
+        res_midi.save(os.path.join(args.save_dir, f"res_{idx + 1}.mid"))
+
+    print(f"Results saved to {os.path.realpath(args.save_dir)}")
 
 
 def _parse_midi_dataset_args():
     argp = argparse.ArgumentParser(prog="aria midi-dataset")
-    argp.add_argument("dir", help="directory containing midi files")
-    argp.add_argument("save_path", help="path to save dataset")
-    argp.add_argument("-r", action="store_true", help="recursively search dirs")
     argp.add_argument(
-        "-s", action="store_true", help="shuffle dataset", default=False
+        "dir",
+        help="directory containing midi files",
     )
     argp.add_argument(
-        "-metadata",
+        "save_path",
+        help="path to save dataset",
+    )
+    argp.add_argument(
+        "--recursive",
+        action="store_true",
+        help="recursively search dirs",
+    )
+    argp.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="shuffle dataset",
+    )
+    argp.add_argument(
+        "--split",
+        type=float,
+        help="create train/val split",
+        required=False,
+    )
+    argp.add_argument(
+        "--metadata",
         nargs=2,
         metavar=("KEY", "VALUE"),
         action="append",
         help="manually add metadata key-value pair when building dataset",
     )
-    argp.add_argument(
-        "-split", type=float, help="create train/val split", required=False
-    )
-
     return argp.parse_args(sys.argv[2:])
 
 
@@ -228,10 +463,10 @@ def build_midi_dataset(args):
     MidiDataset.build_to_file(
         dir=args.dir,
         save_path=args.save_path,
-        recur=args.r,
+        recur=args.recursive,
         overwrite=True,
         manual_metadata=manual_metadata,
-        shuffle=args.s,
+        shuffle=args.shuffle,
     )
 
     if args.split:
@@ -243,15 +478,47 @@ def build_midi_dataset(args):
         )
 
 
+# TODO: Add turn - to -- flags
 def _parse_pretrain_dataset_args():
     argp = argparse.ArgumentParser(prog="aria pretrain-dataset")
-    argp.add_argument("-load_path", help="path midi_dict dataset")
-    argp.add_argument("-save_dir", help="path to save dataset")
     argp.add_argument(
-        "-tokenizer_name", help="tokenizer name", choices=["abs", "rel"]
+        "--load_path",
+        help="path midi_dict dataset",
+        required=True,
     )
-    argp.add_argument("-l", help="max sequence length", type=int, default=4096)
-    argp.add_argument("-e", help="num epochs", type=int, default=1)
+    argp.add_argument(
+        "--save_dir",
+        help="path to save dataset",
+        required=True,
+    )
+    argp.add_argument(
+        "--tokenizer_name",
+        help="tokenizer name",
+        choices=["abs", "rel"],
+        required=True,
+    )
+    argp.add_argument(
+        "--seq_len",
+        help="sequence length (tokens)",
+        type=int,
+        default=4096,
+    )
+    argp.add_argument(
+        "--num_epochs",
+        help="number of epochs to build",
+        type=int,
+        default=1,
+    )
+    argp.add_argument(
+        "--sep_sequences",
+        help="start each with a new entry",
+        action="store_true",
+    )
+    argp.add_argument(
+        "--embedding_dataset_path",
+        help="path to embedding dataset - same format as EvaluationDataset",
+        required=False,
+    )
 
     return argp.parse_args(sys.argv[2:])
 
@@ -265,39 +532,24 @@ def build_pretraining_dataset(args):
     elif args.tokenizer_name == "rel":
         tokenizer = RelTokenizer()
 
+    if args.embedding_dataset_path is not None:
+        with open(args.embedding_dataset_path, "r") as f:
+            file_embeddings = {
+                data["metadata"]["abs_load_path"]: data["emb"]
+                for data in map(json.loads, f)
+            }
+
+    else:
+        file_embeddings = None
+
     PretrainingDataset.build(
         tokenizer=tokenizer,
         save_dir=args.save_dir,
-        max_seq_len=args.l,
-        num_epochs=args.e,
+        max_seq_len=args.seq_len,
+        num_epochs=args.num_epochs,
         midi_dataset_path=args.load_path,
-    )
-
-
-def _parse_finetune_dataset_args():
-    argp = argparse.ArgumentParser(prog="aria finetune-dataset")
-    argp.add_argument(
-        "-midi_dataset_path",
-        help="path to midi_dict dataset",
-    )
-    argp.add_argument("-save_dir", help="path to save dataset")
-    argp.add_argument("-l", help="max sequence length", type=int, default=4096)
-    argp.add_argument("-e", help="num epochs", type=int, default=1)
-
-    return argp.parse_args(sys.argv[2:])
-
-
-def build_finetune_dataset(args):
-    from aria.tokenizer import InferenceAbsTokenizer
-    from aria.datasets import FinetuningDataset
-
-    tokenizer = InferenceAbsTokenizer()
-    FinetuningDataset.build(
-        tokenizer=tokenizer,
-        save_dir=args.save_dir,
-        max_seq_len=args.l,
-        num_epochs=args.e,
-        midi_dataset_path=args.midi_dataset_path,
+        separate_sequences=args.sep_sequences,
+        file_embeddings=file_embeddings,
     )
 
 
@@ -308,29 +560,27 @@ def main():
         "command",
         help="command to run",
         choices=(
-            "sample",
+            "generate",
+            "conditioned-generate",
             "midi-dataset",
             "pretrain-dataset",
-            "finetune-dataset",
         ),
     )
 
-    # parse_args defaults to [1:] for args, but you need to
-    # exclude the rest of the args too, or validation will fail
     args = parser.parse_args(sys.argv[1:2])
 
     if not hasattr(args, "command"):
         parser.print_help()
         print("Unrecognized command")
         exit(1)
-    elif args.command == "sample":
-        sample(args=_parse_sample_args())
+    elif args.command == "generate":
+        generate(args=_parse_generate_args())
+    elif args.command == "conditioned-generate":
+        conditioned_generate(args=_parse_conditioned_generate_args())
     elif args.command == "midi-dataset":
         build_midi_dataset(args=_parse_midi_dataset_args())
     elif args.command == "pretrain-dataset":
         build_pretraining_dataset(args=_parse_pretrain_dataset_args())
-    elif args.command == "finetune-dataset":
-        build_finetune_dataset(args=_parse_finetune_dataset_args())
     else:
         print("Unrecognized command")
         parser.print_help()

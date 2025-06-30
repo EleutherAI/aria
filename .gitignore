@@ -167,3 +167,6 @@ fluidsynth/
 tests/test_results
 lightning_logs/
 .vscode/
+paper
+hf
+_scripts
