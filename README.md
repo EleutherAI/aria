@@ -1,8 +1,8 @@
 # Aria
 
-This repository contains training, inference, and evaluation code for the paper [*Scaling Self-Supervised Representation Learning for Symbolic Piano Performance (ISMIR 2025)*](https://example.com/), as well as implementations of our real-time piano continuation demo. *Aria* is a pretrained autoregressive generative model for symbolic music, based on the LLaMA 3.2 (1B) architecture, which was trained on ~60k hours of MIDI transcriptions of expressive solo-piano recordings. Alongside the base model, we are releasing a checkpoint finetuned to improve generative quality, as well as a checkpoint finetuned to produce general-purpose piano MIDI embeddings using a SimCSE-style contrastive training objective.
+This repository contains training, inference, and evaluation code for the paper [*Scaling Self-Supervised Representation Learning for Symbolic Piano Performance (ISMIR 2025)*](https://arxiv.org/abs/2506.23869), as well as implementations of our real-time piano continuation demo. *Aria* is a pretrained autoregressive generative model for symbolic music, based on the LLaMA 3.2 (1B) architecture, which was trained on ~60k hours of MIDI transcriptions of expressive solo-piano recordings. Alongside the base model, we are releasing a checkpoint finetuned to improve generative quality, as well as a checkpoint finetuned to produce general-purpose piano MIDI embeddings using a SimCSE-style contrastive training objective.
 
-📖 Read our [release blog post](https://example.com/) and [paper](https://example.com/)  
+📖 Read our [paper](https://arxiv.org/abs/2506.23869)  
 🤗 Access our models via the [HuggingFace page](https://huggingface.co/loubb/aria-medium-base)  
 📊 Get access to our training dataset [Aria-MIDI](https://huggingface.co/datasets/loubb/aria-midi) and train your own models
 
@@ -58,6 +58,7 @@ from aria.embeddings import get_global_embedding_from_midi
 from aria.model import TransformerEMB, ModelConfig
 from aria.config import load_model_config
 from ariautils.tokenizer import AbsTokenizer
+from safetensors.torch import load_file
 
 # Load model
 model_config = ModelConfig(**load_model_config(name="medium-emb"))
@@ -123,9 +124,9 @@ The Aria project has been kindly supported by EleutherAI, Stability AI, as well 
 ```bibtex
 @inproceedings{bradshawscaling,
   title={Scaling Self-Supervised Representation Learning for Symbolic Piano Performance},
-  author={Bradshaw, Louis and Fan, Honglu and Spangher, Alex and Biderman, Stella and Colton, Simon},
+  author={Bradshaw, Louis and Fan, Honglu and Spangher, Alexander and Biderman, Stella and Colton, Simon},
   booktitle={arXiv preprint},
   year={2025},
-  url={https://arxiv.org/abs/2504.15071}
+  url={https://arxiv.org/abs/2506.23869}
 }
 ```
