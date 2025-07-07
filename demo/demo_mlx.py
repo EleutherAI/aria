@@ -22,7 +22,9 @@ from ariautils.tokenizer import AbsTokenizer
 from aria.inference.model_mlx import TransformerLM
 from aria.model import ModelConfig
 from aria.config import load_model_config
+from aria.run import _get_embedding
 
+EMBEDDING_OFFSET = 0
 DTYPE = mx.float32
 MAX_SEQ_LEN = 2048
 PREFILL_CHUNK_SIZE_L = 128
@@ -32,23 +34,23 @@ RECALC_DUR_BUFFER_MS = 100
 
 BEAM_WIDTH = 3
 TIME_TOK_WEIGHTING = -5
-FIRST_ONSET_BUFFER_MS = -100  # Controls onset timing for first generated not
+FIRST_ONSET_BUFFER_MS = -200  # Controls onset timing for first generated not
 
 # HARDWARE: Decoded logits are masked for durations < MIN_NOTE_LEN_MS
 # HARDWARE: Sends early off-msg if pitch is on MIN_NOTE_DELTA_MS before on-msg
 # HARDWARE: All messages are sent HARDWARE_OUTPUT_LATENCY_MS early
 
 # C4DM Disklavier:
-# MIN_NOTE_DELTA_MS = 40
-# MIN_NOTE_LEN_MS = 100
-# HARDWARE_INPUT_LATENCY_MS = 50
-# HARDWARE_OUTPUT_LATENCY_MS = 120
+MIN_NOTE_DELTA_MS = 40
+MIN_NOTE_LEN_MS = 100
+HARDWARE_INPUT_LATENCY_MS = 50
+HARDWARE_OUTPUT_LATENCY_MS = 120
 
 # Pianoteq
-MIN_NOTE_DELTA_MS = 0
-MIN_NOTE_LEN_MS = 30
-HARDWARE_INPUT_LATENCY_MS = 0
-HARDWARE_OUTPUT_LATENCY_MS = 0
+# MIN_NOTE_DELTA_MS = 0
+# MIN_NOTE_LEN_MS = 30
+# HARDWARE_INPUT_LATENCY_MS = 0
+# HARDWARE_OUTPUT_LATENCY_MS = 0
 
 MAX_STREAM_DELAY_MS = 50
 
@@ -87,6 +89,77 @@ def get_logger(name: str | None = None) -> logging.Logger:
     return logger
 
 
+def parse_args():
+    argp = argparse.ArgumentParser()
+    argp.add_argument("--checkpoint", help="path to model checkpoint")
+    argp.add_argument("--midi_in", required=False, help="MIDI input port")
+    argp.add_argument("--midi_out", required=True, help="MIDI output port")
+    argp.add_argument(
+        "--midi_through",
+        required=False,
+        help="MIDI through port for received input",
+    )
+    argp.add_argument(
+        "--midi_path",
+        required=False,
+        help="Use MIDI file instead of MIDI input port",
+    )
+    argp.add_argument(
+        "--midi_control_signal",
+        type=int,
+        help="MIDI control change message for AI takeover",
+    )
+    argp.add_argument(
+        "--midi_reset_control_signal",
+        type=int,
+        help="MIDI control change message context reset",
+    )
+    argp.add_argument(
+        "--temp",
+        help="sampling temperature value",
+        type=float,
+        required=False,
+        default=0.95,
+    )
+    argp.add_argument(
+        "--min_p",
+        help="sampling min_p value",
+        type=float,
+        required=False,
+        default=0.03,
+    )
+    argp.add_argument(
+        "--wait_for_close",
+        help="wait for note-offs before generating",
+        action="store_true",
+    )
+    argp.add_argument(
+        "--quantize",
+        help="apply model quantize",
+        action="store_true",
+    )
+    argp.add_argument(
+        "--save_path",
+        type=str,
+        required=False,
+        help="path to save complete MIDI file",
+    )
+    argp.add_argument(
+        "--embedding_checkpoint",
+        type=str,
+        help="path to embedding model checkpoint for conditioned generation",
+        required=False,
+    )
+    argp.add_argument(
+        "--embedding_midi_path",
+        type=str,
+        help="path to embedding MIDI file for conditioned generation",
+        required=False,
+    )
+
+    return argp.parse_args()
+
+
 def get_epoch_time_ms() -> int:
     return round(time.time() * 1000)
 
@@ -95,14 +168,12 @@ def prefill(
     model: TransformerLM,
     idxs: mx.array,
     input_pos: mx.array,
-    pad_idxs: mx.array | None = None,
 ) -> mx.array:
     # pad_idxs is only needed for prepended pad tokens
     logits = model(
         idxs=idxs,
-        input_pos=input_pos,
-        offset=input_pos[0],
-        pad_idxs=pad_idxs,
+        input_pos=input_pos + EMBEDDING_OFFSET,
+        offset=input_pos[0] + EMBEDDING_OFFSET,
     )
 
     return logits
@@ -112,16 +183,13 @@ def decode_one(
     model: TransformerLM,
     idxs: mx.array,
     input_pos: mx.array,
-    pad_idxs: mx.array | None = None,
 ) -> mx.array:
-    # pad_idxs is only needed for prepended pad tokens
     assert input_pos.shape[-1] == 1
 
     logits = model(
         idxs=idxs,
-        input_pos=input_pos,
-        offset=input_pos[0],
-        pad_idxs=pad_idxs,
+        input_pos=input_pos + EMBEDDING_OFFSET,
+        offset=input_pos[0] + EMBEDDING_OFFSET,
     )[:, -1]
 
     return logits
@@ -244,8 +312,7 @@ def compile_model(model: TransformerLM):
     model = _compile_decode_one(model=model, logger=logger)
     for chunk_size in list(
         {
-            # PREFILL_CHUNK_SIZE_L,
-            # PREFILL_CHUNK_SIZE,
+            PREFILL_CHUNK_SIZE,
             RECALC_DUR_PREFILL_CHUNK_SIZE,
         }
     ):
@@ -1203,10 +1270,10 @@ def capture_and_update_kv(
     msgs: list,
     prev_context: list,
     control_sentinel: threading.Event,
+    reset_sentinel: threading.Event,
     wait_for_close: bool,
     midi_input_port: str,
     midi_capture_channel: int,
-    midi_control_signal: int | None = None,
     first_msg_epoch_time_ms: int | None = None,
 ):
     received_messages_queue = queue.Queue()
@@ -1216,9 +1283,9 @@ def capture_and_update_kv(
         kwargs={
             "midi_input_port": midi_input_port,
             "control_sentinel": control_sentinel,
+            "reset_sentinel": reset_sentinel,
             "received_messages_queue": received_messages_queue,
             "midi_capture_channel": midi_capture_channel,
-            "midi_control_signal": midi_control_signal,
             "first_msg_epoch_time_ms": first_msg_epoch_time_ms,
             "results_queue": results_queue,
             "wait_for_close": wait_for_close,
@@ -1241,10 +1308,10 @@ def capture_and_update_kv(
 def capture_midi_input(
     midi_input_port: str,
     control_sentinel: threading.Event,
+    reset_sentinel: threading.Event,
     received_messages_queue: queue.Queue,
     midi_capture_channel: int,
     results_queue: queue.Queue,
-    midi_control_signal: int | None = None,
     first_msg_epoch_time_ms: int | None = None,
     wait_for_close: bool = False,
 ):
@@ -1253,8 +1320,7 @@ def capture_midi_input(
     first_on_msg_epoch_ms = None
     prev_msg_epoch_time_ms = first_msg_epoch_time_ms
 
-    logger.info(f"Listening on MIDI port: '{midi_input_port}'")
-    logger.info(f"Ready to capture MIDI events")
+    logger.info(f"Listening for input on MIDI port: '{midi_input_port}'")
 
     # Clear undesired buffered notes
     with mido.open_input(midi_input_port) as midi_input:
@@ -1264,20 +1330,15 @@ def capture_midi_input(
                 break
 
     with mido.open_input(midi_input_port) as midi_input:
-        if midi_control_signal is not None:
-            logger.info(
-                f"Commencing generation upon keypress or MIDI control: {midi_control_signal}"
-            )
-        else:
-            logger.info(f"Commencing generation upon keypress")
+        logger.info(f"Commencing generation upon keypress or control signal")
 
-        while not control_sentinel.is_set() or (
-            wait_for_close and active_pitches
+        while (not reset_sentinel.is_set()) and (
+            not control_sentinel.is_set() or (wait_for_close and active_pitches)
         ):
             msg = midi_input.receive(block=False)
 
             if msg is None:
-                time.sleep(0.001)
+                time.sleep(0.01)
                 continue
 
             if prev_msg_epoch_time_ms is None:
@@ -1308,13 +1369,6 @@ def capture_midi_input(
                 received_messages_queue.put(msg)
             elif msg.type == "control_change" and msg.control == 64:
                 received_messages_queue.put(msg)
-            elif (
-                msg.type == "control_change"
-                and msg.control == midi_control_signal
-                and msg.value > 0
-            ):
-                control_sentinel.set()
-                logger.info("Control signal seen")
 
         logger.info(f"Active pitches: {active_pitches}")
         num_active_pitches = len(active_pitches)
@@ -1359,6 +1413,7 @@ def play_midi_file(
     midi_in_port: str,
     midi_path: str,
     currently_streaming_sentinel: threading.Event,
+    reset_sentinel: threading.Event,
 ):
     def _send_delayed_message(port, msg):
         port.send(msg)
@@ -1381,6 +1436,10 @@ def play_midi_file(
     with mido.open_output(midi_through_port) as through_port:
         with mido.open_output(midi_in_port) as in_port:
             for msg in mid.play():
+                if reset_sentinel.is_set():
+                    logger.debug("Exiting")
+                    return
+
                 if currently_streaming_sentinel.is_set() is False and not (
                     msg.type == "control_change" and msg.control == 64
                 ):
@@ -1396,30 +1455,34 @@ def play_midi_file(
 
 def listen_for_keypress_control_signal(
     control_sentinel: threading.Event,
-    generate_ending_sentinel: threading.Event,
+    reset_sentinel: threading.Event,
 ):
     logger = get_logger("KEYBOARD")
-    while True:
-        time.sleep(5)
+    while not reset_sentinel.is_set():
+        time.sleep(2)
         _input = input()
         logger.info(f'Keypress seen "{_input}"')
         if _input == "":
             control_sentinel.set()
         else:
+            reset_sentinel.set()
             control_sentinel.set()
-            generate_ending_sentinel.set()
+            logger.debug("Exiting")
             return
 
 
 def _listen(
     midi_input_port: str,
+    reset_sentinel: threading.Event,
     logger: logging.Logger,
     midi_control_signal: int | None = None,
+    midi_reset_control_signal: int | None = None,
 ):
     logger.info("Listening...")
     with mido.open_input(midi_input_port) as midi_input:
-        while True:
+        while not reset_sentinel.is_set():
             msg = midi_input.receive(block=False)
+
             if msg is None:
                 time.sleep(0.01)
             elif (
@@ -1427,130 +1490,101 @@ def _listen(
                 and msg.control == midi_control_signal
                 and msg.value >= 64
             ):
-                return
+                return midi_control_signal
+            elif (
+                msg.type == "control_change"
+                and msg.control == midi_reset_control_signal
+                and msg.value >= 64
+            ):
+                return midi_reset_control_signal
 
 
 def listen_for_midi_control_signal(
     midi_input_port: str,
     control_sentinel: threading.Event,
+    reset_sentinel: threading.Event,
     midi_control_signal: int | None = None,
+    midi_reset_control_signal: int | None = None,
 ):
     logger = get_logger("MIDI-CONTROL")
 
-    while True:
-        _listen(
+    while not reset_sentinel.is_set():
+        signal_received = _listen(
             midi_input_port=midi_input_port,
+            reset_sentinel=reset_sentinel,
             midi_control_signal=midi_control_signal,
+            midi_reset_control_signal=midi_reset_control_signal,
             logger=logger,
         )
-        control_sentinel.set()
-        logger.info("Seen MIDI control signal")
-        time.sleep(5)
+
+        if signal_received is not None:
+            logger.info(f"Seen MIDI control signal ({signal_received})")
+
+            if signal_received == midi_control_signal:
+                control_sentinel.set()
+                time.sleep(2)
+            elif signal_received == midi_reset_control_signal:
+                reset_sentinel.set()
+                control_sentinel.set()
+
+    logger.debug("Exiting")
 
 
-def parse_args():
-    argp = argparse.ArgumentParser()
-    argp.add_argument("--checkpoint", help="path to model checkpoint")
-    argp.add_argument("--midi_in", required=False, help="MIDI input port")
-    argp.add_argument("--midi_out", required=True, help="MIDI output port")
-    argp.add_argument(
-        "--midi_through",
-        required=False,
-        help="MIDI through port for received input",
-    )
-    argp.add_argument(
-        "--midi_path",
-        required=False,
-        help="Use MIDI file instead of MIDI input port",
-    )
-    argp.add_argument(
-        "--midi_control_signal",
-        type=int,
-        help="MIDI control change message for AI takeover",
-    )
-    argp.add_argument(
-        "--temp",
-        help="sampling temperature value",
-        type=float,
-        required=False,
-        default=0.95,
-    )
-    argp.add_argument(
-        "--min_p",
-        help="sampling min_p value",
-        type=float,
-        required=False,
-        default=0.03,
-    )
-    argp.add_argument(
-        "--wait_for_close",
-        help="wait for note-offs before generating",
-        action="store_true",
-    )
-    argp.add_argument(
-        "--quantize",
-        help="apply model quantize",
-        action="store_true",
-    )
-    argp.add_argument(
-        "--save_path",
-        type=str,
-        required=False,
-        help="Path to save complete MIDI file",
-    )
-
-    return argp.parse_args()
-
-
-def main(args):
-    args = parse_args()
+def run(
+    model: TransformerLM,
+    midi_in_port: str | None,
+    midi_through_port: str | None,
+    midi_out_port: str | None,
+    midi_path: str | None,
+    midi_save_path: str | None,
+    midi_control_signal: int,
+    midi_reset_control_signal: int,
+    reset_sentinel: str,
+    wait_for_close: bool,
+    temperature: float,
+    min_p: float,
+):
     logger = get_logger()
     tokenizer = AbsTokenizer()
-    model = load_model(checkpoint_path=args.checkpoint)
-    model = compile_model(model=model)
-
-    assert (args.midi_path and os.path.isfile(args.midi_path)) or args.midi_in
-
     control_sentinel = threading.Event()
-    generate_ending_sentinel = threading.Event()
     currently_generating_sentinel = threading.Event()
 
-    if args.midi_through:
-        close_notes(args.midi_through)
-    if args.midi_out:
-        close_notes(args.midi_out)
+    if midi_through_port:
+        close_notes(midi_through_port)
+    if midi_out_port:
+        close_notes(midi_out_port)
 
-    if args.midi_path:
-        midi_input_port = "IAC Driver Bus 1"
+    if midi_path:
+        midi_playback_port = "IAC Driver Bus 1"
         play_file_thread = threading.Thread(
             target=play_midi_file,
             args=(
-                args.midi_through,
-                midi_input_port,
-                args.midi_path,
+                midi_through_port,
+                midi_playback_port,
+                midi_path,
                 currently_generating_sentinel,
+                reset_sentinel,
             ),
-            daemon=True,
         )
     else:
-        midi_input_port = args.midi_in
+        midi_playback_port = midi_in_port
         play_file_thread = None
 
     keypress_thread = threading.Thread(
         target=listen_for_keypress_control_signal,
-        args=[control_sentinel, generate_ending_sentinel],
-        daemon=True,
+        args=[control_sentinel, reset_sentinel],
     )
     midi_control_thread = threading.Thread(
         target=listen_for_midi_control_signal,
         kwargs={
             "midi_input_port": (
-                args.midi_in if args.midi_in else midi_input_port
+                midi_in_port if midi_in_port else midi_playback_port
             ),
             "control_sentinel": control_sentinel,
-            "midi_control_signal": args.midi_control_signal,
+            "reset_sentinel": reset_sentinel,
+            "midi_control_signal": midi_control_signal,
+            "midi_reset_control_signal": midi_reset_control_signal,
         },
-        daemon=True,
     )
     keypress_thread.start()
     midi_control_thread.start()
@@ -1564,15 +1598,15 @@ def main(args):
             msgs=[],
             prev_context=[],
             control_sentinel=control_sentinel,
-            wait_for_close=args.wait_for_close,
-            midi_input_port=midi_input_port,
-            midi_control_signal=args.midi_control_signal,
+            reset_sentinel=reset_sentinel,
+            wait_for_close=wait_for_close,
+            midi_input_port=midi_playback_port,
             midi_capture_channel=0,
         )
     )
 
     curr_midi_channel = 0
-    while True:
+    while True and not reset_sentinel.is_set():
         control_sentinel.clear()
         currently_generating_sentinel.set()
         msgs = stream_msgs(
@@ -1580,23 +1614,28 @@ def main(args):
             tokenizer=tokenizer,
             msgs=msgs,
             prev_context=prev_context,
-            midi_output_port=args.midi_out,
+            midi_output_port=midi_out_port,
             first_on_msg_epoch_ms=first_on_msg_epoch_ms,
             control_sentinel=control_sentinel,
-            temperature=args.temp,
-            min_p=args.min_p,
+            temperature=temperature,
+            min_p=min_p,
             num_preceding_active_pitches=num_active_pitches,
             midi_stream_channel=curr_midi_channel,
             is_ending=False,
         )
+
+        if midi_save_path:
+            logger.info(f"Saving result to {midi_save_path}")
+            midi = convert_msgs_to_midi(msgs=msgs)
+            midi.save(midi_save_path)
 
         curr_midi_channel += 1
         if curr_midi_channel == 9:
             curr_midi_channel += 1
 
         control_sentinel.clear()
-        if generate_ending_sentinel.is_set():
-            break
+        if reset_sentinel.is_set():
+            return
         else:
             currently_generating_sentinel.clear()
             msgs, prev_context, _, num_active_pitches = capture_and_update_kv(
@@ -1604,33 +1643,66 @@ def main(args):
                 msgs=msgs,
                 prev_context=prev_context,
                 control_sentinel=control_sentinel,
-                wait_for_close=args.wait_for_close,
-                midi_input_port=midi_input_port,
-                midi_control_signal=args.midi_control_signal,
+                reset_sentinel=reset_sentinel,
+                wait_for_close=wait_for_close,
+                midi_input_port=midi_playback_port,
                 midi_capture_channel=curr_midi_channel,
                 first_msg_epoch_time_ms=first_on_msg_epoch_ms,
             )
 
-    # Generate ending
-    msgs = stream_msgs(
-        model=model,
-        tokenizer=tokenizer,
-        msgs=msgs,
-        prev_context=prev_context,
-        midi_output_port=args.midi_out,
-        first_on_msg_epoch_ms=first_on_msg_epoch_ms,
-        control_sentinel=control_sentinel,
-        temperature=args.temp / 2,
-        min_p=args.min_p,
-        num_preceding_active_pitches=num_active_pitches,
-        midi_stream_channel=curr_midi_channel,
-        is_ending=True,
-    )
+    keypress_thread.join()
+    midi_control_thread.join()
+    if play_file_thread:
+        play_file_thread.join()
 
-    if args.save_path:
-        logger.info(f"Saving result to {args.save_path}")
-        midi = convert_msgs_to_midi(msgs=msgs)
-        midi.save(args.save_path)
+
+def insert_embedding(
+    model: TransformerLM,
+    embedding_model_checkpoint_path: str,
+    embedding_midi_path: str,
+):
+    logger = get_logger()
+    logger.info(f"Loading embedding from {embedding_midi_path}")
+    emb = _get_embedding(
+        embedding_model_checkpoint_path=embedding_model_checkpoint_path,
+        embedding_midi_path=embedding_midi_path,
+    )
+    logger.info(f"Inserting embedding into context")
+    model.fill_condition_kv(mx.array([emb], dtype=DTYPE))
+
+    global EMBEDDING_OFFSET
+    EMBEDDING_OFFSET = 1
+
+
+def main(args):
+    model = load_model(checkpoint_path=args.checkpoint)
+    model = compile_model(model=model)
+    if args.embedding_checkpoint and args.embedding_midi_path:
+        insert_embedding(
+            model=model,
+            embedding_model_checkpoint_path=args.embedding_checkpoint,
+            embedding_midi_path=args.embedding_midi_path,
+        )
+
+    assert (args.midi_path and os.path.isfile(args.midi_path)) or args.midi_in
+
+    reset_sentinel = threading.Event()
+    while True:
+        run(
+            model=model,
+            midi_in_port=args.midi_in,
+            midi_through_port=args.midi_through,
+            midi_out_port=args.midi_out,
+            midi_path=args.midi_path,
+            midi_save_path=args.save_path,
+            midi_control_signal=args.midi_control_signal,
+            midi_reset_control_signal=args.midi_reset_control_signal,
+            reset_sentinel=reset_sentinel,
+            wait_for_close=args.wait_for_close,
+            temperature=args.temp,
+            min_p=args.min_p,
+        )
+        reset_sentinel = threading.Event()
 
 
 def close_notes(midi_out_port: str):
