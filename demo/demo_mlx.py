@@ -1478,6 +1478,7 @@ def _listen(
     midi_control_signal: int | None = None,
     midi_reset_control_signal: int | None = None,
 ):
+    time.sleep(2)
     logger.info("Listening...")
     with mido.open_input(midi_input_port) as midi_input:
         while not reset_sentinel.is_set():
