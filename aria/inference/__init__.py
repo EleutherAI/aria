@@ -48,11 +48,21 @@ def get_inference_prompt(
         for msg in midi_dict.note_msgs
         if midi_dict.tick_to_ms(msg["data"]["start"]) <= prompt_len_ms
     ]
+    midi_dict.pedal_msgs = [
+        msg
+        for msg in midi_dict.pedal_msgs
+        if midi_dict.tick_to_ms(msg["tick"]) <= prompt_len_ms
+    ]
+    if midi_dict.pedal_msgs and midi_dict.pedal_msgs[-1]["data"] == 1:
+        midi_dict.pedal_msgs.pop()
 
     if len(midi_dict.note_msgs) == 0:
         return [("prefix", "instrument", "piano"), tokenizer.bos_tok]
 
-    seq = tokenizer.tokenize(midi_dict=midi_dict, add_dim_tok=False)
-    seq.remove(tokenizer.eos_tok)
+    seq = tokenizer.tokenize(
+        midi_dict=midi_dict,
+        add_dim_tok=False,
+        add_eos_tok=False,
+    )
 
     return seq

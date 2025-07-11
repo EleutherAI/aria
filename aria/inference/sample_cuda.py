@@ -16,15 +16,6 @@ torch._inductor.config.fx_graph_cache = True
 DTYPE = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
 
-def get_cfg_prompt(prompts: list):
-    cfg_prompts = []
-    for prompt in prompts:
-        cfg_prompts.append(prompt)
-        cfg_prompts.append(prompt)
-
-    return cfg_prompts
-
-
 @torch.inference_mode()
 def decode_one(
     model: TransformerLM,

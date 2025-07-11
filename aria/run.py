@@ -263,6 +263,7 @@ def generate(args):
         args.prompt_midi_path,
         prompt_duration_s=prompt_duration_s,
     )
+    print(prompt)
     max_new_tokens = min(8096 - len(prompt), max_new_tokens)
 
     if backend == "torch_cuda":
