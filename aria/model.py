@@ -178,7 +178,6 @@ class Transformer(nn.Module):
                 seq_len=self.model_config.max_seq_len,
                 n_elem=self.model_config.d_model // self.model_config.n_heads,
                 base=500000,
-                dtype=hidden_states.dtype,
             ).to(src.device)
         freqs_cis = self.freqs_cis[: src.shape[1]]
 
