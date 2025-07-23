@@ -6,6 +6,7 @@ import time
 import uuid
 import random
 import logging
+import contextlib
 import threading
 import queue
 import json
@@ -23,9 +24,13 @@ from aria.model import ModelConfig
 from aria.config import load_model_config
 from aria.run import _get_embedding
 
+VIRTUAL_PLAYBACK_PORT = "Playback MIDI Port"
+VIRTUAL_PERFORMANCE_PORT = "Performance MIDI Port"
+VIRTUAL_CONTROL_PORT = "Control MIDI Port"
+
 EMBEDDING_OFFSET: int = 0
 DTYPE = mx.float32
-MAX_SEQ_LEN: int = 2048
+MAX_SEQ_LEN: int = 4096
 PREFILL_CHUNK_SIZE_L: int = 128
 PREFILL_CHUNK_SIZE: int = 16
 RECALC_DUR_PREFILL_CHUNK_SIZE: int = 8
@@ -648,6 +653,7 @@ def decode_tokens(
             f"Sampled logits for positions {idx} by inserting {prev_tok} at position {idx-1}"
         )
 
+        # logits[0, tokenizer.tok_to_id[tokenizer.ped_on_tok]] += 2
         logits[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
         if is_ending is False:
             logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
@@ -1475,7 +1481,6 @@ def capture_midi_input(
     first_msg_epoch_time_ms: int | None = None,
     wait_for_close: bool = False,
 ):
-    """Captures MIDI input with improved structure and readability."""
     logger = get_logger("CAPTURE")
     first_on_msg_epoch_ms = None
     prev_msg_epoch_time_ms = first_msg_epoch_time_ms
@@ -1592,6 +1597,7 @@ def play_midi_file(
 
     if BASE_OUTPUT_LATENCY_MS > 0:
         midi_dict = MidiDict.from_midi(midi_path)
+        midi_dict.remove_redundant_pedals()
         midi_dict.enforce_gaps(min_gap_ms=MIN_NOTE_DELTA_MS)
         mid = midi_dict.to_midi()
     else:
@@ -1641,8 +1647,10 @@ def _listen(
     midi_control_signal: int | None = None,
     midi_reset_control_signal: int | None = None,
 ):
-    time.sleep(2)
-    logger.info("Listening...")
+    time.sleep(1)
+    logger.info(
+        f"Listening for takeover signal ({midi_control_signal}) and reset signal ({midi_reset_control_signal}) on MIDI port: '{midi_input_port}'"
+    )
     with mido.open_input(midi_input_port) as midi_input:
         while not reset_sentinel.is_set():
             msg = midi_input.receive(block=False)
@@ -1696,14 +1704,15 @@ def listen_for_midi_control_signal(
 
 def run(
     model: TransformerLM,
-    midi_in_port: str | None,
+    midi_in_performance_port: str,
+    midi_in_control_port: str,
     midi_through_port: str | None,
     midi_out_port: str | None,
     midi_path: str | None,
     midi_save_path: str | None,
     midi_control_signal: int,
     midi_reset_control_signal: int,
-    reset_sentinel: str,
+    reset_sentinel: threading.Event,  # Changed from string to Event
     wait_for_close: bool,
     temperature: float,
     min_p: float,
@@ -1719,19 +1728,17 @@ def run(
         close_notes(midi_out_port)
 
     if midi_path:
-        midi_playback_port = "IAC Driver Bus 1"
         play_file_thread = threading.Thread(
             target=play_midi_file,
             args=(
                 midi_through_port,
-                midi_playback_port,
+                VIRTUAL_PLAYBACK_PORT,
                 midi_path,
                 currently_generating_sentinel,
                 reset_sentinel,
             ),
         )
     else:
-        midi_playback_port = midi_in_port
         play_file_thread = None
 
     keypress_thread = threading.Thread(
@@ -1741,9 +1748,7 @@ def run(
     midi_control_thread = threading.Thread(
         target=listen_for_midi_control_signal,
         kwargs={
-            "midi_input_port": (
-                midi_in_port if midi_in_port else midi_playback_port
-            ),
+            "midi_input_port": midi_in_control_port,
             "control_sentinel": control_sentinel,
             "reset_sentinel": reset_sentinel,
             "midi_control_signal": midi_control_signal,
@@ -1764,7 +1769,7 @@ def run(
             control_sentinel=control_sentinel,
             reset_sentinel=reset_sentinel,
             wait_for_close=wait_for_close,
-            midi_input_port=midi_playback_port,
+            midi_input_port=midi_in_performance_port,
             midi_capture_channel=0,
         )
     )
@@ -1809,7 +1814,7 @@ def run(
                 control_sentinel=control_sentinel,
                 reset_sentinel=reset_sentinel,
                 wait_for_close=wait_for_close,
-                midi_input_port=midi_playback_port,
+                midi_input_port=midi_in_performance_port,
                 midi_capture_channel=curr_midi_channel,
                 first_msg_epoch_time_ms=first_on_msg_epoch_ms,
             )
@@ -1838,6 +1843,47 @@ def insert_embedding(
     EMBEDDING_OFFSET = 1
 
 
+def forward_midi_input_port(
+    midi_input_port: str,
+    midi_performance_port: str,
+    midi_control_port: str,
+    create_virtual_input_port: bool = False,
+):
+    logger = get_logger("MIDI-FORWARD")
+
+    try:
+        with contextlib.ExitStack() as stack:
+            if create_virtual_input_port:
+                in_port = stack.enter_context(
+                    mido.open_ioport(midi_input_port, virtual=True)
+                )
+            else:
+                in_port = stack.enter_context(mido.open_input(midi_input_port))
+
+            perf_port = stack.enter_context(
+                mido.open_output(midi_performance_port, virtual=True)
+            )
+            ctrl_port = stack.enter_context(
+                mido.open_output(midi_control_port, virtual=True)
+            )
+
+            logger.info(
+                f"Forwarding MIDI port '{midi_input_port}' to "
+                f"['{midi_performance_port}', '{midi_control_port}']"
+            )
+
+            while True:
+                msg = in_port.receive(block=True)
+                if msg:
+                    perf_port.send(msg)
+                    ctrl_port.send(msg)
+
+    except (Exception, KeyboardInterrupt) as e:
+        logger.error(f"Error in MIDI forwarder: {e}")
+    finally:
+        logger.info("MIDI forwarder has shut down.")
+
+
 def main(args):
     model = load_model(checkpoint_path=args.checkpoint)
     model = warmup_model(model=model)
@@ -1850,11 +1896,26 @@ def main(args):
 
     assert (args.midi_path and os.path.isfile(args.midi_path)) or args.midi_in
 
+    forwarder_thread = threading.Thread(
+        target=forward_midi_input_port,
+        kwargs={
+            "midi_input_port": (
+                VIRTUAL_PLAYBACK_PORT if args.midi_path else args.midi_in
+            ),
+            "midi_performance_port": VIRTUAL_PERFORMANCE_PORT,
+            "midi_control_port": VIRTUAL_CONTROL_PORT,
+            "create_virtual_input_port": True if args.midi_path else False,
+        },
+        daemon=True,
+    )
+    forwarder_thread.start()
+
     reset_sentinel = threading.Event()
     while True:
         run(
             model=model,
-            midi_in_port=args.midi_in,
+            midi_in_performance_port=VIRTUAL_PERFORMANCE_PORT,
+            midi_in_control_port=VIRTUAL_CONTROL_PORT,
             midi_through_port=args.midi_through,
             midi_out_port=args.midi_out,
             midi_path=args.midi_path,
@@ -1881,6 +1942,7 @@ def playback(midi_path: str, midi_out: str, save_path: str | None = None):
     control_sentinel = threading.Event()
 
     midi_dict = MidiDict.from_midi(midi_path)
+    midi_dict.remove_redundant_pedals()
     tokenized_sequence = tokenizer.tokenize(
         midi_dict,
         add_dim_tok=False,
@@ -1938,6 +2000,7 @@ def close_notes(midi_out_port: str):
             out.send(mido.Message("note_off", note=note, velocity=0))
 
 
+# TODO: Debug issue with incorrect tokens being generated (model or mlx issue?)
 if __name__ == "__main__":
     args = parse_args()
 
@@ -1956,7 +2019,6 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             close_notes(args.midi_out)
     else:
-        # Main logic
         try:
             main(args)
         except KeyboardInterrupt:
