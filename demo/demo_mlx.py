@@ -10,11 +10,9 @@ import threading
 import queue
 import json
 import mido
-import torch
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 
 from ariautils.midi import MidiDict, midi_to_dict
 from ariautils.tokenizer import AbsTokenizer
@@ -25,16 +23,16 @@ from aria.run import _get_embedding
 
 EMBEDDING_OFFSET: int = 0
 DTYPE = mx.float32
-MAX_SEQ_LEN: int = 2048
+MAX_SEQ_LEN: int = 4096
 PREFILL_CHUNK_SIZE_L: int = 128
 PREFILL_CHUNK_SIZE: int = 16
 RECALC_DUR_PREFILL_CHUNK_SIZE: int = 8
 RECALC_DUR_BUFFER_MS: int = 100
 
-BEAM_WIDTH: int = 5
+BEAM_WIDTH: int = 3
 TIME_TOK_WEIGHTING: int = -5
 FIRST_ONSET_BUFFER_MS: int = -200
-MAX_STREAM_DELAY_MS: int = 50
+MAX_STREAM_DELAY_MS: int = 100
 
 MIN_NOTE_DELTA_MS: int = 0
 MIN_PEDAL_DELTA_MS: int = 0
@@ -222,24 +220,18 @@ def decode_one(
     return logits
 
 
-def sample_min_p(probs: mx.array, p_base: float):
-    """See - https://arxiv.org/pdf/2407.01082"""
+def sample_min_p(logits: mx.array, p_base: float):
+    """Min_p sampler in logit space, see - https://arxiv.org/pdf/2407.01082"""
+    if p_base <= 0.0:
+        return mx.argmax(logits, axis=-1, keepdims=True)
+    if p_base >= 1.0:
+        return mx.random.categorical(logits, num_samples=1)
 
-    p_max = mx.max(probs, axis=-1, keepdims=True)
-    p_scaled = p_base * p_max
-    mask = probs >= p_scaled
-
-    masked_probs = mx.where(~mask, mx.zeros_like(probs), probs)
-    sum_masked_probs = mx.sum(masked_probs, axis=-1, keepdims=True)
-    masked_probs_normalized = masked_probs / sum_masked_probs
-
-    # Dumb workaround for mlx not having categorical probs sampler
-    next_token = mx.array(
-        torch.multinomial(
-            torch.from_numpy(np.array(masked_probs_normalized)), num_samples=1
-        ),
-        dtype=mx.int32,
-    )
+    log_p_max = mx.max(logits, axis=-1, keepdims=True)
+    log_p_scaled = mx.log(p_base) + log_p_max
+    mask = logits >= log_p_scaled
+    masked_logits = mx.where(~mask, -mx.inf, logits)
+    next_token = mx.random.categorical(masked_logits, num_samples=1)
 
     return next_token
 
@@ -473,6 +465,8 @@ def recalc_dur_tokens_chunked(
 
     next_logits = logits[:, priming_len - idx]
 
+    logger.debug(f"Internal KV-state: {tokenizer.decode(model.get_kv_ctx())}")
+
     return enc_seq, priming_seq, next_logits
 
 
@@ -492,6 +486,7 @@ def decode_first_tokens(
     time_tok_id = tokenizer.tok_to_id[tokenizer.time_tok]
     eos_tok_id = tokenizer.tok_to_id[tokenizer.eos_tok]
     dim_tok_id = tokenizer.tok_to_id[tokenizer.dim_tok]
+    ped_off_id = tokenizer.tok_to_id[tokenizer.ped_off_tok]
 
     logits = first_token_logits
     time_since_first_onset_ms = get_epoch_time_ms() - first_on_msg_epoch_ms
@@ -519,6 +514,7 @@ def decode_first_tokens(
 
     logits[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
     logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
+    logits[:, tokenizer.tok_to_id[tokenizer.ped_off_tok]] = float("-inf")
 
     # MLX doesn't have a equivalent of torch topk
     log_probs = nn.log_softmax(logits, axis=-1)
@@ -538,11 +534,19 @@ def decode_first_tokens(
     logger.debug(f"Calculated top {BEAM_WIDTH} tokens={top_toks}")
     logger.debug(f"Calculated top {BEAM_WIDTH} scores={top_log_probs.tolist()}")
 
-    masked_onset_ids = [
-        tokenizer.tok_to_id[tok]
-        for tok in tokenizer.onset_tokens
-        if tok[1] < ((time_since_first_onset_ms + buffer_ms) % 5000)
-    ]
+    priming_seq_last_onset_ms = tokenizer.calc_length_ms(
+        priming_seq, onset=True
+    )
+
+    if priming_seq_last_onset_ms < time_since_first_onset_ms + buffer_ms:
+        masked_onset_ids = [
+            tokenizer.tok_to_id[tok]
+            for tok in tokenizer.onset_tokens
+            if tok[1] < ((time_since_first_onset_ms + buffer_ms) % 5000)
+        ]
+
+    else:
+        masked_onset_ids = []
 
     logger.debug(
         f"Masking onsets for {len(masked_onset_ids)} tokens ({time_since_first_onset_ms + buffer_ms})"
@@ -564,9 +568,13 @@ def decode_first_tokens(
         )
 
         next_log_probs = nn.log_softmax(next_logits, axis=-1)
-        next_log_probs[:, masked_onset_ids] = float("-inf")
+
         next_log_probs[:, eos_tok_id] = float("-inf")
         next_log_probs[:, dim_tok_id] = float("-inf")
+        next_log_probs[:, ped_off_id] = float("-inf")
+
+        if masked_onset_ids:
+            next_log_probs[:, masked_onset_ids] = float("-inf")
         if tok_id == time_tok_id:
             next_log_probs[:, time_tok_id] = float("-inf")
 
@@ -607,9 +615,7 @@ def decode_first_tokens(
     logger.info(
         f"Updated KV-Cache by re-inserting {best_tok_1} at position {idx-1}"
     )
-    logger.info(
-        f"Inserted {best_tok_2} at position {idx} without updating KV-Cache"
-    )
+    logger.debug(f"Internal KV-state: {tokenizer.decode(model.get_kv_ctx())}")
 
     return enc_seq, idx + 1
 
@@ -666,8 +672,7 @@ def decode_tokens(
             logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
 
         if temperature > 0.0:
-            probs = mx.softmax(logits / temperature, axis=-1)
-            next_token_ids = sample_min_p(probs, min_p).flatten()
+            next_token_ids = sample_min_p(logits, min_p).flatten()
         else:
             next_token_ids = mx.argmax(logits, axis=-1).flatten()
 
@@ -1713,6 +1718,9 @@ def listen_for_midi_control_signal(
     logger.debug("Exiting MIDI control listener")
 
 
+# TODO: Fix issue with pedal being stuck down (send pedal off at end of stream_msgs)
+# TODO: Debug, fix, and perhaps refactor the functionality for going back and forth
+# - One idea is on resume, to wait to start the clock until the user plays.
 def run(
     model: TransformerLM,
     midi_performance_queue: queue.Queue,

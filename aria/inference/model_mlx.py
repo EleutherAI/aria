@@ -84,14 +84,15 @@ class TransformerBlock(nn.Module):
         self,
         x: mx.array,
         input_pos: mx.array,
+        max_pos: int,
         offset: int,
         mask: mx.array,
     ):
         assert self.kv_cache is not None, "Cache not initialized"
-
         x += self._att_block(
             x=self.norm1(x),
             input_pos=input_pos,
+            max_pos=max_pos,
             offset=offset,
             mask=mask,
         )
@@ -99,15 +100,25 @@ class TransformerBlock(nn.Module):
 
         return x
 
-    def get_kv(self, k: mx.array, v: mx.array, input_pos: mx.array):
+    def get_kv(
+        self,
+        k: mx.array,
+        v: mx.array,
+        input_pos: mx.array,
+        max_pos: int | None = None,
+    ):
         k, v = self.kv_cache.update(k_val=k, v_val=v, input_pos=input_pos)
 
-        return k, v
+        if max_pos is not None:
+            return k[:, :, : max_pos + 1, :], v[:, :, : max_pos + 1, :]
+        else:
+            return k, v
 
     def _att_block(
         self,
         x: mx.array,
         input_pos: mx.array,
+        max_pos: int,
         offset: int,
         mask: mx.array,
     ):
@@ -124,7 +135,8 @@ class TransformerBlock(nn.Module):
         k = apply_rotary_emb_mlx(k, offset=offset)
         q, k, v = map(lambda x: x.transpose(0, 2, 1, 3), (q, k, v))
 
-        k, v = self.get_kv(k, v, input_pos=input_pos)
+        k, v = self.get_kv(k, v, input_pos=input_pos, max_pos=max_pos)
+
         wv = mx.fast.scaled_dot_product_attention(
             q=q,
             k=k,
@@ -159,6 +171,7 @@ class Transformer(nn.Module):
             TransformerBlock(model_config) for _ in range(model_config.n_layers)
         ]
         self.out_layer_norm = nn.LayerNorm(model_config.d_model)
+        self.kv_ctx = None
 
     def fill_condition_kv(self, emb: mx.array):
         assert self.causal_mask is not None, "Caches must be initialized first"
@@ -182,15 +195,23 @@ class Transformer(nn.Module):
     ):
         assert self.causal_mask is not None, "Caches must be initialized first"
 
-        mask = self.causal_mask[None, None, input_pos]
+        if self.kv_ctx is None:
+            self.kv_ctx = mx.full(
+                self.model_config.max_seq_len, 3
+            )  # unk_tok id
 
+        max_pos = mx.max(input_pos, axis=0).item()
+        self.kv_ctx[input_pos] = idxs
+        self.kv_ctx[max_pos + 1 :] = 3
+
+        mask = self.causal_mask[None, None, input_pos, : max_pos + 1]
         if pad_idxs is not None:
             pad_mask = mx.expand_dims(mx.expand_dims(pad_idxs, axis=1), axis=1)
             mask = mask & ~pad_mask
 
         x = self.tok_embeddings(idxs)
         for layer in self.encode_layers:
-            x = layer(x, input_pos, offset, mask)
+            x = layer(x, input_pos, max_pos, offset, mask)
 
         x = self.out_layer_norm(x)
 
@@ -234,6 +255,25 @@ class TransformerLM(nn.Module):
 
         adapted_emb = self.embedding_adapter(cond_emb)
         self.model.fill_condition_kv(emb=adapted_emb)
+
+    def reset_kv_ctx(self):
+        self.model.kv_ctx = None
+
+    def get_kv_ctx(self):
+        # Used for debugging kv-cache validation
+        _kv_ctx = self.model.kv_ctx
+
+        match self.model.kv_ctx:
+            case None:
+                return None
+            case mx.array():
+                _kv_ctx = self.model.kv_ctx.tolist()
+                if 3 in _kv_ctx:
+                    return _kv_ctx[: _kv_ctx.index(3)]
+                else:
+                    return _kv_ctx
+            case _:
+                raise ValueError
 
     def setup_cache(
         self,
