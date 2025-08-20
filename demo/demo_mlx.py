@@ -31,14 +31,14 @@ PREFILL_CHUNK_SIZE: int = 16
 RECALC_DUR_PREFILL_CHUNK_SIZE: int = 8
 RECALC_DUR_BUFFER_MS: int = 100
 
-BEAM_WIDTH: int = 3
+BEAM_WIDTH: int = 5
 TIME_TOK_WEIGHTING: int = -5
-FIRST_ONSET_BUFFER_MS: int = -100
+FIRST_ONSET_BUFFER_MS: int = -200
 MAX_STREAM_DELAY_MS: int = 50
 
 MIN_NOTE_DELTA_MS: int = 0
 MIN_PEDAL_DELTA_MS: int = 0
-MIN_NOTE_LENGTH_MS: int = 0
+MIN_NOTE_LENGTH_MS: int = 10
 HARDWARE_INPUT_LATENCY_MS: int = 0
 BASE_OUTPUT_LATENCY_MS: int = 0
 VELOCITY_OUTPUT_LATENCY_MS: dict[int, int] = {v: 0 for v in range(0, 127, 10)}
@@ -367,7 +367,7 @@ def load_model(
     model.eval()
 
     if args.quantize:
-        nn.quantize(model.model, group_size=64, bits=8)
+        nn.quantize(model.model, group_size=32, bits=8)
 
     logger.info(
         f"Finished initializing model - took {time.time() - init_start_time_s:.4f} seconds"
@@ -633,6 +633,13 @@ def decode_tokens(
     if control_sentinel.is_set():
         control_sentinel.clear()
 
+    last_tok_is_pedal = False
+    dur_ids = [tokenizer.tok_to_id[idx] for idx in tokenizer.dur_tokens]
+    dur_mask_ids = [
+        tokenizer.tok_to_id[("dur", dur_ms)]
+        for dur_ms in range(0, MIN_NOTE_LENGTH_MS, 10)
+    ]
+
     while (not control_sentinel.is_set()) and idx < MAX_SEQ_LEN:
         decode_one_start_time_s = time.time()
         prev_tok_id = enc_seq[0, idx - 1]
@@ -648,13 +655,15 @@ def decode_tokens(
             f"Sampled logits for positions {idx} by inserting {prev_tok} at position {idx-1}"
         )
 
-        # logits[0, tokenizer.tok_to_id[tokenizer.ped_on_tok]] += 2
+        logits[:, tokenizer.tok_to_id[tokenizer.ped_off_tok]] += 3  # Manual adj
         logits[:, tokenizer.tok_to_id[tokenizer.dim_tok]] = float("-inf")
+
+        logits[:, dur_mask_ids] = float("-inf")
+        if last_tok_is_pedal is True:
+            logits[:, dur_ids] = float("-inf")
+
         if is_ending is False:
             logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
-
-        for dur_ms in range(0, MIN_NOTE_LENGTH_MS, 10):
-            logits[:, tokenizer.tok_to_id[("dur", dur_ms)]] = float("-inf")
 
         if temperature > 0.0:
             probs = mx.softmax(logits / temperature, axis=-1)
@@ -667,6 +676,11 @@ def decode_tokens(
         logger.debug(
             f"({(time.time() - decode_one_start_time_s)*1000:.2f}ms) {idx}: {next_token}"
         )
+
+        if next_token in {tokenizer.ped_on_tok, tokenizer.ped_off_tok}:
+            last_tok_is_pedal = True
+        elif isinstance(next_token, tuple) and next_token[0] == "piano":
+            last_tok_is_pedal = False
 
         if next_token == tokenizer.eos_tok:
             logger.info("EOS token produced")
@@ -698,7 +712,9 @@ def generate_tokens(
     generate_start_s = time.time()
     priming_seq_len = len(priming_seq)
 
-    start_idx = max(2, priming_seq_len - 4 * num_preceding_active_pitches - 1)
+    start_idx = max(
+        2, priming_seq_len - 3 * (num_preceding_active_pitches + 2) - 1
+    )
     enc_seq = mx.array(
         [
             tokenizer.encode(
