@@ -84,7 +84,7 @@ class TransformerBlock(nn.Module):
         self,
         x: mx.array,
         input_pos: mx.array,
-        max_pos: int,
+        max_kv_pos: int | None,
         offset: int,
         mask: mx.array,
     ):
@@ -92,7 +92,7 @@ class TransformerBlock(nn.Module):
         x += self._att_block(
             x=self.norm1(x),
             input_pos=input_pos,
-            max_pos=max_pos,
+            max_kv_pos=max_kv_pos,
             offset=offset,
             mask=mask,
         )
@@ -105,12 +105,12 @@ class TransformerBlock(nn.Module):
         k: mx.array,
         v: mx.array,
         input_pos: mx.array,
-        max_pos: int | None = None,
+        max_kv_pos: int | None,
     ):
         k, v = self.kv_cache.update(k_val=k, v_val=v, input_pos=input_pos)
 
-        if max_pos is not None:
-            return k[:, :, : max_pos + 1, :], v[:, :, : max_pos + 1, :]
+        if max_kv_pos is not None:
+            return k[:, :, : max_kv_pos + 1, :], v[:, :, : max_kv_pos + 1, :]
         else:
             return k, v
 
@@ -118,7 +118,7 @@ class TransformerBlock(nn.Module):
         self,
         x: mx.array,
         input_pos: mx.array,
-        max_pos: int,
+        max_kv_pos: int | None,
         offset: int,
         mask: mx.array,
     ):
@@ -135,7 +135,7 @@ class TransformerBlock(nn.Module):
         k = apply_rotary_emb_mlx(k, offset=offset)
         q, k, v = map(lambda x: x.transpose(0, 2, 1, 3), (q, k, v))
 
-        k, v = self.get_kv(k, v, input_pos=input_pos, max_pos=max_pos)
+        k, v = self.get_kv(k, v, input_pos=input_pos, max_kv_pos=max_kv_pos)
 
         wv = mx.fast.scaled_dot_product_attention(
             q=q,
@@ -190,8 +190,10 @@ class Transformer(nn.Module):
         self,
         idxs: mx.array,
         input_pos: mx.array,
+        max_kv_pos: int,
         offset: int,
         pad_idxs: mx.array | None = None,
+        _debug_track_kv: bool = False,
     ):
         assert self.causal_mask is not None, "Caches must be initialized first"
 
@@ -200,18 +202,18 @@ class Transformer(nn.Module):
                 self.model_config.max_seq_len, 3
             )  # unk_tok id
 
-        max_pos = mx.max(input_pos, axis=0).item()
-        self.kv_ctx[input_pos] = idxs
-        self.kv_ctx[max_pos + 1 :] = 3
+        if _debug_track_kv is True:
+            self.kv_ctx[input_pos] = idxs
+            self.kv_ctx[input_pos[-1].item() + 1 :] = 3
 
-        mask = self.causal_mask[None, None, input_pos, : max_pos + 1]
+        mask = self.causal_mask[None, None, input_pos, : max_kv_pos + 1]
         if pad_idxs is not None:
             pad_mask = mx.expand_dims(mx.expand_dims(pad_idxs, axis=1), axis=1)
             mask = mask & ~pad_mask
 
         x = self.tok_embeddings(idxs)
         for layer in self.encode_layers:
-            x = layer(x, input_pos, max_pos, offset, mask)
+            x = layer(x, input_pos, max_kv_pos, offset, mask)
 
         x = self.out_layer_norm(x)
 
@@ -238,11 +240,13 @@ class TransformerLM(nn.Module):
         idxs: mx.array,
         input_pos: mx.array,
         offset: int,
+        max_kv_pos: int | None = None,
         pad_idxs: mx.array | None = None,
     ):
         hidden_states = self.model(
             idxs=idxs,
             input_pos=input_pos,
+            max_kv_pos=max_kv_pos,
             offset=offset,
             pad_idxs=pad_idxs,
         )

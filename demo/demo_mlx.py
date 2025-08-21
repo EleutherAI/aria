@@ -8,6 +8,7 @@ import random
 import logging
 import threading
 import queue
+import math
 import json
 import mido
 
@@ -22,8 +23,9 @@ from aria.config import load_model_config
 from aria.run import _get_embedding
 
 EMBEDDING_OFFSET: int = 0
-DTYPE = mx.float32
+DTYPE = mx.bfloat16
 MAX_SEQ_LEN: int = 4096
+KV_CHUNK_SIZE: int = 256
 PREFILL_CHUNK_SIZE_L: int = 128
 PREFILL_CHUNK_SIZE: int = 16
 RECALC_DUR_PREFILL_CHUNK_SIZE: int = 8
@@ -198,6 +200,8 @@ def prefill(
     logits = model(
         idxs=idxs,
         input_pos=input_pos + EMBEDDING_OFFSET,
+        max_kv_pos=math.ceil(input_pos[-1].item() / KV_CHUNK_SIZE)
+        * KV_CHUNK_SIZE,
         offset=input_pos[0] + EMBEDDING_OFFSET,
     )
 
@@ -214,6 +218,8 @@ def decode_one(
     logits = model(
         idxs=idxs,
         input_pos=input_pos + EMBEDDING_OFFSET,
+        max_kv_pos=math.ceil(input_pos[-1].item() / KV_CHUNK_SIZE)
+        * KV_CHUNK_SIZE,
         offset=input_pos[0] + EMBEDDING_OFFSET,
     )[:, -1]
 
@@ -342,20 +348,23 @@ def warmup_model(model: TransformerLM):
     return model
 
 
-def load_model(
-    checkpoint_path: str,
-):
+def load_model(checkpoint_path: str):
     logger = get_logger()
 
     tokenizer = AbsTokenizer()
     model_config = ModelConfig(**load_model_config("medium-emb"))
     model_config.set_vocab_size(tokenizer.vocab_size)
 
+    weights = mx.load(checkpoint_path)
+    for key, weight in weights.items():
+        if weight.dtype != DTYPE:
+            weights[key] = weight.astype(DTYPE)
+
     logging.info(f"Loading model weights from {checkpoint_path}")
 
     init_start_time_s = time.time()
     model = TransformerLM(model_config)
-    model.load_weights(checkpoint_path, strict=False)
+    model.load_weights(list(weights.items()), strict=False)
     model.eval()
 
     if args.quantize:
@@ -1153,7 +1162,13 @@ def stream_midi(
             msgs.append(archived_msg)
             last_archive_time_ms = msg["epoch_time_ms"]
 
-        results_queue.put(msgs)
+        midi_out.send(
+            mido.Message(
+                "control_change", control=64, value=0, channel=0, time=0
+            )
+        )
+
+    results_queue.put(msgs)
 
 
 def stream_msgs(
