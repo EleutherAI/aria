@@ -9,6 +9,8 @@ import logging
 import threading
 import queue
 import math
+import sys
+import select
 import json
 import mido
 
@@ -103,6 +105,12 @@ def parse_args():
         "--midi_reset_control_signal",
         type=int,
         help="MIDI control change message context reset",
+    )
+    argp.add_argument(
+        "--back-and-forth",
+        action="store_true",
+        help="Enable toggling between human and AI. If not set, the control signal will reset the session.",
+        required=False,
     )
     argp.add_argument(
         "--temp",
@@ -1653,22 +1661,34 @@ def listen_for_keypress_control_signal(
     reset_sentinel: threading.Event,
 ):
     logger = get_logger("KEYBOARD")
+    logger.info(
+        "Listening for keyboard input (Enter to start AI, any other key + Enter to reset)."
+    )
+
     while not reset_sentinel.is_set():
-        time.sleep(2)
-        _input = input()
-        logger.info(f'Keypress seen "{_input}"')
-        if _input == "":
-            control_sentinel.set()
-        else:
-            reset_sentinel.set()
-            control_sentinel.set()
-            logger.debug("Exiting")
-            return
+        rlist, _, _ = select.select([sys.stdin], [], [], 0.01)
+
+        if rlist:
+            _input = sys.stdin.readline().strip()
+            logger.info(f'Keypress seen "{_input}"')
+
+            if _input == "":
+                control_sentinel.set()
+            else:
+                reset_sentinel.set()
+                control_sentinel.set()
+                logger.debug("Exiting keypress listener on reset signal.")
+                return
+
+    logger.debug(
+        "Exiting keypress listener because reset_sentinel was set by another thread."
+    )
 
 
 def _listen(
     midi_control_queue: queue.Queue,
     reset_sentinel: threading.Event,
+    currently_generating_sentinel: threading.Event,
     logger: logging.Logger,
     midi_control_signal: int | None = None,
     midi_reset_control_signal: int | None = None,
@@ -1682,22 +1702,31 @@ def _listen(
     logger.info(
         f"Listening for takeover signal ({midi_control_signal}) and reset signal ({midi_reset_control_signal}) on control queue."
     )
+    seen_note_on = False
     while not reset_sentinel.is_set():
         try:
             msg = midi_control_queue.get(block=True, timeout=0.01)
         except queue.Empty:
             continue
 
+        if msg.type == "note_on" and msg.velocity > 0:
+            seen_note_on = True
+
+        should_return_signal = (
+            seen_note_on or currently_generating_sentinel.is_set()
+        )
         if (
             msg.type == "control_change"
             and msg.control == midi_control_signal
             and msg.value >= 64
+            and should_return_signal
         ):
             return midi_control_signal
         elif (
             msg.type == "control_change"
             and msg.control == midi_reset_control_signal
             and msg.value >= 64
+            and should_return_signal
         ):
             return midi_reset_control_signal
 
@@ -1706,8 +1735,10 @@ def listen_for_midi_control_signal(
     midi_control_queue: queue.Queue,
     control_sentinel: threading.Event,
     reset_sentinel: threading.Event,
+    currently_generating_sentinel: threading.Event,
     midi_control_signal: int | None = None,
     midi_reset_control_signal: int | None = None,
+    back_and_forth: bool = False,
 ):
     logger = get_logger("MIDI-CONTROL")
 
@@ -1716,6 +1747,7 @@ def listen_for_midi_control_signal(
         signal_received = _listen(
             midi_control_queue=midi_control_queue,
             reset_sentinel=reset_sentinel,
+            currently_generating_sentinel=currently_generating_sentinel,
             midi_control_signal=midi_control_signal,
             midi_reset_control_signal=midi_reset_control_signal,
             logger=logger,
@@ -1724,16 +1756,22 @@ def listen_for_midi_control_signal(
         if signal_received is not None:
             logger.info(f"Seen MIDI control signal ({signal_received})")
 
-            if signal_received == midi_control_signal:
-                control_sentinel.set()
-            elif signal_received == midi_reset_control_signal:
+            if signal_received == midi_reset_control_signal:
+                logger.info("Resetting (reset)")
                 reset_sentinel.set()
+                control_sentinel.set()
+            elif signal_received == midi_control_signal:
+                if (
+                    currently_generating_sentinel.is_set()
+                    and back_and_forth is False
+                ):
+                    logger.info("Resetting (control)")
+                    reset_sentinel.set()
                 control_sentinel.set()
 
     logger.debug("Exiting MIDI control listener")
 
 
-# TODO: Fix issue with pedal being stuck down (send pedal off at end of stream_msgs)
 # TODO: Debug, fix, and perhaps refactor the functionality for going back and forth
 # - One idea is on resume, to wait to start the clock until the user plays.
 def run(
@@ -1750,6 +1788,7 @@ def run(
     wait_for_close: bool,
     temperature: float,
     min_p: float,
+    back_and_forth: bool,
 ):
     logger = get_logger()
     tokenizer = AbsTokenizer()
@@ -1785,8 +1824,10 @@ def run(
             "midi_control_queue": midi_control_queue,
             "control_sentinel": control_sentinel,
             "reset_sentinel": reset_sentinel,
+            "currently_generating_sentinel": currently_generating_sentinel,
             "midi_control_signal": midi_control_signal,
             "midi_reset_control_signal": midi_reset_control_signal,
+            "back_and_forth": back_and_forth,
         },
     )
     keypress_thread.start()
@@ -1950,6 +1991,7 @@ def main(args):
             wait_for_close=args.wait_for_close,
             temperature=args.temp,
             min_p=args.min_p,
+            back_and_forth=args.back_and_forth,
         )
         reset_sentinel = threading.Event()
 
@@ -2024,8 +2066,6 @@ def close_notes(midi_out_port: str):
             out.send(mido.Message("note_off", note=note, velocity=0))
 
 
-# TODO: Debug issue with incorrect tokens being generated (model or mlx issue?)
-# TODO: Fix bug with context length (metal error?)
 if __name__ == "__main__":
     args = parse_args()
 
