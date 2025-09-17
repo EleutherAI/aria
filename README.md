@@ -100,9 +100,9 @@ python ./demo/demo_mlx.py \
 A MIDI input device is not strictly required to play around with the demo: By using the `--midi_path` and `--midi_through` arguments you can mock real-time input by playing from a MIDI file. All that is required are MIDI drivers (e.g., CoreMIDI) and a virtual software instrument (e.g., Fluidsynth, Pianoteq) to render the output. In this mode, you can initiate the model takeover by pressing the enter key.
 
 ```bash
-MIDI_PATH="example-prompts/pokey_jazz.mid"
+MIDI_PATH="./example-prompts/smooth_jazz.mid"
 
-python demo/demo_mlx.py \
+python ./demo/demo_mlx.py \
     --checkpoint <checkpoint-path> \
     --midi_path ${MIDI_PATH} \
     --midi_through <midi-playback-port> \
