@@ -10,6 +10,7 @@ import threading
 import queue
 import math
 import sys
+import pathlib
 import select
 import json
 import mido
@@ -46,6 +47,7 @@ BASE_OUTPUT_LATENCY_MS: int = 0
 VELOCITY_OUTPUT_LATENCY_MS: dict[int, int] = {v: 0 for v in range(0, 127, 10)}
 
 
+config_path = pathlib.Path(__file__).parent.resolve().joinpath("config.json")
 file_handler = logging.FileHandler("./demo.log", mode="w")
 file_handler.setLevel(logging.DEBUG)
 
@@ -359,7 +361,7 @@ def warmup_model(model: TransformerLM):
 def load_model(checkpoint_path: str):
     logger = get_logger()
 
-    tokenizer = AbsTokenizer()
+    tokenizer = AbsTokenizer(config_path=config_path)
     model_config = ModelConfig(**load_model_config("medium-emb"))
     model_config.set_vocab_size(tokenizer.vocab_size)
 
@@ -1426,7 +1428,7 @@ def continuous_prefill(
     received_messages_queue: queue.Queue,
     prev_context: list[int],
 ):
-    tokenizer = AbsTokenizer()
+    tokenizer = AbsTokenizer(config_path=config_path)
     logger = get_logger("PREFILL")
     msg_cnt = 0
     seen_sentinel = False
@@ -1791,7 +1793,7 @@ def run(
     back_and_forth: bool,
 ):
     logger = get_logger()
-    tokenizer = AbsTokenizer()
+    tokenizer = AbsTokenizer(config_path=config_path)
     control_sentinel = threading.Event()
     currently_generating_sentinel = threading.Event()
 
@@ -2001,7 +2003,7 @@ def playback(midi_path: str, midi_out: str, save_path: str | None = None):
 
     close_notes(midi_out)
     starting_epoch_time_ms = get_epoch_time_ms()
-    tokenizer = AbsTokenizer()
+    tokenizer = AbsTokenizer(config_path=config_path)
     tokens_queue = queue.Queue()
     midi_messages_queue = queue.Queue()
     stream_midi_results_queue = queue.Queue()
