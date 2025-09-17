@@ -109,7 +109,7 @@ def parse_args():
         help="MIDI control change message context reset",
     )
     argp.add_argument(
-        "--back-and-forth",
+        "--back_and_forth",
         action="store_true",
         help="Enable toggling between human and AI. If not set, the control signal will reset the session.",
         required=False,
@@ -374,6 +374,11 @@ def load_model(checkpoint_path: str):
 
     init_start_time_s = time.time()
     model = TransformerLM(model_config)
+
+    assert (
+        tokenizer.vocab_size == weights["model.tok_embeddings.weight"].shape[0]
+    ), "Embedding shape mismatch. Ensure that you are loading the demo-specific checkpoint."
+
     model.load_weights(list(weights.items()), strict=False)
     model.eval()
 
@@ -1661,6 +1666,8 @@ def play_midi_file(
 def listen_for_keypress_control_signal(
     control_sentinel: threading.Event,
     reset_sentinel: threading.Event,
+    currently_generating_sentinel: threading.Event,
+    back_and_forth: bool = False,
 ):
     logger = get_logger("KEYBOARD")
     logger.info(
@@ -1675,12 +1682,17 @@ def listen_for_keypress_control_signal(
             logger.info(f'Keypress seen "{_input}"')
 
             if _input == "":
+                if (
+                    currently_generating_sentinel.is_set()
+                    and back_and_forth is False
+                ):
+                    logger.info("Resetting (control)")
+                    reset_sentinel.set()
                 control_sentinel.set()
             else:
+                logger.info("Resetting (reset)")
                 reset_sentinel.set()
                 control_sentinel.set()
-                logger.debug("Exiting keypress listener on reset signal.")
-                return
 
     logger.debug(
         "Exiting keypress listener because reset_sentinel was set by another thread."
@@ -1818,7 +1830,12 @@ def run(
 
     keypress_thread = threading.Thread(
         target=listen_for_keypress_control_signal,
-        args=[control_sentinel, reset_sentinel],
+        kwargs={
+            "control_sentinel": control_sentinel,
+            "reset_sentinel": reset_sentinel,
+            "currently_generating_sentinel": currently_generating_sentinel,
+            "back_and_forth": back_and_forth,
+        },
     )
     midi_control_thread = threading.Thread(
         target=listen_for_midi_control_signal,
@@ -1949,6 +1966,7 @@ def forward_midi_input_port(
 
 
 def main(args):
+    logger = get_logger()
     model = load_model(checkpoint_path=args.checkpoint)
     model = warmup_model(model=model)
     if args.embedding_checkpoint and args.embedding_midi_path:
@@ -1960,6 +1978,7 @@ def main(args):
 
     assert (args.midi_path and os.path.isfile(args.midi_path)) or args.midi_in
 
+    logger.info(f"Available MIDI ports: {mido.get_output_names()}")
     midi_performance_queue = queue.Queue()
     midi_control_queue = queue.Queue()
 
