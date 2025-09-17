@@ -79,13 +79,25 @@ Our embedding model was trained to capture composition-level and performance-lev
 
 ## Real-time demo
 
-In `demo/` we provide CUDA (Linux/PyTorch) and MLX (Apple Silicon) implementations of the real-time interactive piano-continuation demo showcased in our release blog post. For the demo we used an acoustic Yamaha Disklavier piano with simultaneous MIDI input and output ports connected via a standard MIDI interface. 
+In `demo/` we provide an MLX (Apple Silicon) implementation of the real-time interactive piano-continuation demo showcased in our release blog post. In order to use the demo, you must download the demo-specific model checkpoint which enhances the model to additionally control the sustain pedal ([direct-download](https://huggingface.co/loubb/aria-medium-base/resolve/main/model-demo.safetensors?download=true)).
 
-❗**NOTE**: Responsiveness of the real-time demo is dependent on your system configuration, e.g., GPU FLOPS and memory bandwidth.
+For our demonstration, we used an acoustic Yamaha Disklavier piano with simultaneous MIDI input and output ports connected via a standard MIDI interface. We disabled the built-in Disklavier playback mode, instead manually calibrating key-velocity latency to enhance responsiveness. You may recreate this in your own environment with our acoustic calibration settings, using the following script:
 
-A MIDI input device is not strictly required to play around with the demo: By using the `--midi_path` and `--midi_through` arguments you can mock real-time input by playing from a MIDI file. All that is required are MIDI drivers (e.g., CoreMIDI, ALSA) and a virtual software instrument (e.g., Fluidsynth, Pianoteq) to render the output. 
+❗**NOTE**: It is vital that you use the `latency=off`/`realtime` Disklavier playback setting when using the provided configuration for `--hardware`.
 
-Example usage (MLX):
+```bash
+python ./demo/demo_mlx.py \
+    --checkpoint <checkpoint-path> \
+    --midi_in <midi-in-port>  \
+    --midi_out <midi-out-port> \
+    --hardware ./demo/hardware/c4dm-disklavier.json \
+    --midi_control_signal 67 \
+    --midi_reset_control_signal 66 \
+    --temp 0.9 \
+    --min_p 0.03
+```
+
+A MIDI input device is not strictly required to play around with the demo: By using the `--midi_path` and `--midi_through` arguments you can mock real-time input by playing from a MIDI file. All that is required are MIDI drivers (e.g., CoreMIDI) and a virtual software instrument (e.g., Fluidsynth, Pianoteq) to render the output. In this mode, you can initiate the model takeover by pressing the enter key.
 
 ```bash
 MIDI_PATH="example-prompts/pokey_jazz.mid"
@@ -93,12 +105,13 @@ MIDI_PATH="example-prompts/pokey_jazz.mid"
 python demo/demo_mlx.py \
     --checkpoint <checkpoint-path> \
     --midi_path ${MIDI_PATH} \
-    --midi_through <port-to-stream-midi-file-through> \  
-    --midi_out <port-to-stream-generation-over> \
-    --save_path <path-to-save-result> \
-    --temp 0.98 \
-    --min_p 0.035
+    --midi_through <midi-playback-port> \
+    --midi_out <midi-playback-port> \
+    --temp 0.9 \
+    --min_p 0.03
 ```
+
+❗**NOTE**: Responsiveness of the real-time demo is dependent on your system configuration, specifically GPU memory bandwidth. 
 
 ## Evaluation
 
