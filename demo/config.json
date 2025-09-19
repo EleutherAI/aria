@@ -1,0 +1,51 @@
+{
+    "tokenizer": {
+        "abs": {
+            "ignore_instruments": {
+                "piano": false,
+                "chromatic": true,
+                "organ": false,
+                "guitar": false,
+                "bass": false,
+                "strings": false,
+                "ensemble": false,
+                "brass": false,
+                "reed": false,
+                "pipe": false,
+                "synth_lead": false,
+                "synth_pad": true,
+                "synth_effect": true,
+                "ethnic": true,
+                "percussive": true,
+                "sfx": true
+            },
+            "instrument_programs": {
+                "piano": 0,
+                "chromatic": 13,
+                "organ": 16,
+                "guitar": 24,
+                "bass": 32,
+                "strings": 40,
+                "ensemble": 48,
+                "brass": 56,
+                "reed": 64,
+                "pipe": 73,
+                "synth_lead": 80,
+                "synth_pad": 88,
+                "synth_effect": 96,
+                "ethnic": 104,
+                "percussive": 112,
+                "sfx": 120
+            },
+            "drum_velocity": 60,
+            "velocity_quantization_step": 10,
+            "abs_time_step_ms": 5000,
+            "max_dur_ms": 5000,
+            "time_step_ms": 10,
+            "include_pedal": true,
+            "composer_names": ["bach", "beethoven", "mozart", "chopin", "rachmaninoff", "liszt", "debussy", "schubert", "brahms", "ravel", "satie", "scarlatti"],
+            "form_names": ["sonata", "prelude", "nocturne", "étude", "waltz", "mazurka", "impromptu", "fugue"],
+            "genre_names": ["jazz", "classical"]
+        }
+    }
+}

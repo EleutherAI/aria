@@ -6,7 +6,7 @@ import time
 import mido
 
 MIDDLE_C = 60
-C_MAJOR_CHORD = [MIDDLE_C, 64, 67, 72]  # C4, E4, G4, C5
+C_MAJOR_CHORD = [MIDDLE_C - 12, 64 - 12, 67 - 12, 72 - 12]  # C4, E4, G4, C5
 
 
 def schedule_note_off(port: mido.ports.BaseOutput, note: int, delay: float):
@@ -89,6 +89,41 @@ def note_repetition_trial(
     print("...loop finished.\n")
 
 
+def velocity_strike_pair(
+    port: mido.ports.BaseOutput,
+    high_velocity: int,
+    low_velocity: int,
+    delay_ms: int,
+):
+    """
+    Sends a low-velocity C5, waits, then sends a high-velocity C4.
+    The goal is to adjust the delay until they sound simultaneous.
+    """
+    print("Playing velocity pair (C4 high-vel, C5 low-vel)...")
+    delay_sec = delay_ms / 1000.0
+    note_duration_sec = 1.0  # Audible duration of the notes
+    note_high_vel = MIDDLE_C  # C4
+    note_low_vel = MIDDLE_C + 1  # D4
+
+    # Send the low velocity note (C5) first
+    port.send(mido.Message("note_on", note=note_low_vel, velocity=low_velocity))
+    schedule_note_off(port, note_low_vel, delay=delay_sec + note_duration_sec)
+
+    # Wait for the specified delay
+    if delay_sec > 0:
+        time.sleep(delay_sec)
+
+    # Send the high velocity note (C4)
+    port.send(
+        mido.Message("note_on", note=note_high_vel, velocity=high_velocity)
+    )
+    schedule_note_off(port, note_high_vel, delay=note_duration_sec)
+
+    # Give the user time to hear the result
+    time.sleep(note_duration_sec + 0.5)
+    print("...done.\n")
+
+
 def calibrate_output_latency(
     port_name: str,
     velocity: int,
@@ -152,6 +187,52 @@ def calibrate_note_timing(
                     gap_ms += step_ms
                 elif cmd == "d":
                     gap_ms = max(0, gap_ms - step_ms)
+                elif cmd == "q":
+                    break
+                print()
+    except (KeyboardInterrupt, SystemExit):
+        print("\nInterrupted — exiting.")
+    except Exception as e:
+        print(f"\nAn error occurred: {e}")
+
+
+def calibrate_velocity_latency(
+    port_name: str,
+    velocity: int,
+    low_velocity: int,
+    step_ms: int,
+    initial_delay_ms: int,
+    chord_mode: bool,
+):
+    """
+    Interactive loop to find the latency difference between velocities.
+    This mode uses fixed notes (C4 and C5) and ignores the --chord flag.
+    """
+    delay_ms = initial_delay_ms
+
+    try:
+        with mido.open_output(port_name) as port:
+            print(f"Opened MIDI output: {port_name}\n")
+            print(
+                f"High-velocity note (C4): {velocity}\n"
+                f"Low-velocity note  (C5): {low_velocity}\n"
+            )
+            while True:
+                velocity_strike_pair(
+                    port,
+                    high_velocity=velocity,
+                    low_velocity=low_velocity,
+                    delay_ms=delay_ms,
+                )
+                print(f"Current low-velocity pre-send delay: {delay_ms} ms")
+                cmd = (
+                    input("[u]p / [d]own / [r]epeat / [q]uit: ").strip().lower()
+                )
+
+                if cmd == "u":
+                    delay_ms += step_ms
+                elif cmd == "d":
+                    delay_ms = max(0, delay_ms - step_ms)
                 elif cmd == "q":
                     break
                 print()
@@ -240,21 +321,21 @@ def parse_args():
         "--velocity",
         "-v",
         type=int,
-        default=80,
-        help="Note-on velocity (1-127).",
+        default=120,
+        help="Note-on velocity (1-127). For 'velocity' mode, this is the HIGH velocity.",
     )
     parent.add_argument(
         "--step",
         "-s",
         type=int,
         default=10,
-        help="Adjustment step in ms (latency/timing modes).",
+        help="Adjustment step in ms (for latency/timing/velocity modes).",
     )
     parent.add_argument(
         "--chord",
         "-c",
         action="store_true",
-        help="Use a C-major chord instead of single note.",
+        help="Use a C-major chord instead of single note (ignored in 'velocity' mode).",
     )
 
     sub = parser.add_subparsers(dest="command", help="Available commands.")
@@ -296,7 +377,7 @@ def parse_args():
         help="Initial gap between notes in ms.",
     )
 
-    # ── input-latency measurement (new) ───────────────────────────────────
+    # ── input-latency measurement ─────────────────────────────────────────
     p_in = sub.add_parser(
         "input",
         parents=[parent],
@@ -311,6 +392,27 @@ def parse_args():
         help="Seconds to wait for a key press before retry.",
     )
 
+    # ── velocity-latency calibration (NEW) ────────────────────────────────
+    p_vel = sub.add_parser(
+        "velocity",
+        parents=[parent],
+        help="Calibrate additional latency of low-velocity notes.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p_vel.add_argument(
+        "--low-velocity",
+        "-lv",
+        type=int,
+        default=20,
+        help="The low velocity to compare against (1-127).",
+    )
+    p_vel.add_argument(
+        "--delay",
+        type=int,
+        default=50,
+        help="Initial pre-send delay for the low-velocity note in ms.",
+    )
+
     args = parser.parse_args()
 
     # global flag handler
@@ -320,7 +422,7 @@ def parse_args():
 
     if not args.command:
         parser.error(
-            "A command is required: choose 'output', 'timing', or 'input'."
+            "A command is required: choose 'output', 'timing', 'input', or 'velocity'."
         )
 
     return args
@@ -353,6 +455,16 @@ def main():
         measure_input_latency(
             port_name=args.port,
             timeout_sec=args.timeout,
+        )
+
+    elif args.command == "velocity":
+        calibrate_velocity_latency(
+            port_name=args.port,
+            velocity=args.velocity,
+            low_velocity=args.low_velocity,
+            step_ms=args.step,
+            initial_delay_ms=args.delay,
+            chord_mode=args.chord,
         )
 
 

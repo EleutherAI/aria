@@ -586,7 +586,7 @@ def resume_train(
     optimizer, scheduler = get_optim(
         model,
         num_epochs=epochs,
-        steps_per_epoch=len(train_dataloader),
+        steps_per_epoch=len(train_dataloader) // grad_acc_steps,
     )
 
     (
@@ -731,7 +731,7 @@ def train(
     optimizer, scheduler = get_optim(
         model,
         num_epochs=epochs,
-        steps_per_epoch=len(train_dataloader),
+        steps_per_epoch=len(train_dataloader) // grad_acc_steps,
     )
 
     (

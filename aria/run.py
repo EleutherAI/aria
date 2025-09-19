@@ -263,6 +263,7 @@ def generate(args):
         args.prompt_midi_path,
         prompt_duration_s=prompt_duration_s,
     )
+    print(prompt)
     max_new_tokens = min(8096 - len(prompt), max_new_tokens)
 
     if backend == "torch_cuda":
@@ -317,13 +318,13 @@ def generate(args):
 
 
 def _get_embedding(
-    embedding_model_checkpoints_path: str,
+    embedding_model_checkpoint_path: str,
     embedding_midi_path: str,
 ):
     from aria.embedding import get_global_embedding_from_midi
 
     model = _load_embedding_model(
-        checkpoint_path=embedding_model_checkpoints_path
+        checkpoint_path=embedding_model_checkpoint_path
     ).cpu()
     global_embedding = get_global_embedding_from_midi(
         model=model,
@@ -353,7 +354,7 @@ def conditioned_generate(args):
         prompt_duration_s=prompt_duration_s,
     )
     embedding = _get_embedding(
-        embedding_model_checkpoints_path=args.embedding_model_checkpoint_path,
+        embedding_model_checkpoint_path=args.embedding_model_checkpoint_path,
         embedding_midi_path=args.embedding_midi_path,
     )
     max_new_tokens = min(8096 - len(prompt), max_new_tokens)

@@ -178,7 +178,6 @@ class Transformer(nn.Module):
                 seq_len=self.model_config.max_seq_len,
                 n_elem=self.model_config.d_model // self.model_config.n_heads,
                 base=500000,
-                dtype=hidden_states.dtype,
             ).to(src.device)
         freqs_cis = self.freqs_cis[: src.shape[1]]
 
@@ -379,7 +378,6 @@ def precompute_freqs_cis(
     seq_len: int,
     n_elem: int,
     base: int = 500000,
-    dtype: torch.dtype = torch.bfloat16,
 ):
     freqs = 1.0 / (
         base ** (torch.arange(0, n_elem, 2)[: (n_elem // 2)].float() / n_elem)
@@ -389,7 +387,7 @@ def precompute_freqs_cis(
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
     cache = torch.stack([freqs_cis.real, freqs_cis.imag], dim=-1)
 
-    return cache.to(dtype=dtype)
+    return cache
 
 
 @torch.jit.script
@@ -397,14 +395,15 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     """
     In-place RoPE. Credits to Katherine Crowson:
     x shape (b_sz, s_len, n_head, d_head).
-    cos, sin shape (s_len, d_head // 2).
+    freqs_cis shape (s_len, d_head // 2, 2) and is float32.
     """
-
-    d = x.shape[-1] // 2
+    x_float = x.float()
+    freqs_cis = freqs_cis.detach()
+    d = x_float.shape[-1] // 2
     cos = freqs_cis[..., 0][None, :, None]
     sin = freqs_cis[..., 1][None, :, None]
-    x1, x2 = x[..., :d], x[..., d : d * 2]
+    x1, x2 = x_float[..., :d], x_float[..., d : d * 2]
     tmp = x1.clone()
     x1.mul_(cos).addcmul_(x2, sin, value=-1)
     x2.mul_(cos).addcmul_(tmp, sin, value=1)
-    return x
+    return x.copy_(x_float)
