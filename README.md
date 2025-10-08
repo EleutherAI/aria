@@ -93,7 +93,7 @@ python ./demo/demo_mlx.py \
     --hardware ./demo/hardware/c4dm-disklavier.json \
     --midi_control_signal 67 \
     --midi_reset_control_signal 66 \
-    --temp 0.9 \
+    --temp 0.85 \
     --min_p 0.05
 ```
 
@@ -107,7 +107,7 @@ python ./demo/demo_mlx.py \
     --midi_path ${MIDI_PATH} \
     --midi_through <midi-playback-port> \
     --midi_out <midi-playback-port> \
-    --temp 0.9 \
+    --temp 0.85 \
     --min_p 0.05
 ```
 
