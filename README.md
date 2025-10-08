@@ -94,7 +94,7 @@ python ./demo/demo_mlx.py \
     --midi_control_signal 67 \
     --midi_reset_control_signal 66 \
     --temp 0.9 \
-    --min_p 0.03
+    --min_p 0.05
 ```
 
 A MIDI input device is not strictly required to play around with the demo: By using the `--midi_path` and `--midi_through` arguments you can mock real-time input by playing from a MIDI file. All that is required are MIDI drivers (e.g., CoreMIDI) and a virtual software instrument (e.g., Fluidsynth, Pianoteq) to render the output. In this mode, you can initiate the model takeover by pressing the enter key.

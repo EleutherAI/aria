@@ -696,7 +696,7 @@ def decode_tokens(
             logits[:, tokenizer.tok_to_id[tokenizer.eos_tok]] = float("-inf")
 
         if temperature > 0.0:
-            next_token_ids = sample_min_p(logits, min_p).flatten()
+            next_token_ids = sample_min_p(logits / temperature, min_p).flatten()
         else:
             next_token_ids = mx.argmax(logits, axis=-1).flatten()
 
