@@ -109,7 +109,6 @@ class TransformerBlock(nn.Module):
         freqs_cis: torch.Tensor,
         mask: torch.Tensor,
     ):
-
         q, k, v = self.mixed_qkv(x).split(
             [self.d_model, self.d_model, self.d_model], dim=-1
         )
@@ -166,7 +165,7 @@ class Transformer(nn.Module):
         assert self.model_config.emb_size is not None
 
         input_pos = torch.tensor([0], device=emb.device)
-        mask = self.causal_mask[None, None, input_pos]
+        mask = self.causal_mask[input_pos].unsqueeze(0).unsqueeze(0)
         freqs_cis = self.freqs_cis[input_pos]
 
         x = emb.unsqueeze(dim=1)
@@ -182,7 +181,7 @@ class Transformer(nn.Module):
     ):
         assert self.freqs_cis is not None, "Caches must be initialized first"
 
-        mask = self.causal_mask[None, None, input_pos]
+        mask = self.causal_mask[input_pos].unsqueeze(0).unsqueeze(0)
 
         if pad_idxs is not None:
             mask = mask & ~(pad_idxs.unsqueeze(1).unsqueeze(1))
