@@ -178,13 +178,13 @@ class Transformer(nn.Module):
         assert self.model_config.emb_size is not None
 
         input_pos = mx.array([0], dtype=mx.int32)
-        mask = self.causal_mask[None, None, input_pos]
+        mask = self.causal_mask[None, None, input_pos, :1]
         offset = 0
 
         x = mx.expand_dims(emb, axis=1)
 
         for layer in self.encode_layers:
-            x = layer(x, input_pos, offset, mask)
+            x = layer(x, input_pos, 0, offset, mask)
 
     def __call__(
         self,

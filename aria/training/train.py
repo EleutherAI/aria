@@ -94,9 +94,9 @@ def get_tokenizer_name(
     train_config = TrainingDataset.get_config_from_path(train_data_paths[0])
     val_config = TrainingDataset.get_config_from_path(val_data_path)
 
-    assert (
-        train_config["tokenizer_name"] == val_config["tokenizer_name"]
-    ), "Dataset tokenizers don't match"
+    assert train_config["tokenizer_name"] == val_config["tokenizer_name"], (
+        "Dataset tokenizers don't match"
+    )
 
     return train_config["tokenizer_name"]
 
@@ -127,9 +127,9 @@ def setup_project_dir(project_dir: str | None):
     elif project_dir:
         # Run checks on project directory
         if os.path.isdir(project_dir):
-            assert (
-                len(os.listdir(project_dir)) == 0
-            ), "Provided project directory is not empty"
+            assert len(os.listdir(project_dir)) == 0, (
+                "Provided project directory is not empty"
+            )
             project_dir_abs = os.path.abspath(project_dir)
         elif os.path.isfile(project_dir):
             raise FileExistsError(
@@ -226,9 +226,9 @@ def get_dataloaders(
     if init_epoch:
         train_dataset.init_epoch(idx=init_epoch)
 
-    assert (
-        len(val_dataset.epoch_files_by_dir[0]) == 1
-    ), "val-data directory should only contain one epoch"
+    assert len(val_dataset.epoch_files_by_dir[0]) == 1, (
+        "val-data directory should only contain one epoch"
+    )
 
     if apply_aug:
         train_dataset.set_transform(tokenizer.export_data_aug())
@@ -427,9 +427,9 @@ def _train(
         return avg_val_loss
 
     if steps_per_checkpoint:
-        assert (
-            steps_per_checkpoint > 1
-        ), "Invalid checkpoint mode value (too small)"
+        assert steps_per_checkpoint > 1, (
+            "Invalid checkpoint mode value (too small)"
+        )
 
     TRAILING_LOSS_STEPS = 200
     PAD_ID = train_dataloader.dataset.tokenizer.pad_id
@@ -516,9 +516,9 @@ def resume_train(
     assert torch.cuda.is_available() is True, "CUDA not available"
     assert os.path.isdir(checkpoint_dir), f"No dir at {checkpoint_dir}"
     for train_data_path in train_data_paths:
-        assert os.path.isdir(
-            train_data_path
-        ), f"No dir found at {train_data_path}"
+        assert os.path.isdir(train_data_path), (
+            f"No dir found at {train_data_path}"
+        )
     assert os.path.isdir(val_data_path), f"No dir found at {val_data_path}"
 
     tokenizer_name = get_tokenizer_name(train_data_paths, val_data_path)
@@ -649,9 +649,9 @@ def train(
     assert batch_size > 0, "Invalid batch size"
     assert torch.cuda.is_available() is True, "CUDA not available"
     for train_data_path in train_data_paths:
-        assert os.path.isdir(
-            train_data_path
-        ), f"No dir found at {train_data_path}"
+        assert os.path.isdir(train_data_path), (
+            f"No dir found at {train_data_path}"
+        )
     assert os.path.isdir(val_data_path), f"No dir found at {val_data_path}"
 
     tokenizer_name = get_tokenizer_name(train_data_paths, val_data_path)

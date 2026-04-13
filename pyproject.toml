@@ -12,18 +12,18 @@ requires-python = ">=3.11"
 dependencies = [
     "ariautils @ git+https://github.com/EleutherAI/aria-utils.git",
     "torch>=2.3",
-    "mlx",
+    "mlx<=0.26",
     "safetensors",
     "jsonlines",
     "tqdm",
 ]
 
 [project.optional-dependencies]
-dev = ["black"]
+dev = ["ruff", "ty"]
 train = ["accelerate"]
 eval = ["transformers", "torchaudio", "mido"]
-demo = ["python-rtmidi"]
-all = ["black", "accelerate", "transformers", "torchaudio", "mido", "python-rtmidi"]
+demo = ["python-rtmidi", "numpy"]
+all = ["black", "accelerate", "transformers", "torchaudio", "mido", "python-rtmidi", "numpy"]
 
 [tool.black]
 line-length = 80

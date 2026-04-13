@@ -36,8 +36,8 @@ RECALC_DUR_BUFFER_MS: int = 100
 
 BEAM_WIDTH: int = 3
 TIME_TOK_WEIGHTING: int = -5
-FIRST_ONSET_BUFFER_MS: int = -200
-MAX_STREAM_DELAY_MS: int = 100
+FIRST_ONSET_BUFFER_MS: int = -150
+MAX_STREAM_DELAY_MS: int = 50
 
 MIN_NOTE_DELTA_MS: int = 0
 MIN_PEDAL_DELTA_MS: int = 0
@@ -47,7 +47,11 @@ BASE_OUTPUT_LATENCY_MS: int = 0
 VELOCITY_OUTPUT_LATENCY_MS: dict[int, int] = {v: 0 for v in range(0, 127, 10)}
 
 
-config_path = pathlib.Path(__file__).parent.resolve().joinpath("config.json")
+TOKENIZER_CONFIG_PATH = (
+    pathlib.Path(__file__)
+    .parent.resolve()
+    .joinpath("demo-tokenizer-config.json")
+)
 file_handler = logging.FileHandler("./demo.log", mode="w")
 file_handler.setLevel(logging.DEBUG)
 
@@ -210,7 +214,9 @@ def prefill(
     logits = model(
         idxs=idxs,
         input_pos=input_pos + EMBEDDING_OFFSET,
-        max_kv_pos=math.ceil(input_pos[-1].item() / KV_CHUNK_SIZE)
+        max_kv_pos=math.ceil(
+            (input_pos[-1].item() + EMBEDDING_OFFSET) / KV_CHUNK_SIZE
+        )
         * KV_CHUNK_SIZE,
         offset=input_pos[0] + EMBEDDING_OFFSET,
     )
@@ -228,7 +234,9 @@ def decode_one(
     logits = model(
         idxs=idxs,
         input_pos=input_pos + EMBEDDING_OFFSET,
-        max_kv_pos=math.ceil(input_pos[-1].item() / KV_CHUNK_SIZE)
+        max_kv_pos=math.ceil(
+            (input_pos[-1].item() + EMBEDDING_OFFSET) / KV_CHUNK_SIZE
+        )
         * KV_CHUNK_SIZE,
         offset=input_pos[0] + EMBEDDING_OFFSET,
     )[:, -1]
@@ -361,7 +369,7 @@ def warmup_model(model: TransformerLM):
 def load_model(checkpoint_path: str):
     logger = get_logger()
 
-    tokenizer = AbsTokenizer(config_path=config_path)
+    tokenizer = AbsTokenizer(config_path=TOKENIZER_CONFIG_PATH)
     model_config = ModelConfig(**load_model_config("medium-emb"))
     model_config.set_vocab_size(tokenizer.vocab_size)
 
@@ -377,7 +385,11 @@ def load_model(checkpoint_path: str):
 
     assert (
         tokenizer.vocab_size == weights["model.tok_embeddings.weight"].shape[0]
-    ), "Embedding shape mismatch. Ensure that you are loading the demo-specific checkpoint."
+    ), (
+        "Embedding shape mismatch. Ensure that you are loading the "
+        f"demo-specific checkpoint. tokenizer={tokenizer.vocab_size}, "
+        f"weights={weights['model.tok_embeddings.weight'].shape[0]}"
+    )
 
     model.load_weights(list(weights.items()), strict=False)
     model.eval()
@@ -460,7 +472,7 @@ def recalc_dur_tokens_chunked(
         window_pos = mx.arange(idx - 1, end_idx - 1, dtype=mx.int32)
 
         logger.info(
-            f"Recalculating chunked durations for positions: {idx-1} - {end_idx-2}"
+            f"Recalculating chunked durations for positions: {idx - 1} - {end_idx - 2}"
         )
 
         logits = prefill(model, idxs=window_ids, input_pos=window_pos)
@@ -531,7 +543,7 @@ def decode_first_tokens(
             input_pos=mx.array([idx - 1], dtype=mx.int32),
         )
 
-        logger.info(f"Inserted time_tok at position {idx-1}")
+        logger.info(f"Inserted time_tok at position {idx - 1}")
         num_time_toks_to_add -= 1
         enc_seq[:, idx - 1] = time_tok_id
         idx += 1
@@ -588,7 +600,7 @@ def decode_first_tokens(
             input_pos=mx.array([idx - 1], dtype=mx.int32),
         )
         logger.debug(
-            f"Sampled logits for positions {idx} by inserting {tok} at position {idx-1}"
+            f"Sampled logits for positions {idx} by inserting {tok} at position {idx - 1}"
         )
 
         next_log_probs = nn.log_softmax(next_logits, axis=-1)
@@ -637,7 +649,7 @@ def decode_first_tokens(
     )
 
     logger.info(
-        f"Updated KV-Cache by re-inserting {best_tok_1} at position {idx-1}"
+        f"Updated KV-Cache by re-inserting {best_tok_1} at position {idx - 1}"
     )
     logger.debug(f"Internal KV-state: {tokenizer.decode(model.get_kv_ctx())}")
 
@@ -682,7 +694,7 @@ def decode_tokens(
         )
 
         logger.debug(
-            f"Sampled logits for positions {idx} by inserting {prev_tok} at position {idx-1}"
+            f"Sampled logits for positions {idx} by inserting {prev_tok} at position {idx - 1}"
         )
 
         logits[:, tokenizer.tok_to_id[tokenizer.ped_off_tok]] += 3  # Manual adj
@@ -703,7 +715,7 @@ def decode_tokens(
         enc_seq[:, idx] = next_token_ids
         next_token = tokenizer.id_to_tok[next_token_ids[0].item()]
         logger.debug(
-            f"({(time.time() - decode_one_start_time_s)*1000:.2f}ms) {idx}: {next_token}"
+            f"({(time.time() - decode_one_start_time_s) * 1000:.2f}ms) {idx}: {next_token}"
         )
 
         if next_token in {tokenizer.ped_on_tok, tokenizer.ped_off_tok}:
@@ -756,7 +768,7 @@ def generate_tokens(
 
     logger.debug(f"Priming sequence {priming_seq}")
     logger.info(f"Priming sequence length: {priming_seq_len}")
-    logger.info(f"Prefilling up to (and including) position: {start_idx-1}")
+    logger.info(f"Prefilling up to (and including) position: {start_idx - 1}")
 
     prefill_start_s = time.time()
     chunked_prefill(
@@ -770,7 +782,9 @@ def generate_tokens(
     logger.info(
         f"Prefill took {(time.time() - prefill_start_s) * 1000:.2f} milliseconds"
     )
-    logger.info(f"Starting duration recalculation from position: {start_idx-1}")
+    logger.info(
+        f"Starting duration recalculation from position: {start_idx - 1}"
+    )
 
     recalculate_dur_start_s = time.time()
     enc_seq, priming_seq, next_token_logits = recalc_dur_tokens_chunked(
@@ -1160,7 +1174,7 @@ def stream_midi(
             and msg["pitch"] != "pedal"
             and active_pitch_uuid.get(msg["pitch"]) == msg["uuid"]
         ]
-        remaining_off_msgs.sort(key=lambda m: (m["epoch_time_ms"]))
+        remaining_off_msgs.sort(key=lambda m: m["epoch_time_ms"])
 
         for msg in remaining_off_msgs:
             mido_msg = _create_mido_message(
@@ -1213,7 +1227,12 @@ def stream_msgs(
         logger.info("Removing final pedal_off from tokenized sequence")
         priming_seq = priming_seq[:-2]
 
+    priming_seq.append(tokenizer.delimiter_tok)
+
     if is_ending is True:
+        raise NotImplementedError(
+            "I've removed this functionality so this should never trigger"
+        )
         priming_seq.append(tokenizer.dim_tok)
 
     generated_tokens_queue = queue.Queue()
@@ -1421,7 +1440,7 @@ def chunked_prefill(
             break
 
     logger.info(
-        f"KV stored up to idx={max(0, len(prev_context)- 1)} (curr_context_len={len(curr_context)})"
+        f"KV stored up to idx={max(0, len(prev_context) - 1)} (curr_context_len={len(curr_context)})"
     )
 
     return prev_context
@@ -1433,7 +1452,7 @@ def continuous_prefill(
     received_messages_queue: queue.Queue,
     prev_context: list[int],
 ):
-    tokenizer = AbsTokenizer(config_path=config_path)
+    tokenizer = AbsTokenizer(config_path=TOKENIZER_CONFIG_PATH)
     logger = get_logger("PREFILL")
     msg_cnt = 0
     seen_sentinel = False
@@ -1486,6 +1505,7 @@ def capture_and_update_kv(
     midi_performance_queue: queue.Queue,
     midi_capture_channel: int,
     first_msg_epoch_time_ms: int | None = None,
+    idle_timeout_ms: int | None = None,
 ):
     received_messages_queue = queue.Queue()
     results_queue = queue.Queue()
@@ -1500,6 +1520,7 @@ def capture_and_update_kv(
             "first_msg_epoch_time_ms": first_msg_epoch_time_ms,
             "results_queue": results_queue,
             "wait_for_close": wait_for_close,
+            "idle_timeout_ms": idle_timeout_ms,
         },
     )
     capture_midi_thread.start()
@@ -1525,6 +1546,7 @@ def capture_midi_input(
     results_queue: queue.Queue,
     first_msg_epoch_time_ms: int | None = None,
     wait_for_close: bool = False,
+    idle_timeout_ms: int | None = None,
 ):
     logger = get_logger("CAPTURE")
     first_on_msg_epoch_ms = None
@@ -1532,6 +1554,7 @@ def capture_midi_input(
     pedal_down = False
     pitches_held_down = set()
     pitches_sustained_by_pedal = set()
+    waiting_since_ms = None
 
     while not midi_performance_queue.empty():
         try:
@@ -1541,6 +1564,10 @@ def capture_midi_input(
 
     logger.info("Listening for input")
     logger.info("Commencing generation upon keypress or control signal")
+
+    if idle_timeout_ms is not None:
+        waiting_since_ms = get_epoch_time_ms()
+        logger.info(f"Idle timeout enabled: {idle_timeout_ms}ms")
 
     while True:
         epoch_time_ms = get_epoch_time_ms()
@@ -1554,6 +1581,18 @@ def capture_midi_input(
         try:
             msg = midi_performance_queue.get(block=True, timeout=0.01)
         except queue.Empty:
+            if (
+                idle_timeout_ms is not None
+                and waiting_since_ms is not None
+                and first_on_msg_epoch_ms is None
+                and (get_epoch_time_ms() - waiting_since_ms) > idle_timeout_ms
+            ):
+                logger.info(
+                    f"Idle timeout reached ({idle_timeout_ms}ms), resetting"
+                )
+                reset_sentinel.set()
+                control_sentinel.set()
+                break
             continue
 
         if msg.is_meta or msg.type == "program_change":
@@ -1805,7 +1844,7 @@ def run(
     back_and_forth: bool,
 ):
     logger = get_logger()
-    tokenizer = AbsTokenizer(config_path=config_path)
+    tokenizer = AbsTokenizer(config_path=TOKENIZER_CONFIG_PATH)
     control_sentinel = threading.Event()
     currently_generating_sentinel = threading.Event()
 
@@ -1911,6 +1950,7 @@ def run(
                 midi_performance_queue=midi_performance_queue,
                 midi_capture_channel=curr_midi_channel,
                 first_msg_epoch_time_ms=first_on_msg_epoch_ms,
+                idle_timeout_ms=3000,
             )
 
     keypress_thread.join()
@@ -1969,12 +2009,18 @@ def main(args):
     logger = get_logger()
     model = load_model(checkpoint_path=args.checkpoint)
     model = warmup_model(model=model)
+    global EMBEDDING_OFFSET
     if args.embedding_checkpoint and args.embedding_midi_path:
         insert_embedding(
             model=model,
             embedding_model_checkpoint_path=args.embedding_checkpoint,
             embedding_midi_path=args.embedding_midi_path,
         )
+    else:
+        model.fill_condition_kv(
+            mx.zeros((1, model.model_config.emb_size), dtype=DTYPE)
+        )
+        EMBEDDING_OFFSET = 1
 
     assert (args.midi_path and os.path.isfile(args.midi_path)) or args.midi_in
 
@@ -2022,7 +2068,7 @@ def playback(midi_path: str, midi_out: str, save_path: str | None = None):
 
     close_notes(midi_out)
     starting_epoch_time_ms = get_epoch_time_ms()
-    tokenizer = AbsTokenizer(config_path=config_path)
+    tokenizer = AbsTokenizer(config_path=TOKENIZER_CONFIG_PATH)
     tokens_queue = queue.Queue()
     midi_messages_queue = queue.Queue()
     stream_midi_results_queue = queue.Queue()

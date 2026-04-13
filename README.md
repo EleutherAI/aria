@@ -8,12 +8,20 @@ This repository contains training, inference, and evaluation code for the paper 
 
 ## Installation 
 
-Installation requires Python 3.11+. To install the package and all dependencies with pip:
+Installation requires Python 3.11+.
+
+To install the package with `pip`:
 
 ```bash
 git clone https://github.com/EleutherAI/aria 
-cd aria
-pip install -e ".[all]"
+cd aria && pip install -e ".[all]"
+```
+
+To install the package with `uv`:
+
+```bash
+git clone https://github.com/EleutherAI/aria
+cd aria && uv sync --extra all
 ```
 
 ## Quickstart
@@ -79,7 +87,7 @@ Our embedding model was trained to capture composition-level and performance-lev
 
 ## Real-time demo
 
-In `demo/` we provide an MLX (Apple Silicon) implementation of the real-time interactive piano-continuation demo showcased in our release blog post. In order to use the demo, you must download the demo-specific model checkpoint which enhances the model to additionally control the sustain pedal ([direct-download](https://huggingface.co/loubb/aria-medium-base/resolve/main/model-demo.safetensors?download=true)).
+In `demo/` we provide an MLX (Apple Silicon) implementation of the real-time interactive piano-continuation demo showcased in our release blog post. In order to use the demo, you must download the demo-specific model checkpoint which enhances the model to additionally control the sustain pedal ([direct-download](https://huggingface.co/loubb/aria-medium-base/resolve/main/model-demo.safetensors?download=true)). If using `uv`, install the demo dependencies with `uv sync --extra demo`.
 
 For our demonstration, we used an acoustic Yamaha Disklavier piano with simultaneous MIDI input and output ports connected via a standard MIDI interface. We disabled the built-in Disklavier playback mode, instead manually calibrating key-velocity latency to enhance responsiveness. You may recreate this in your own environment with our acoustic calibration settings, using the following script:
 
@@ -93,8 +101,8 @@ python ./demo/demo_mlx.py \
     --hardware ./demo/hardware/c4dm-disklavier.json \
     --midi_control_signal 67 \
     --midi_reset_control_signal 66 \
-    --temp 0.85 \
-    --min_p 0.05
+    --temp 0.9 \
+    --min_p 0.035
 ```
 
 A MIDI input device is not strictly required to play around with the demo: By using the `--midi_path` and `--midi_through` arguments you can mock real-time input by playing from a MIDI file. All that is required are MIDI drivers (e.g., CoreMIDI) and a virtual software instrument (e.g., Fluidsynth, Pianoteq) to render the output. In this mode, you can initiate the model takeover by pressing the enter key.
@@ -107,8 +115,8 @@ python ./demo/demo_mlx.py \
     --midi_path ${MIDI_PATH} \
     --midi_through <midi-playback-port> \
     --midi_out <midi-playback-port> \
-    --temp 0.85 \
-    --min_p 0.05
+    --temp 0.9 \
+    --min_p 0.035
 ```
 
 ❗**NOTE**: Responsiveness of the real-time demo is dependent on your system configuration, specifically GPU memory bandwidth. 
